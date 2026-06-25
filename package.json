@@ -1,0 +1,10 @@
+{
+  "name": "trpg-player",
+  "private": true,
+  "scripts": {
+    "dev:web": "pnpm --filter web dev",
+    "dev:server": "cd server && uvicorn app.main:app --reload --port 8000",
+    "build:web": "pnpm --filter web build",
+    "dev": "concurrently \"pnpm dev:web\" \"pnpm dev:server\""
+  }
+}

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+*.db
+
+.env
+.DS_Store
+target/
+.claude/
