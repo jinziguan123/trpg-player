@@ -6,6 +6,7 @@ interface Module {
   title: string
   rule_system: string
   description: string
+  world_setting: Record<string, unknown>
   scenes: Array<Record<string, unknown>>
   npcs: Array<Record<string, unknown>>
   clues: Array<Record<string, unknown>>
@@ -16,7 +17,7 @@ interface ModuleStore {
   currentModule: Module | null
   loading: boolean
   fetchModules: () => Promise<void>
-  uploadModule: (file: File, ruleSystem: string) => Promise<void>
+  uploadModule: (files: File[], ruleSystem: string) => Promise<void>
   selectModule: (module: Module) => void
 }
 
@@ -31,10 +32,10 @@ export const useModuleStore = create<ModuleStore>((set) => ({
     set({ modules, loading: false })
   },
 
-  uploadModule: async (file, ruleSystem) => {
+  uploadModule: async (files, ruleSystem) => {
     set({ loading: true })
     const form = new FormData()
-    form.append('file', file)
+    for (const f of files) form.append('files', f)
     const res = await fetch(`/api/modules/upload?rule_system=${ruleSystem}`, {
       method: 'POST',
       body: form,

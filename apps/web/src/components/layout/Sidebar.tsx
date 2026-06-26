@@ -1,11 +1,12 @@
 import { NavLink } from 'react-router-dom'
-import { GiScrollUnfurled, GiCharacter, GiDiceTwentyFacesTwenty, GiArchiveResearch } from 'react-icons/gi'
+import { GiScrollUnfurled, GiCharacter, GiDiceTwentyFacesTwenty, GiArchiveResearch, GiGears } from 'react-icons/gi'
 
 const NAV_ITEMS = [
   { to: '/', label: '卷宗', icon: GiArchiveResearch },
   { to: '/modules', label: '模组', icon: GiScrollUnfurled },
   { to: '/characters', label: '角色', icon: GiCharacter },
   { to: '/game', label: '游戏', icon: GiDiceTwentyFacesTwenty },
+  { to: '/settings', label: '设置', icon: GiGears },
 ]
 
 export function Sidebar() {

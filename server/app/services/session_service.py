@@ -16,8 +16,17 @@ def create_session(db: Session, module_id: str, player_character_id: str) -> Gam
     char = db.get(Character, player_character_id)
     if not char:
         raise ValueError("角色不存在")
-    if char.module_id != module_id:
-        raise ValueError("角色不属于该模组")
+
+    active_session = (
+        db.query(GameSession)
+        .filter(
+            GameSession.player_character_id == player_character_id,
+            GameSession.status.in_(["active", "paused"]),
+        )
+        .first()
+    )
+    if active_session:
+        raise ValueError("该角色正在进行其他模组的游戏，请先完成或结束当前游戏")
 
     existing = (
         db.query(GameSession)
@@ -113,6 +122,16 @@ def add_event(
     db.commit()
     db.refresh(event)
     return event
+
+
+def delete_session(db: Session, session_id: str) -> bool:
+    session = db.get(GameSession, session_id)
+    if not session:
+        return False
+    db.query(EventLog).filter(EventLog.session_id == session_id).delete()
+    db.delete(session)
+    db.commit()
+    return True
 
 
 def update_scene(db: Session, session_id: str, scene_id: str) -> None:

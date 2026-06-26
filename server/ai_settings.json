@@ -1,0 +1,13 @@
+{
+  "profiles": [
+    {
+      "id": "165a4281-7c9c-4941-85f0-33595dbe98dc",
+      "name": "默认配置（迁移）",
+      "protocol": "openai",
+      "base_url": "https://api.deepseek.com",
+      "model_name": "deepseek-v4-pro",
+      "api_key": "sk-07287dd8dd6c4b62ab472ec81aaf5a60",
+      "is_active": true
+    }
+  ]
+}

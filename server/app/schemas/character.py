@@ -19,7 +19,7 @@ class CharacterCreate(BaseModel):
 class CharacterRead(BaseModel):
     id: str
     name: str
-    module_id: str
+    module_id: str | None
     rule_system: str
     is_player: bool
     base_attributes: dict

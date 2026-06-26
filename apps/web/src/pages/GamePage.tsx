@@ -1,10 +1,19 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { toast } from 'sonner'
 import { api, streamSSE } from '../api/client'
 import { useSessionStore } from '../stores/sessionStore'
 import { useModuleStore } from '../stores/moduleStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
+import { ConfirmDialog } from '../components/ui/confirm-dialog'
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiReturnArrow } from 'react-icons/gi'
+
+const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE):[^\]]*\]/g
+
+function stripCommandTags(text: string): string {
+  return text.replace(CMD_TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim()
+}
 
 interface Character {
   id: string
@@ -23,6 +32,7 @@ export function GamePage() {
     createSession, setCurrentSession, loadHistory,
     fetchSessions, sessions,
     startStreamMessage, appendToStream, endStream,
+    replaceLastNarration,
   } = useSessionStore()
   const { modules, fetchModules } = useModuleStore()
   const navigate = useNavigate()
@@ -35,11 +45,12 @@ export function GamePage() {
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     fetchModules()
     fetchSessions()
-    api.get<Character[]>('/characters').then(setCharacters)
+    api.get<Character[]>('/characters?available=true').then(setCharacters)
   }, [fetchModules, fetchSessions])
 
   useEffect(() => {
@@ -61,8 +72,17 @@ export function GamePage() {
       for await (const chunk of streamSSE(path, body)) {
         if (chunk.type === 'done') break
 
-        if (chunk.type === 'dice' || chunk.type === 'system') {
-          addMessage({ id: '', type: chunk.type, content: chunk.content, actor_name: chunk.actor_name, metadata: chunk.metadata })
+        if (chunk.type === 'narration_replace') {
+          endStream()
+          replaceLastNarration(stripCommandTags(chunk.content))
+          currentType = ''
+          continue
+        }
+
+        if (chunk.type === 'dice' || chunk.type === 'system' || chunk.type === 'npc_dialogue') {
+          endStream()
+          const msgType = chunk.type === 'npc_dialogue' ? 'dialogue' : chunk.type
+          addMessage({ id: '', type: msgType, content: chunk.content, actor_name: chunk.actor_name, metadata: chunk.metadata })
           currentType = ''
           continue
         }
@@ -94,17 +114,30 @@ export function GamePage() {
   }
 
   const resumeGame = async (sessionId: string) => {
-    const session = sessions.find((s) => s.id === sessionId)
+    const latestSessions = useSessionStore.getState().sessions
+    const session = latestSessions.find((s) => s.id === sessionId)
     if (!session) return
     setCurrentSession(session)
     await loadHistory(sessionId)
+  }
+
+  const deleteSession = async (sessionId: string) => {
+    try {
+      await api.delete(`/sessions/${sessionId}`)
+      await fetchSessions()
+      await api.get<Character[]>('/characters?available=true').then(setCharacters)
+      toast.success('游戏存档已删除')
+    } catch {
+      toast.error('删除失败')
+    }
   }
 
   const sendMessage = async () => {
     if (!input.trim() || !currentSession || streaming) return
     const text = input.trim()
     setInput('')
-    addMessage({ id: '', type: 'dialogue', content: text, actor_name: '玩家' })
+    if (inputRef.current) inputRef.current.style.height = 'auto'
+    addMessage({ id: '', type: 'dialogue', content: text, actor_name: activeChar?.name || '玩家', metadata: { is_player: true } })
     await processStream(`/sessions/${currentSession.id}/chat`, { content: text })
   }
 
@@ -128,14 +161,22 @@ export function GamePage() {
         <div className="card mb-6">
           <h3 className="card-title">新游戏</h3>
           <div className="flex gap-3 mb-3">
-            <select value={moduleId} onChange={(e) => setModuleId(e.target.value)} className="input flex-1">
-              <option value="">— 选择模组 —</option>
-              {modules.map((m) => <option key={m.id} value={m.id}>{m.title}</option>)}
-            </select>
-            <select value={charId} onChange={(e) => setCharId(e.target.value)} className="input flex-1">
-              <option value="">— 选择角色 —</option>
-              {characters.filter((c) => !moduleId || c.module_id === moduleId).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+            <Select value={moduleId} onValueChange={(v) => { setModuleId(v); setCharId('') }}>
+              <SelectTrigger className="flex-1">
+                <SelectValue placeholder="— 选择模组 —" />
+              </SelectTrigger>
+              <SelectContent>
+                {modules.map((m) => <SelectItem key={m.id} value={m.id}>{m.title}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={charId} onValueChange={setCharId}>
+              <SelectTrigger className="flex-1">
+                <SelectValue placeholder="— 选择角色 —" />
+              </SelectTrigger>
+              <SelectContent>
+                {characters.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
           {error && (
             <p className="text-sm mb-2" style={{ color: 'var(--color-danger)' }}>{error}</p>
@@ -149,10 +190,13 @@ export function GamePage() {
           <div>
             <h3 className="card-title">继续游戏</h3>
             {activeSessions.map((s) => (
-              <button
+              <div
                 key={s.id}
                 onClick={() => resumeGame(s.id)}
-                className="card w-full text-left mb-2 hover:border-[var(--color-accent)] transition-colors"
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter') resumeGame(s.id) }}
+                className="card w-full text-left mb-2 hover:border-[var(--color-accent)] transition-colors cursor-pointer"
               >
                 <div className="flex items-center justify-between">
                   <div>
@@ -167,9 +211,25 @@ export function GamePage() {
                       {formatTime(s.created_at)}
                     </span>
                     <span className="badge">{s.status === 'active' ? '进行中' : '已暂停'}</span>
+                    <ConfirmDialog
+                      title="删除游戏"
+                      description="确定要删除该游戏存档吗？聊天记录将一并删除，此操作不可恢复。"
+                      confirmLabel="删除"
+                      onConfirm={() => deleteSession(s.id)}
+                    >
+                      {(open) => (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); open() }}
+                          className="text-xs px-1.5 py-0.5 rounded hover:bg-[var(--color-danger)] hover:text-white transition-colors"
+                          style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}
+                        >
+                          删除
+                        </button>
+                      )}
+                    </ConfirmDialog>
                   </div>
                 </div>
-              </button>
+              </div>
             ))}
           </div>
         )}
@@ -198,22 +258,32 @@ export function GamePage() {
           </button>
         </div>
         <div ref={scrollRef} className="flex-1 overflow-auto pb-4 chat-scroll">
-          {messages.map((msg) => (
-            <div key={msg.id} className={`chat-msg chat-msg--${msg.type}`}>
-              {msg.actor_name && msg.actor_name !== '玩家' && msg.type === 'dialogue' && (
-                <div className="chat-actor">{msg.actor_name}</div>
-              )}
-              {msg.type === 'dialogue' && msg.actor_name === '玩家' ? (
-                <div className="chat-player">
-                  <span className="chat-bubble-player">{msg.content}</span>
-                </div>
-              ) : (
-                <div className="chat-content">
-                  <span className="whitespace-pre-wrap">{msg.content}</span>
-                </div>
-              )}
-            </div>
-          ))}
+          {messages.map((msg) => {
+            const isPlayer = !!msg.metadata?.is_player
+            const showLabel = msg.actor_name && (msg.type === 'dialogue' || msg.type === 'action')
+            return (
+              <div key={msg.id} className={`chat-msg chat-msg--${msg.type}`}>
+                {showLabel && (
+                  <div className={isPlayer ? 'chat-actor-player' : 'chat-actor'}>{msg.actor_name}</div>
+                )}
+                {isPlayer && msg.type === 'dialogue' ? (
+                  <div className="chat-player">
+                    <span className="chat-bubble-player">{msg.content}</span>
+                  </div>
+                ) : !isPlayer && msg.type === 'dialogue' ? (
+                  <div>
+                    <span className="chat-bubble-npc">{msg.content}</span>
+                  </div>
+                ) : (
+                  <div className="chat-content">
+                    <span className="whitespace-pre-wrap">
+                      {msg.type === 'narration' ? stripCommandTags(msg.content) : msg.content}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )
+          })}
           {streaming && (
             <div className="chat-loading">
               <span className="dot-pulse" />
@@ -222,13 +292,25 @@ export function GamePage() {
         </div>
 
         <div className="chat-input-bar">
-          <input
+          <textarea
+            ref={inputRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
+            onChange={(e) => {
+              setInput(e.target.value)
+              e.target.style.height = 'auto'
+              e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                sendMessage()
+              }
+            }}
             placeholder="输入你的行动或对话..."
             disabled={streaming}
             className="input flex-1"
+            rows={1}
+            style={{ resize: 'none' }}
           />
           <button onClick={sendMessage} disabled={streaming || !input.trim()} className="btn-primary">
             发送

@@ -4,14 +4,21 @@ from collections.abc import AsyncIterator
 import httpx
 
 from app.ai.provider import LLMProvider
-from app.config import settings
+
 
 class DeepSeekProvider(LLMProvider):
-    def __init__(self, model: str = "deepseek-chat"):
+    def __init__(self, model: str = "deepseek-chat", base_url: str = "", api_key: str = ""):
         self.model = model
+        self._api_key = api_key
         self._client = httpx.AsyncClient(timeout=120.0)
-        base = settings.deepseek_base_url.rstrip("/")
+        base = base_url.rstrip("/") if base_url else "https://api.deepseek.com"
         self._api_url = f"{base}/chat/completions"
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
 
     async def complete(
         self,
@@ -30,12 +37,7 @@ class DeepSeekProvider(LLMProvider):
             payload["response_format"] = response_format
 
         resp = await self._client.post(
-            self._api_url,
-            headers={
-                "Authorization": f"Bearer {settings.deepseek_api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
+            self._api_url, headers=self._headers(), json=payload,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -56,13 +58,7 @@ class DeepSeekProvider(LLMProvider):
         }
 
         async with self._client.stream(
-            "POST",
-            self._api_url,
-            headers={
-                "Authorization": f"Bearer {settings.deepseek_api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
+            "POST", self._api_url, headers=self._headers(), json=payload,
         ) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
@@ -79,4 +75,34 @@ class DeepSeekProvider(LLMProvider):
 
 
 def get_llm() -> LLMProvider:
-    return DeepSeekProvider()
+    """根据激活的配置创建对应的 LLM Provider。
+
+    - protocol="anthropic" -> AnthropicProvider
+    - protocol="openai" (默认) -> DeepSeekProvider (兼容 OpenAI API)
+    - 没有激活配置时，回退到 .env 环境变量
+    """
+    from app.api.ai_settings import load_active_profile
+
+    profile = load_active_profile()
+
+    if profile:
+        if profile.protocol == "anthropic":
+            from app.ai.anthropic import AnthropicProvider
+            return AnthropicProvider(
+                model=profile.model_name,
+                base_url=profile.base_url,
+                api_key=profile.api_key,
+            )
+        return DeepSeekProvider(
+            model=profile.model_name,
+            base_url=profile.base_url,
+            api_key=profile.api_key,
+        )
+
+    # 没有激活配置，回退到 .env 的 deepseek 配置
+    from app.config import settings
+    return DeepSeekProvider(
+        model="deepseek-chat",
+        base_url=settings.deepseek_base_url,
+        api_key=settings.deepseek_api_key,
+    )

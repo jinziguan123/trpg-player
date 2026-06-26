@@ -30,6 +30,8 @@ SCENE_CHANGE_RE = re.compile(
     r"\[SCENE_CHANGE:\s*scene_id=([^\]]+)\]"
 )
 
+CMD_TAG_PREFIXES = ("DICE_CHECK:", "NPC_ACT:", "SCENE_CHANGE:")
+
 
 def _make_chunk(
     chunk_type: str,
@@ -43,6 +45,244 @@ def _make_chunk(
     if metadata:
         data["metadata"] = metadata
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _stream_narration_filtered(
+    kp: KPAgent, messages: list[dict], result: list,
+    npcs: list[dict] | None = None,
+) -> AsyncIterator[str]:
+    """Stream KP narration, intercepting command tags and NPC dialogue.
+
+    Yields ``narration`` chunks for descriptive text and ``npc_dialogue``
+    chunks for quoted NPC speech detected inline (Chinese double-quotes
+    “…”).  Command tags terminate the stream early.
+
+    *result* is ``[narration_text, full_response, extracted_dialogues]``,
+    mutated in place.
+    """
+    full_response = ""
+    narration = ""
+    pending = ""
+    in_bracket = False
+    bracket_buf = ""
+    tag_found = False
+
+    in_quote = False
+    quote_buf = ""
+    # Build (canonical_name, [searchable_parts]) for partial matching.
+    # E.g. "托马斯·金博尔" → ["托马斯·金博尔", "托马斯", "金博尔"]
+    npc_matchers: list[tuple[str, list[str]]] = []
+    for _n in (npcs or []):
+        _name = _n.get("name", "")
+        if not _name:
+            continue
+        _parts = [_name]
+        for _sep in ("·", "·", " ", "-"):
+            if _sep in _name:
+                _parts.extend(
+                    p.strip() for p in _name.split(_sep) if len(p.strip()) >= 2
+                )
+                break
+        npc_matchers.append((_name, _parts))
+    extracted: list[tuple[str, str]] = []
+    last_speaker: str | None = None
+    bracket_speaker: str | None = None
+    bracket_dialogue_buf = ""
+
+    def _match_npc(text: str) -> str | None:
+        text = text.strip()
+        for canonical, parts in npc_matchers:
+            if text == canonical or text in parts:
+                return canonical
+        return None
+
+    def _strip_npc_prefix(text: str) -> tuple[str, str | None]:
+        s = text.rstrip()
+        if not s:
+            return text, None
+        for canonical, parts in npc_matchers:
+            for part in parts:
+                for _sfx in (part + "：", part + "说道：", part + "说：", part + "说道，", part + "说，"):
+                    if s.endswith(_sfx):
+                        return s[:-len(_sfx)], canonical
+        return text, None
+
+    def _flush_bracket_dialogue():
+        nonlocal bracket_speaker, bracket_dialogue_buf, last_speaker
+        dialogue_text = bracket_dialogue_buf.strip()
+        result_chunk = None
+        if dialogue_text and bracket_speaker:
+            last_speaker = bracket_speaker
+            extracted.append((bracket_speaker, dialogue_text))
+            result_chunk = _make_chunk(
+                "npc_dialogue", dialogue_text,
+                actor_name=bracket_speaker,
+            )
+        bracket_speaker = None
+        bracket_dialogue_buf = ""
+        return result_chunk
+
+    async for token in kp.narrate(messages):
+        full_response += token
+
+        for ch in token:
+            if in_bracket:
+                bracket_buf += ch
+                if ch == "]":
+                    inner = bracket_buf[:-1]
+                    if any(
+                        inner.strip().startswith(p) for p in CMD_TAG_PREFIXES
+                    ):
+                        tag_found = True
+                        break
+                    matched_npc = _match_npc(inner) if not in_quote else None
+                    if matched_npc:
+                        if pending:
+                            narration += pending
+                            if pending.strip():
+                                yield _make_chunk("narration", pending, actor_name="KP")
+                            pending = ""
+                        bracket_speaker = matched_npc
+                        bracket_dialogue_buf = ""
+                    else:
+                        restored = "[" + bracket_buf
+                        if in_quote:
+                            quote_buf += restored
+                        else:
+                            pending += restored
+                    bracket_buf = ""
+                    in_bracket = False
+            elif ch == "[":
+                if bracket_speaker:
+                    chunk = _flush_bracket_dialogue()
+                    if chunk:
+                        yield chunk
+                in_bracket = True
+                bracket_buf = ""
+            elif ch == "“" and not in_quote:
+                if bracket_speaker:
+                    last_speaker = bracket_speaker
+                    bracket_speaker = None
+                    bracket_dialogue_buf = ""
+                pending, _speaker = _strip_npc_prefix(pending)
+                if _speaker:
+                    last_speaker = _speaker
+                if pending:
+                    narration += pending
+                    if pending.strip():
+                        yield _make_chunk("narration", pending, actor_name="KP")
+                    pending = ""
+                in_quote = True
+                quote_buf = ""
+            elif ch == "”" and in_quote:
+                in_quote = False
+                dialogue_text = quote_buf.strip()
+                attributed = False
+
+                if len(dialogue_text) >= 2 and npc_matchers:
+                    context = narration[-300:]
+                    best_canonical: str | None = None
+                    best_pos = -1
+                    best_len = -1
+                    for canonical, parts in npc_matchers:
+                        for part in parts:
+                            pos = context.rfind(part)
+                            if pos >= 0 and (len(part), pos) > (best_len, best_pos):
+                                best_pos = pos
+                                best_len = len(part)
+                                best_canonical = canonical
+                    if best_canonical is None:
+                        best_canonical = last_speaker
+                    if best_canonical:
+                        last_speaker = best_canonical
+                        extracted.append((best_canonical, dialogue_text))
+                        yield _make_chunk(
+                            "npc_dialogue", dialogue_text,
+                            actor_name=best_canonical,
+                        )
+                        attributed = True
+
+                if not attributed:
+                    pending += "“" + quote_buf + "”"
+                quote_buf = ""
+            else:
+                if in_quote:
+                    quote_buf += ch
+                elif bracket_speaker:
+                    bracket_dialogue_buf += ch
+                    if bracket_dialogue_buf.endswith("\n\n"):
+                        chunk = _flush_bracket_dialogue()
+                        if chunk:
+                            yield chunk
+                else:
+                    pending += ch
+
+        if tag_found:
+            if bracket_speaker:
+                chunk = _flush_bracket_dialogue()
+                if chunk:
+                    yield chunk
+            if pending:
+                narration += pending
+                if pending.strip():
+                    yield _make_chunk("narration", pending, actor_name="KP")
+            break
+
+        if not in_bracket and not in_quote and not bracket_speaker and pending:
+            # Paragraph buffering: yield at \n\n boundaries
+            while "\n\n" in pending:
+                idx = pending.index("\n\n") + 2
+                chunk = pending[:idx]
+                _cs = chunk.rstrip()
+                _hold = False
+                if _cs and npc_matchers:
+                    for _, _pts in npc_matchers:
+                        for _p in _pts:
+                            if any(_cs.endswith(_p + s) for s in ("：", "说道：", "说：", "说道，", "说，")):
+                                _hold = True
+                                break
+                        if _hold:
+                            break
+                if _hold:
+                    break
+                pending = pending[idx:]
+                narration += chunk
+                if chunk.strip():
+                    yield _make_chunk("narration", chunk, actor_name="KP")
+            # Sentence fallback for long buffers
+            if len(pending) > 150:
+                last_b = -1
+                for _i, _ch in enumerate(pending):
+                    if _ch in "\n。！？":
+                        last_b = _i
+                if last_b >= 0:
+                    chunk = pending[: last_b + 1]
+                    pending = pending[last_b + 1 :]
+                    narration += chunk
+                    if chunk.strip():
+                        yield _make_chunk("narration", chunk, actor_name="KP")
+
+    if not tag_found:
+        if in_bracket:
+            if in_quote:
+                quote_buf += "[" + bracket_buf
+            else:
+                pending += "[" + bracket_buf
+        if in_quote:
+            pending += "“" + quote_buf
+        if bracket_speaker:
+            chunk = _flush_bracket_dialogue()
+            if chunk:
+                yield chunk
+        if pending:
+            narration += pending
+            if pending.strip():
+                yield _make_chunk("narration", pending, actor_name="KP")
+
+    result[0] = narration
+    result[1] = full_response
+    if len(result) > 2:
+        result[2] = extracted
 
 
 async def handle_chat(
@@ -69,7 +309,7 @@ async def handle_chat(
 
     session_service.add_event(
         db, session_id, "dialogue", player_input,
-        actor_id=player_char.id, actor_name="玩家",
+        actor_id=player_char.id, actor_name=player_char.name,
     )
 
     events = session_service.get_session_events(db, session_id)
@@ -78,17 +318,24 @@ async def handle_chat(
     kp = KPAgent(llm)
     messages = build_kp_context(game_session, module, player_char, events)
 
-    full_response = ""
-    async for token in kp.narrate(messages):
-        full_response += token
-        yield _make_chunk("narration", token, actor_name="KP")
+    result = ["", "", []]
+    async for chunk in _stream_narration_filtered(
+        kp, messages, result, npcs=module.npcs,
+    ):
+        yield chunk
 
-    session_service.add_event(
-        db, session_id, "narration", full_response, actor_name="KP",
-    )
+    narration = result[0].rstrip()
+    if narration:
+        session_service.add_event(
+            db, session_id, "narration", narration, actor_name="KP",
+        )
+    for npc_name, dialogue_text in result[2]:
+        session_service.add_event(
+            db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
+        )
 
     async for chunk in _process_commands(
-        db, session_id, full_response, module, player_char, game_session, llm
+        db, session_id, result[1], module, player_char, game_session, llm
     ):
         yield chunk
 
@@ -116,14 +363,26 @@ async def handle_opening(
     kp = KPAgent(llm)
     messages = build_kp_context(game_session, module, player_char, [])
 
-    full_response = ""
-    async for token in kp.narrate(messages):
-        full_response += token
-        yield _make_chunk("narration", token, actor_name="KP")
+    result = ["", "", []]
+    async for chunk in _stream_narration_filtered(
+        kp, messages, result, npcs=module.npcs,
+    ):
+        yield chunk
 
-    session_service.add_event(
-        db, session_id, "narration", full_response, actor_name="KP",
-    )
+    narration = result[0].rstrip()
+    if narration:
+        session_service.add_event(
+            db, session_id, "narration", narration, actor_name="KP",
+        )
+    for npc_name, dialogue_text in result[2]:
+        session_service.add_event(
+            db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
+        )
+
+    async for chunk in _process_commands(
+        db, session_id, result[1], module, player_char, game_session, llm
+    ):
+        yield chunk
 
     yield _make_chunk("done")
 
@@ -180,14 +439,21 @@ async def _process_commands(
         messages.append({"role": "user", "content": continuation_prompt})
 
         kp = KPAgent(llm)
-        continuation = ""
-        async for token in kp.narrate(messages):
-            continuation += token
-            yield _make_chunk("narration", token, actor_name="KP")
+        cont_result = ["", "", []]
+        async for chunk in _stream_narration_filtered(
+            kp, messages, cont_result, npcs=module.npcs,
+        ):
+            yield chunk
 
-        session_service.add_event(
-            db, session_id, "narration", continuation, actor_name="KP",
-        )
+        cont_narration = cont_result[0].rstrip()
+        if cont_narration:
+            session_service.add_event(
+                db, session_id, "narration", cont_narration, actor_name="KP",
+            )
+        for npc_name, dialogue_text in cont_result[2]:
+            session_service.add_event(
+                db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
+            )
 
     for match in SCENE_CHANGE_RE.finditer(kp_text):
         new_scene_id = match.group(1).strip()

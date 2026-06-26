@@ -27,7 +27,7 @@ def create_character(db: Session, data: dict) -> Character:
 
     character = Character(
         name=data["name"],
-        module_id=data["module_id"],
+        module_id=data.get("module_id"),
         rule_system=rule_system,
         is_player=data.get("is_player", True),
         base_attributes=computed["base_attributes"],
@@ -50,6 +50,15 @@ def list_characters(db: Session, module_id: str | None = None) -> list[Character
     if module_id:
         q = q.filter(Character.module_id == module_id)
     return q.order_by(Character.created_at.desc()).all()
+
+
+def delete_character(db: Session, character_id: str) -> bool:
+    char = db.get(Character, character_id)
+    if not char:
+        return False
+    db.delete(char)
+    db.commit()
+    return True
 
 
 def update_character(db: Session, character_id: str, updates: dict) -> Character | None:

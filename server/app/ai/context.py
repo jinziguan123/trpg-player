@@ -57,24 +57,37 @@ def _format_player_info(char: Character) -> str:
     return "\n".join(lines)
 
 
-def _events_to_messages(events: list[EventLog]) -> list[dict]:
-    messages = []
+def _events_to_messages(
+    events: list[EventLog], player_char_id: str | None = None,
+) -> list[dict]:
+    raw: list[dict] = []
     for ev in events:
         if ev.event_type == "system":
             continue
         if ev.event_type in ("narration", "dice"):
-            messages.append({"role": "assistant", "content": ev.content})
+            raw.append({"role": "assistant", "content": ev.content})
         elif ev.event_type == "dialogue":
-            if ev.actor_name and ev.actor_name != "玩家":
-                messages.append({
-                    "role": "assistant",
-                    "content": f"[{ev.actor_name}] {ev.content}",
-                })
+            is_player = (
+                player_char_id and ev.actor_id == player_char_id
+            )
+            if is_player:
+                raw.append({"role": "user", "content": ev.content})
+            elif ev.actor_name:
+                raw.append({"role": "assistant", "content": ev.actor_name + "：“" + ev.content + "”"})
             else:
-                messages.append({"role": "user", "content": ev.content})
+                raw.append({"role": "user", "content": ev.content})
         elif ev.event_type == "action":
-            messages.append({"role": "user", "content": f"[行动] {ev.content}"})
-    return messages
+            raw.append({"role": "user", "content": "[行动] " + ev.content})
+    merged: list[dict] = []
+    for msg in raw:
+        if merged and merged[-1]["role"] == msg["role"]:
+            merged[-1] = {
+                **merged[-1],
+                "content": merged[-1]["content"] + "\n" + msg["content"],
+            }
+        else:
+            merged.append(msg)
+    return merged
 
 
 def build_kp_context(
@@ -108,9 +121,20 @@ def build_kp_context(
             if older_summary:
                 messages.append({
                     "role": "system",
-                    "content": f"[之前发生的事件摘要]\n{older_summary}",
+                    "content": "[之前发生的事件摘要]\n" + older_summary,
                 })
-        messages.extend(_events_to_messages(recent))
+        messages.extend(_events_to_messages(
+            recent, player_char_id=player_char.id,
+        ))
+        if len(messages) >= 3 and messages[-1]["role"] == "user":
+            messages.insert(-1, {
+                "role": "system",
+                "content": (
+                    "[格式提醒] NPC说话时必须写出台词原文，"
+                    "用中文双引号（“”）包裹。"
+                    "不要只描述NPC的声音、语气或动作而省略实际台词内容。"
+                ),
+            })
 
     return messages
 
@@ -140,12 +164,13 @@ def build_npc_context(
     ]
 
     messages = [{"role": "system", "content": system_content}]
-    messages.extend(_events_to_messages(visible_events[-20:]))
+    player_cid = session.player_character_id
+    messages.extend(_events_to_messages(visible_events[-20:], player_char_id=player_cid))
 
     if trigger_context:
         messages.append({
             "role": "user",
-            "content": f"[场景] {trigger_context}\n请以你的角色身份回应。",
+            "content": "[场景] " + trigger_context + "\n请以你的角色身份回应。",
         })
 
     return messages

@@ -1,5 +1,5 @@
-import { useState } from 'react'
 import { RadarChart } from './RadarChart'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 
 interface CharacterData {
   id: string
@@ -23,8 +23,7 @@ const ATTR_LABELS: Record<string, string> = {
 const RADAR_KEYS = ['STR', 'DEX', 'POW', 'CON', 'APP', 'EDU', 'SIZ', 'INT', 'LUK']
 const RADAR_LABELS = ['力量', '敏捷', '意志', '体质', '外貌', '教育', '体型', '智力', '幸运']
 
-const TABS = ['基本信息', '技能', '道具'] as const
-type Tab = (typeof TABS)[number]
+const TAB_KEYS = ['基本信息', '技能', '道具'] as const
 
 function StatBar({ label, current, max }: { label: string; current: number; max: number }) {
   const pct = max > 0 ? (current / max) * 100 : 0
@@ -148,32 +147,22 @@ function InventoryTab() {
 }
 
 export function CharacterPanel({ character }: CharacterPanelProps) {
-  const [tab, setTab] = useState<Tab>('基本信息')
-
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex border-b" style={{ borderColor: 'var(--color-border)' }}>
-        {TABS.map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className="flex-1 py-2 text-xs text-center transition-colors"
-            style={{
-              color: tab === t ? 'var(--color-text-accent)' : 'var(--color-text-secondary)',
-              borderBottom: tab === t ? '2px solid var(--color-accent)' : '2px solid transparent',
-              fontWeight: tab === t ? 600 : 400,
-            }}
-          >
-            {t}
-          </button>
+    <Tabs defaultValue="基本信息" className="flex flex-col h-full">
+      <TabsList>
+        {TAB_KEYS.map((t) => (
+          <TabsTrigger key={t} value={t}>{t}</TabsTrigger>
         ))}
-      </div>
-
-      <div className="flex-1 overflow-auto p-3">
-        {tab === '基本信息' && <BasicInfoTab character={character} />}
-        {tab === '技能' && <SkillsTab character={character} />}
-        {tab === '道具' && <InventoryTab />}
-      </div>
-    </div>
+      </TabsList>
+      <TabsContent value="基本信息">
+        <BasicInfoTab character={character} />
+      </TabsContent>
+      <TabsContent value="技能">
+        <SkillsTab character={character} />
+      </TabsContent>
+      <TabsContent value="道具">
+        <InventoryTab />
+      </TabsContent>
+    </Tabs>
   )
 }

@@ -1,6 +1,5 @@
-@import "tailwindcss";
-
 @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap');
+@import "tailwindcss";
 
 :root {
   --color-bg-primary: #f0e6d3;
@@ -272,6 +271,14 @@ body {
   letter-spacing: 0.03em;
 }
 
+.chat-actor-player {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-bottom: 0.2rem;
+  text-align: right;
+}
+
 .chat-player {
   display: flex;
   justify-content: flex-end;
@@ -288,6 +295,17 @@ body {
   box-shadow: 1px 1px 3px rgba(90, 60, 20, 0.1);
 }
 
+.chat-bubble-npc {
+  display: inline-block;
+  max-width: 80%;
+  padding: 0.5rem 0.85rem;
+  background: rgba(255, 255, 255, 0.35);
+  border: 1px solid var(--color-border);
+  border-radius: 4px 4px 4px 0;
+  line-height: 1.6;
+  box-shadow: 1px 1px 3px rgba(90, 60, 20, 0.06);
+}
+
 .chat-loading {
   padding: 0.5rem 0;
   color: var(--color-text-secondary);
@@ -297,6 +315,7 @@ body {
 
 .chat-input-bar {
   display: flex;
+  align-items: flex-end;
   gap: 0.5rem;
   padding-top: 0.75rem;
   border-top: 1px solid var(--color-border);

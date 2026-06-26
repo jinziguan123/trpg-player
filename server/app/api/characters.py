@@ -1,8 +1,12 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.module import Module
+from app.models.session import GameSession
 from app.schemas.character import (
     CharacterCreate,
     CharacterRead,
@@ -59,6 +63,46 @@ def calc_skill_points(rule_system: str, data: SkillPointsRequest):
     }
 
 
+class EvaluateRequest(BaseModel):
+    module_id: str
+    name: str
+    occupation: str = ""
+    backstory: str = ""
+
+
+@router.post("/characters/evaluate")
+async def evaluate_character(data: EvaluateRequest, db: Session = Depends(get_db)):
+    module = db.get(Module, data.module_id)
+    if not module:
+        raise HTTPException(404, "模组不存在")
+
+    era = (module.world_setting or {}).get("era", "未知")
+    era_tag = (module.world_setting or {}).get("era", "")
+
+    from app.ai.deepseek import get_llm
+    llm = get_llm()
+    prompt = (
+        f"你是一个 TRPG 角色审核专家。请评估以下角色是否适合参与指定的模组。\n\n"
+        f"模组信息：\n- 标题：{module.title}\n- 年代：{era_tag or era}\n"
+        f"- 描述：{module.description}\n\n"
+        f"角色信息：\n- 名字：{data.name}\n- 职业：{data.occupation or '未知'}\n"
+        f"- 背景故事：{data.backstory or '无'}\n\n"
+        f"请检查：\n"
+        f"1. 角色的职业和背景是否符合模组的时代背景（例如1920s不应有现代科技产物）\n"
+        f"2. 背景中提到的物品、装备是否在该时代合理\n"
+        f"3. 角色概念是否与模组基调匹配\n\n"
+        f'以 JSON 格式返回：\n{{"compatible": true或false, "warnings": ["不合理之处"], "suggestions": ["建议"]}}\n'
+        f"如果没有问题，warnings 和 suggestions 为空数组。"
+    )
+    result = await llm.complete(
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.3,
+        max_tokens=1024,
+    )
+    return json.loads(result)
+
+
 @router.post("/characters/roll-attributes", response_model=RollAttributesResponse)
 def roll_attributes(rule_system: str = "coc", count: int = 3):
     try:
@@ -78,8 +122,21 @@ def create_character(data: CharacterCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/characters", response_model=list[CharacterRead])
-def list_characters(module_id: str | None = None, db: Session = Depends(get_db)):
-    return character_service.list_characters(db, module_id)
+def list_characters(
+    module_id: str | None = None,
+    available: bool = False,
+    db: Session = Depends(get_db),
+):
+    chars = character_service.list_characters(db, module_id)
+    if available:
+        active_char_ids = {
+            s.player_character_id
+            for s in db.query(GameSession).filter(
+                GameSession.status.in_(["active", "paused"])
+            ).all()
+        }
+        chars = [c for c in chars if c.id not in active_char_ids]
+    return chars
 
 
 @router.get("/characters/{character_id}", response_model=CharacterRead)
@@ -88,6 +145,13 @@ def get_character(character_id: str, db: Session = Depends(get_db)):
     if not char:
         raise HTTPException(404, "角色不存在")
     return char
+
+
+@router.delete("/characters/{character_id}")
+def delete_character(character_id: str, db: Session = Depends(get_db)):
+    if not character_service.delete_character(db, character_id):
+        raise HTTPException(404, "角色不存在")
+    return {"ok": True}
 
 
 @router.put("/characters/{character_id}", response_model=CharacterRead)

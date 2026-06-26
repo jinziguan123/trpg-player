@@ -77,6 +77,13 @@ def get_events(
     return session_service.get_session_events(db, session_id, limit, offset)
 
 
+@router.delete("/{session_id}")
+def delete_session(session_id: str, db: Session = Depends(get_db)):
+    if not session_service.delete_session(db, session_id):
+        raise HTTPException(404, "会话不存在")
+    return {"ok": True}
+
+
 @router.post("/{session_id}/opening")
 async def trigger_opening(session_id: str, db: Session = Depends(get_db)):
     return StreamingResponse(

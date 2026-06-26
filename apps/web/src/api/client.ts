@@ -23,6 +23,7 @@ export const api = {
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
   put: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
+  delete: <T = void>(path: string) => request<T>(path, { method: 'DELETE' }),
 }
 
 export async function* streamSSE(path: string, body?: unknown) {

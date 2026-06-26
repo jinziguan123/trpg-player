@@ -34,6 +34,7 @@ interface SessionStore {
   startStreamMessage: (type: string, actorName?: string) => string
   appendToStream: (content: string) => void
   endStream: () => void
+  replaceLastNarration: (content: string) => void
   clearMessages: () => void
   loadHistory: (sessionId: string) => Promise<void>
 }
@@ -90,23 +91,38 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   endStream: () => set({ streamingMsgId: null }),
 
+  replaceLastNarration: (content: string) =>
+    set((s) => {
+      const msgs = [...s.messages]
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].type === 'narration') {
+          msgs[i] = { ...msgs[i], content }
+          break
+        }
+      }
+      return { messages: msgs }
+    }),
+
   clearMessages: () => set({ messages: [], streamingMsgId: null }),
 
   loadHistory: async (sessionId) => {
     const events = await api.get<Array<{
       id: string
       event_type: string
+      actor_id: string | null
       actor_name: string
       content: string
       metadata_: Record<string, unknown>
     }>>(`/sessions/${sessionId}/events`)
 
+    const state = get()
+    const playerCharId = state.currentSession?.player_character_id
     const messages: ChatMessage[] = events.map((e) => ({
       id: e.id,
       type: e.event_type,
       content: e.content,
       actor_name: e.actor_name,
-      metadata: e.metadata_,
+      metadata: { ...e.metadata_, is_player: !!(playerCharId && e.actor_id === playerCharId) },
     }))
     set({ messages })
   },
