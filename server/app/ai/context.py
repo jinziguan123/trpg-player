@@ -84,17 +84,24 @@ def _compact_npcs(
     npcs: list[dict] | None,
     only_scene_id: str | None = None,
     hide_secrets: bool = False,
+    visible_scene_ids: set[str] | None = None,
 ) -> str:
     """压缩 NPC 列表。
 
     ``only_scene_id`` 给定时（开场用）只保留 initial_location 命中起始场景的 NPC，
     把藏在深处的 NPC（如墓室里的尸体）挡在开场之外；``hide_secrets`` 剥掉 secrets。
+
+    ``visible_scene_ids`` 给定时（运行时分层用）只保留 initial_location ∈ 已访问场景、
+    或没有固定位置的 NPC，避免把玩家尚未到达区域的 NPC 提前喂给 KP。
     """
     if not npcs:
         return "无"
     result = []
     for n in npcs:
-        if only_scene_id is not None and n.get("initial_location") != only_scene_id:
+        loc = n.get("initial_location")
+        if only_scene_id is not None and loc != only_scene_id:
+            continue
+        if visible_scene_ids is not None and loc and loc not in visible_scene_ids:
             continue
         item = {
             "id": n.get("id", ""),
@@ -108,18 +115,29 @@ def _compact_npcs(
     return json.dumps(result, ensure_ascii=False, separators=(",", ":")) if result else "无"
 
 
-def _compact_clues(clues: list[dict] | None) -> str:
+def _compact_clues(
+    clues: list[dict] | None,
+    visible_scene_ids: set[str] | None = None,
+) -> str:
+    """压缩线索列表。
+
+    ``visible_scene_ids`` 给定时（运行时分层用）只保留 location ∈ 已访问场景、或没有
+    绑定场景的线索，避免把玩家尚未到达区域的线索提前喂给 KP（防中途泄露）。
+    """
     if not clues:
         return "无"
     result = []
     for c in clues:
+        loc = c.get("location")
+        if visible_scene_ids is not None and loc and loc not in visible_scene_ids:
+            continue
         result.append({
             "id": c.get("id", ""),
             "name": c.get("name", ""),
             "description": (c.get("description") or "")[:80],
             "location": c.get("location", ""),
         })
-    return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(result, ensure_ascii=False, separators=(",", ":")) if result else "无"
 
 
 def _format_player_info(char: Character) -> str:
@@ -259,8 +277,13 @@ def build_kp_context(
         )
         clues_info = "（线索是 KP 专属资料，开场绝不涉及；只能在玩家实际调查发现时才出现）"
     else:
-        npcs_info = _compact_npcs(module.npcs)
-        clues_info = _compact_clues(module.clues)
+        # 运行时分层：只把玩家已到达区域的 NPC / 线索喂给 KP，减少中途泄露未抵达
+        # 区域的内容。无固定位置的 NPC / 线索照常给。
+        visible_scene_ids = set((session.world_state or {}).get("visited_scenes") or [])
+        if session.current_scene_id:
+            visible_scene_ids.add(session.current_scene_id)
+        npcs_info = _compact_npcs(module.npcs, visible_scene_ids=visible_scene_ids)
+        clues_info = _compact_clues(module.clues, visible_scene_ids=visible_scene_ids)
 
     system_content = KP_SYSTEM_PROMPT.format(
         rule_system=module.rule_system.upper(),

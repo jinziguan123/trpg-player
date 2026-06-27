@@ -190,9 +190,18 @@ def test_opening_context_hides_discoverables(db_factory):
 
     ev = EventLog(session_id=session.id, sequence_num=1, event_type="narration",
                   content="开场已生成", actor_name="KP")
+    # 游戏中：尚未访问 side_chamber，深处 NPC / 线索仍不进入 KP 上下文（1-C 分层）
     sys_play = ctx.build_kp_context(session, module, hero, [ev])[0]["content"]
-    assert "萨沙·卡纳" in sys_play          # 游戏中恢复完整 NPC 资料
-    assert "密道坐标" in sys_play           # 游戏中给线索
+    assert "老向导" in sys_play             # 已访问的起始场景 NPC 在场
+    assert "萨沙·卡纳" not in sys_play       # 未到达区域的 NPC 仍不泄露
+    assert "密道坐标" not in sys_play        # 未到达区域的线索仍不泄露
+
+    # 玩家探索到 side_chamber 后，该区域的 NPC / 线索才进入 KP 上下文
+    session.current_scene_id = "side_chamber"
+    session.world_state = {"visited_scenes": ["entrance", "side_chamber"]}
+    sys_deep = ctx.build_kp_context(session, module, hero, [ev])[0]["content"]
+    assert "萨沙·卡纳" in sys_deep
+    assert "密道坐标" in sys_deep
 
 
 def test_player_brief_used_as_opening_hook(db_factory):
