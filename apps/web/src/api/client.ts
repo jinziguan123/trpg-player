@@ -59,8 +59,8 @@ export async function* streamSSE(path: string, body?: unknown) {
   yield* parseSSEStream(res)
 }
 
-export async function* connectSSE(path: string) {
-  const res = await fetch(`${BASE}${path}`)
+export async function* connectSSE(path: string, signal?: AbortSignal) {
+  const res = await fetch(`${BASE}${path}`, { signal })
   if (res.status === 204 || !res.body) return
   if (!res.ok) throw new Error(`SSE error: ${res.status}`)
   yield* parseSSEStream(res)

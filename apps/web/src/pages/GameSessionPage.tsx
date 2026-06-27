@@ -2,7 +2,8 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { api, streamSSE, connectSSE } from '../api/client'
+import { toast } from 'sonner'
+import { api, connectSSE } from '../api/client'
 import { useSessionStore } from '../stores/sessionStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { PartyRoster } from '../components/game/PartyRoster'
@@ -34,8 +35,14 @@ interface Character {
   status: string
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type ChunkIterator = AsyncGenerator<any, void, unknown>
+interface ChunkPayload {
+  type: string
+  content?: string
+  actor_name?: string
+  actor_id?: string
+  id?: string
+  metadata?: Record<string, unknown>
+}
 
 export function GameSessionPage() {
   const { sessionId } = useParams<{ sessionId: string }>()
@@ -47,7 +54,7 @@ export function GameSessionPage() {
     setCurrentSession, loadHistory, loadOlderEvents,
     hasMoreHistory, loadingOlder,
     startStreamMessage, appendToStream, endStream,
-    replaceLastNarration, fetchSessions, sessions,
+    fetchSessions, sessions,
   } = useSessionStore()
 
   const [panelChar, setPanelChar] = useState<Character | null>(null)
@@ -57,85 +64,98 @@ export function GameSessionPage() {
 
   const primaryId = currentSession?.player_character_id ?? null
   const shownCharId = panelCharId ?? primaryId
-  const primaryName =
-    currentSession?.participants?.find((p) => p.is_primary)?.character_name || '玩家'
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const openingTriggered = useRef(false)
-  const initedSessionId = useRef<string | null>(null)
   const composingRef = useRef(false)
 
-  const consumeStream = useCallback(async (iter: ChunkIterator) => {
-    setStreaming(true)
-    let currentType = ''
-    try {
-      for await (const chunk of iter) {
-        if (chunk.type === 'done') break
-        if (chunk.type === 'narration_replace') {
-          endStream()
-          replaceLastNarration(stripCommandTags(chunk.content))
-          currentType = ''
-          continue
-        }
-        if (chunk.type === 'dice' || chunk.type === 'system' || chunk.type === 'npc_dialogue') {
-          endStream()
-          const msgType = chunk.type === 'npc_dialogue' ? 'dialogue' : chunk.type
-          addMessage({ id: '', type: msgType, content: chunk.content, actor_name: chunk.actor_name, metadata: chunk.metadata })
-          currentType = ''
-          continue
-        }
-        if (chunk.type !== currentType) {
-          endStream()
-          startStreamMessage(chunk.type, chunk.actor_name)
-          currentType = chunk.type
-        }
-        appendToStream(chunk.content)
-      }
-      endStream()
-    } finally {
-      setStreaming(false)
-      // 生成结束后刷新当前面板角色（玩家行动可能改了 HP/SAN 等）
-      setRefreshTick((t) => t + 1)
+  const seenIds = useRef<Set<string>>(new Set())
+  const liveTypeRef = useRef<string>('')
+  const primaryIdRef = useRef<string | null>(null)
+  useEffect(() => { primaryIdRef.current = primaryId }, [primaryId])
+
+  // 处理一条房间实时事件（/live）。离散事件按 id 去重；叙述 token 流式拼接。
+  const handleLiveChunk = useCallback((chunk: ChunkPayload) => {
+    const t = chunk.type
+    if (t === 'ready' || t === 'replay_done') return
+    if (t === 'generating') { setStreaming(true); return }
+    if (t === 'done') {
+      endStream(); liveTypeRef.current = ''
+      setStreaming(false); setRefreshTick((x) => x + 1)
+      return
     }
-  }, [addMessage, appendToStream, endStream, replaceLastNarration, startStreamMessage])
+    if (t === 'narration') {
+      if (liveTypeRef.current !== 'narration') {
+        endStream(); startStreamMessage('narration', 'KP'); liveTypeRef.current = 'narration'
+      }
+      appendToStream(chunk.content || '')
+      return
+    }
+    // 以下为离散事件：按 id 去重（与历史/重连对齐）
+    if (chunk.id) {
+      if (seenIds.current.has(chunk.id)) return
+      seenIds.current.add(chunk.id)
+    }
+    endStream(); liveTypeRef.current = ''
+    const isPlayer = !!(primaryIdRef.current && chunk.actor_id === primaryIdRef.current)
+    if (t === 'dialogue' || t === 'npc_dialogue') {
+      addMessage({ id: chunk.id || '', type: 'dialogue', content: chunk.content || '', actor_name: chunk.actor_name, metadata: { ...(chunk.metadata || {}), is_player: isPlayer } })
+    } else if (t === 'action') {
+      addMessage({ id: chunk.id || '', type: 'action', content: chunk.content || '', actor_name: chunk.actor_name, metadata: { ...(chunk.metadata || {}), is_player: isPlayer } })
+    } else if (t === 'narration_full') {
+      addMessage({ id: chunk.id || '', type: 'narration', content: chunk.content || '', actor_name: 'KP' })
+    } else if (t === 'dice' || t === 'system' || t === 'ooc') {
+      addMessage({ id: chunk.id || '', type: t, content: chunk.content || '', actor_name: chunk.actor_name, metadata: chunk.metadata })
+    }
+  }, [addMessage, appendToStream, endStream, startStreamMessage])
 
   useEffect(() => {
     if (!sessionId) return
-    // 用 sessionId 作为守卫键：同一 session 只初始化一次。
-    // 关键是不在 cleanup 中重置它——React Strict Mode 的 mount→unmount→mount
-    // 会复用同一组件实例（ref 保持），第二次 mount 因守卫命中而跳过，
-    // 避免 opening 被同时直连 + 订阅造成内容重复。真正离开路由时组件实例
-    // 销毁、ref 归零，下次进入自然重新加载。
-    if (initedSessionId.current === sessionId) return
-    initedSessionId.current = sessionId
-    clearMessages()
+    const ac = new AbortController()
+    let cancelled = false
+    seenIds.current = new Set()
+    liveTypeRef.current = ''
     const init = async () => {
+      clearMessages()
       let list = useSessionStore.getState().sessions
       if (list.length === 0) {
         await fetchSessions()
         list = useSessionStore.getState().sessions
       }
       const session = list.find((s) => s.id === sessionId)
-      if (!session) {
-        navigate('/game', { replace: true })
-        return
-      }
+      if (!session) { navigate('/game', { replace: true }); return }
+      if (cancelled) return
       setCurrentSession(session)
+
+      // 历史 + 分页沿用 /events；先拉历史并把已知 id 种入去重集
+      await loadHistory(sessionId)
+      if (cancelled) return
+      for (const m of useSessionStore.getState().messages) if (m.id) seenIds.current.add(m.id)
+
+      // 后台常驻消费 /live（实时增量），不 await 便于随后触发 opening；
+      // 开连接与触发生成之间的微竞态由服务端 in-flight buffer 兜底重放。
+      void (async () => {
+        try {
+          for await (const chunk of connectSSE(`/sessions/${sessionId}/live`, ac.signal)) {
+            if (cancelled) break
+            handleLiveChunk(chunk as ChunkPayload)
+          }
+        } catch { /* aborted or closed */ }
+      })()
 
       if (isNew && !openingTriggered.current) {
         openingTriggered.current = true
-        await consumeStream(streamSSE(`/sessions/${sessionId}/opening`))
+        setStreaming(true)
+        api.post(`/sessions/${sessionId}/opening`).catch(() => {})
       } else {
-        await loadHistory(sessionId)
         const { generating } = await api.get<{ generating: boolean }>(`/sessions/${sessionId}/generating`)
-        if (generating) {
-          await consumeStream(connectSSE(`/sessions/${sessionId}/stream`))
-        }
+        if (!cancelled && generating) setStreaming(true)
       }
     }
     init()
+    return () => { cancelled = true; ac.abort() }
   }, [sessionId])
 
   useEffect(() => {
@@ -178,22 +198,21 @@ export function GameSessionPage() {
     setInput('')
     if (inputRef.current) inputRef.current.style.height = 'auto'
 
-    const { inChar, ooc } = splitOOC(text)
-    if (!inChar) {
-      // 纯 OOC（场外）：只在房间内广播 + 入库，不发给 KP、不触发生成
-      addMessage({ id: '', type: 'ooc', content: ooc || text, actor_name: primaryName, metadata: { is_player: true } })
-      try {
+    // fire-and-forget：不做本地乐观回显，自己的消息同样经 /live 广播回来渲染，
+    // 保证与其他成员看到的内容/顺序一致。
+    const { inChar } = splitOOC(text)
+    try {
+      if (!inChar) {
         await api.post(`/sessions/${currentSession.id}/ooc`, { content: text })
-      } catch { /* 广播失败不阻塞 */ }
-      return
+      } else {
+        setStreaming(true)
+        await api.post(`/sessions/${currentSession.id}/chat`, { content: text })
+      }
+    } catch (e: unknown) {
+      setStreaming(false)
+      const msg = e instanceof Error ? e.message : '发送失败'
+      toast.error(msg)
     }
-
-    // 正式行动：括号外发给 KP，括号内作为场外旁注单独展示
-    addMessage({ id: '', type: 'dialogue', content: inChar, actor_name: primaryName, metadata: { is_player: true } })
-    if (ooc) {
-      addMessage({ id: '', type: 'ooc', content: ooc, actor_name: primaryName, metadata: { is_player: true } })
-    }
-    await consumeStream(streamSSE(`/sessions/${currentSession.id}/chat`, { content: text }))
   }
 
   if (!currentSession) {

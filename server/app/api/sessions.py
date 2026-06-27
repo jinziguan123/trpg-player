@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -8,8 +8,9 @@ from app.models.module import Module
 from app.schemas.event import EventRead
 from app.schemas.session import SessionCreate, SessionRead, SessionStatusUpdate
 from app.services import session_service
-from app.services.chat_service import run_opening_generation
-from app.services.generation_manager import generation_manager, stream_from_queue
+from app.services.chat_service import _make_chunk, run_opening_generation
+from app.services.generation_manager import generation_manager
+from app.services.room_hub import room_hub, stream_room
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -134,19 +135,16 @@ def delete_session(session_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{session_id}/opening")
 async def trigger_opening(session_id: str, db: Session = Depends(get_db)):
+    """fire-and-forget 触发开场生成；输出经 /live 下发。幂等由生成逻辑保证。"""
     game_session = session_service.get_session(db, session_id)
     if not game_session:
         raise HTTPException(404, "会话不存在")
     if generation_manager.is_generating(session_id):
-        raise HTTPException(409, "正在生成中")
+        return {"ok": True, "already_generating": True}
 
-    q = generation_manager.start(session_id, run_opening_generation(session_id))
-
-    return StreamingResponse(
-        stream_from_queue(session_id, q),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    room_hub.broadcast(session_id, _make_chunk("generating"))
+    generation_manager.start(session_id, run_opening_generation(session_id))
+    return {"ok": True}
 
 
 @router.get("/{session_id}/generating")
@@ -154,15 +152,36 @@ async def check_generating(session_id: str):
     return {"generating": generation_manager.is_generating(session_id)}
 
 
-@router.get("/{session_id}/stream")
-async def subscribe_stream(session_id: str):
-    if not generation_manager.is_generating(session_id):
-        return Response(status_code=204)
+@router.get("/{session_id}/live")
+async def live(session_id: str):
+    """房间级常驻 SSE（仅实时增量）：所有成员订阅，跨多次生成存活。
 
-    q = generation_manager.subscribe(session_id)
+    历史与重连对齐沿用 ``GET /events``（保留 seq 分页）；本端点只负责实时广播：
+    玩家行动、KP 叙事 token、检定、OOC、入座/在场等。客户端先开本连接、再拉历史，
+    按事件 id 去重，避免开连接与拉历史之间的竞态丢事件。
+    """
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        if not session_service.get_session(db, session_id):
+            raise HTTPException(404, "会话不存在")
+    finally:
+        db.close()
+
+    # subscribe 会把当前生成的 in-flight buffer 立即重放给中途接入者
+    q = room_hub.subscribe(session_id)
+    generating = generation_manager.is_generating(session_id)
+
+    async def gen():
+        yield _make_chunk("ready")
+        if generating:
+            yield _make_chunk("generating")
+        async for chunk in stream_room(session_id, q):
+            yield chunk
 
     return StreamingResponse(
-        stream_from_queue(session_id, q),
+        gen(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

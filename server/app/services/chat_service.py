@@ -19,6 +19,7 @@ from app.models.module import Module
 from app.models.session import GameSession
 from app.rules.registry import get_engine
 from app.services import session_service
+from app.services.room_hub import room_hub
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +62,34 @@ def _make_chunk(
     content: str = "",
     actor_name: str | None = None,
     metadata: dict | None = None,
+    event_id: str | None = None,
+    actor_id: str | None = None,
 ) -> str:
-    data = {"type": chunk_type, "content": content}
+    data: dict = {"type": chunk_type, "content": content}
     if actor_name:
         data["actor_name"] = actor_name
     if metadata:
         data["metadata"] = metadata
+    # 持久离散事件携带 id/actor_id：供 /live 重连时按 id 去重、判定行动者归属
+    if event_id:
+        data["id"] = event_id
+    if actor_id:
+        data["actor_id"] = actor_id
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def event_to_chunk(ev) -> str:
+    """把一条持久 EventLog 序列化为 /live 重放用的 chunk。"""
+    type_map = {"dialogue": "dialogue", "action": "action", "dice": "dice",
+                "narration": "narration_full", "system": "system", "ooc": "ooc"}
+    return _make_chunk(
+        type_map.get(ev.event_type, ev.event_type),
+        ev.content,
+        actor_name=ev.actor_name or None,
+        metadata=ev.metadata_ or None,
+        event_id=ev.id,
+        actor_id=ev.actor_id,
+    )
 
 
 async def _stream_narration_filtered(
@@ -378,13 +400,16 @@ async def _run_team_turn(
         if action == "silent" or not content:
             continue
         event_type = TEAM_ACTION_EVENT[action]
-        session_service.add_event(
+        ev = session_service.add_event(
             db, session_id, event_type, content,
             actor_id=teammate.id, actor_name=teammate.name,
         )
         # speak 用 npc_dialogue 走前端气泡渲染；act/assist 走通用 action 渲染
         chunk_type = "npc_dialogue" if event_type == "dialogue" else "action"
-        yield _make_chunk(chunk_type, content, actor_name=teammate.name)
+        yield _make_chunk(
+            chunk_type, content, actor_name=teammate.name,
+            event_id=ev.id, actor_id=teammate.id,
+        )
 
 
 def _persist_narration(db: Session, session_id: str, result: list) -> None:
@@ -408,8 +433,6 @@ async def _run_generation(
     events: list,
     teammates: list[Character] | None = None,
 ) -> None:
-    from app.services.generation_manager import generation_manager
-
     llm = get_llm()
     kp = KPAgent(llm)
     messages = build_kp_context(
@@ -423,7 +446,7 @@ async def _run_generation(
         async for chunk in _stream_narration_filtered(
             kp, messages, result, npcs=module.npcs,
         ):
-            generation_manager.publish(session_id, chunk)
+            room_hub.broadcast(session_id, chunk)
     except asyncio.CancelledError:
         _persist_narration(db, session_id, result)
         raise
@@ -433,14 +456,13 @@ async def _run_generation(
         db, session_id, result[1], module, player_char, game_session, llm,
         teammates=teammates,
     ):
-        generation_manager.publish(session_id, chunk)
+        room_hub.broadcast(session_id, chunk)
 
-    generation_manager.publish(session_id, _make_chunk("done"))
+    room_hub.broadcast(session_id, _make_chunk("done"))
 
 
 async def run_chat_generation(session_id: str) -> None:
     from app.database import SessionLocal
-    from app.services.generation_manager import generation_manager
 
     db = SessionLocal()
     try:
@@ -455,7 +477,7 @@ async def run_chat_generation(session_id: str) -> None:
             async for chunk in _run_team_turn(
                 db, session_id, game_session, module, player_char, teammates, llm,
             ):
-                generation_manager.publish(session_id, chunk)
+                room_hub.broadcast(session_id, chunk)
 
         events = session_service.get_session_events(db, session_id)
         await _run_generation(
@@ -466,14 +488,14 @@ async def run_chat_generation(session_id: str) -> None:
         logger.info("生成被取消: session=%s", session_id)
     except Exception:
         logger.exception("生成失败: session=%s", session_id)
-        generation_manager.publish(session_id, _make_chunk("system", "生成出错，请重试"))
+        room_hub.broadcast(session_id, _make_chunk("system", "生成出错，请重试"))
+        room_hub.broadcast(session_id, _make_chunk("done"))
     finally:
         db.close()
 
 
 async def run_opening_generation(session_id: str) -> None:
     from app.database import SessionLocal
-    from app.services.generation_manager import generation_manager
 
     db = SessionLocal()
     try:
@@ -481,7 +503,7 @@ async def run_opening_generation(session_id: str) -> None:
         # 幂等：已有事件（开局已生成）则不重复生成，只收尾，防止重复开场。
         existing = session_service.get_session_events(db, session_id, limit=1)
         if existing:
-            generation_manager.publish(session_id, _make_chunk("done"))
+            room_hub.broadcast(session_id, _make_chunk("done"))
             return
         module = db.get(Module, game_session.module_id)
         player_char = db.get(Character, game_session.player_character_id)
@@ -495,7 +517,8 @@ async def run_opening_generation(session_id: str) -> None:
         logger.info("开场生成被取消: session=%s", session_id)
     except Exception:
         logger.exception("开场生成失败: session=%s", session_id)
-        generation_manager.publish(session_id, _make_chunk("system", "生成出错，请重试"))
+        room_hub.broadcast(session_id, _make_chunk("system", "生成出错，请重试"))
+        room_hub.broadcast(session_id, _make_chunk("done"))
     finally:
         db.close()
 
@@ -562,11 +585,11 @@ async def _process_commands(
             "new_san": result["new_san"],
             "went_insane": result["went_insane"],
         }
-        session_service.add_event(
+        ev = session_service.add_event(
             db, session_id, "dice", dice_content,
             actor_name="系统", metadata=dice_meta,
         )
-        yield _make_chunk("dice", dice_content, metadata=dice_meta)
+        yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id)
         dice_descriptions.append(
             f"理智检定（{outcome_text}）：损失 {result['san_loss']} SAN（{result['old_san']}→{result['new_san']}）"
         )
@@ -601,11 +624,11 @@ async def _process_commands(
                 if reason:
                     hp_content += f"——{reason}"
 
-            session_service.add_event(
+            ev = session_service.add_event(
                 db, session_id, "system", hp_content,
                 actor_name="系统", metadata={"hp_change": delta, "old_hp": old_hp, "new_hp": new_hp},
             )
-            yield _make_chunk("system", hp_content)
+            yield _make_chunk("system", hp_content, event_id=ev.id)
 
     for match in DICE_CHECK_RE.finditer(kp_text):
         skill_name = match.group(1).strip()
@@ -630,11 +653,11 @@ async def _process_commands(
             "outcome": result.outcome,
         }
 
-        session_service.add_event(
+        ev = session_service.add_event(
             db, session_id, "dice", dice_content,
             actor_name="系统", metadata=dice_meta,
         )
-        yield _make_chunk("dice", dice_content, metadata=dice_meta)
+        yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id)
         dice_descriptions.append(
             f"{skill_name}（{difficulty}）：{result.description}"
         )
@@ -691,9 +714,12 @@ async def _process_commands(
         npc_agent = NPCAgent(llm, npc_id)
         npc_response = await npc_agent.respond(npc_messages)
 
-        session_service.add_event(
+        ev = session_service.add_event(
             db, session_id, "dialogue", npc_response,
             actor_id=npc_id, actor_name=npc_name,
             visibility=[npc_id, player_char.id],
         )
-        yield _make_chunk("dialogue", npc_response, actor_name=npc_name)
+        yield _make_chunk(
+            "dialogue", npc_response, actor_name=npc_name,
+            event_id=ev.id, actor_id=npc_id,
+        )

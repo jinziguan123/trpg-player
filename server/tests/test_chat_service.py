@@ -58,11 +58,11 @@ def _narrations(db_factory, session_id) -> list:
 def _patch_runtime(monkeypatch, db_factory):
     """把 chat_service 的运行期依赖换成测试可控的桩。"""
     import app.database as database
-    from app.services.generation_manager import generation_manager
+    from app.services.room_hub import room_hub
 
     monkeypatch.setattr(database, "SessionLocal", db_factory)
     monkeypatch.setattr(chat_service, "get_llm", lambda: None)
-    monkeypatch.setattr(generation_manager, "publish", lambda *a, **k: None)
+    monkeypatch.setattr(room_hub, "broadcast", lambda *a, **k: None)
 
 
 def test_generation_saves_on_interrupt(db_factory, monkeypatch):

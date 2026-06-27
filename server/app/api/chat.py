@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -7,15 +6,21 @@ from app.models.character import Character
 from app.models.session import GameSession
 from app.schemas.event import ChatRequest
 from app.services import session_service
-from app.services.chat_service import run_chat_generation, split_ooc
-from app.services.generation_manager import generation_manager, stream_from_queue
+from app.services.chat_service import (
+    _make_chunk,
+    event_to_chunk,
+    run_chat_generation,
+    split_ooc,
+)
+from app.services.generation_manager import generation_manager
+from app.services.room_hub import room_hub
 
 router = APIRouter(prefix="/api/sessions", tags=["chat"])
 
 
 @router.post("/{session_id}/ooc")
 def post_ooc(session_id: str, data: ChatRequest, db: Session = Depends(get_db)):
-    """纯 OOC（场外）消息：只入库 / 广播，不进入 KP 上下文、不触发任何生成。"""
+    """纯 OOC（场外）消息：入库并向全房间广播，不进入 KP 上下文、不触发任何生成。"""
     game_session = db.get(GameSession, session_id)
     if not game_session:
         raise HTTPException(404, "会话不存在")
@@ -29,6 +34,7 @@ def post_ooc(session_id: str, data: ChatRequest, db: Session = Depends(get_db)):
         db, session_id, "ooc", text,
         actor_id=player_char.id, actor_name=player_char.name,
     )
+    room_hub.broadcast(session_id, event_to_chunk(ev))
     return {"ok": True, "id": ev.id}
 
 
@@ -36,13 +42,14 @@ def post_ooc(session_id: str, data: ChatRequest, db: Session = Depends(get_db)):
 async def chat(
     session_id: str, data: ChatRequest, db: Session = Depends(get_db),
 ):
+    """fire-and-forget：校验 + 落库玩家行动并广播 + 触发生成；输出统一经 /live 下发。"""
     game_session = db.get(GameSession, session_id)
     if not game_session:
         raise HTTPException(404, "会话不存在")
     if game_session.status != "active":
         raise HTTPException(400, "会话未处于活跃状态")
     if generation_manager.is_generating(session_id):
-        raise HTTPException(409, "正在生成中，请等待")
+        raise HTTPException(409, "KP 正在叙事，请稍候")
 
     player_char = db.get(Character, game_session.player_character_id)
     if not player_char:
@@ -50,28 +57,26 @@ async def chat(
 
     in_character, ooc = split_ooc(data.content)
     if not in_character:
-        # 纯 OOC：不应走到这里（前端应改调 /ooc），兜底当 OOC 处理，不触发生成
-        session_service.add_event(
+        ev = session_service.add_event(
             db, session_id, "ooc", ooc or data.content.strip(),
             actor_id=player_char.id, actor_name=player_char.name,
         )
+        room_hub.broadcast(session_id, event_to_chunk(ev))
         raise HTTPException(400, "该消息为纯场外发言，请使用 OOC 通道")
 
-    # 正式行动只把括号外内容交给 KP；括号内作为独立 OOC 记录（不入 KP 上下文）
-    session_service.add_event(
+    # 正式行动：括号外交给 KP（广播给全房间）；括号内作为独立 OOC（不入 KP 上下文）
+    ev = session_service.add_event(
         db, session_id, "dialogue", in_character,
         actor_id=player_char.id, actor_name=player_char.name,
     )
+    room_hub.broadcast(session_id, event_to_chunk(ev))
     if ooc:
-        session_service.add_event(
+        ev_ooc = session_service.add_event(
             db, session_id, "ooc", ooc,
             actor_id=player_char.id, actor_name=player_char.name,
         )
+        room_hub.broadcast(session_id, event_to_chunk(ev_ooc))
 
-    q = generation_manager.start(session_id, run_chat_generation(session_id))
-
-    return StreamingResponse(
-        stream_from_queue(session_id, q),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    room_hub.broadcast(session_id, _make_chunk("generating"))
+    generation_manager.start(session_id, run_chat_generation(session_id))
+    return {"ok": True}
