@@ -25,3 +25,8 @@ dev = [
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
+
+# 只把 app 作为包打进可编辑安装；alembic/ 是迁移目录、不是要分发的包。
+# 否则 setuptools 在 app 与 alembic 两个顶层目录间无法自动判定，pip install -e . 会报错。
+[tool.setuptools.packages.find]
+include = ["app*"]
