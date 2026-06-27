@@ -7,7 +7,9 @@ app = FastAPI(title="TRPG Player", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174"],
+    # 打包客户端 / 跨机联机：客户端从任意 origin（tauri://、其它机器）连主机后端。
+    # 鉴权走 X-Player-Token 头、不用 cookie，故允许任意来源是安全的。
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

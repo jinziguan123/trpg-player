@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
-import { api } from '../api/client'
+import { api, getServerUrl, setServerUrl } from '../api/client'
 import { useSessionStore } from '../stores/sessionStore'
 import { useModuleStore } from '../stores/moduleStore'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
@@ -48,6 +48,7 @@ export function GamePage() {
   const [generatingSeat, setGeneratingSeat] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [joinCode, setJoinCode] = useState('')
+  const [hostAddr, setHostAddr] = useState(getServerUrl())
 
   const selectedModule = modules.find((m) => m.id === moduleId)
   const range = parsePlayerRange(selectedModule?.world_setting)
@@ -129,17 +130,30 @@ export function GamePage() {
     }
   }
 
-  // —— 加入房间：找到房间后进大厅（选角色/认领在大厅内完成）——
+  // —— 加入房间：先连主机（留空=本机），找到房间后进大厅 ——
   const joinRoom = async () => {
     const code = joinCode.trim().toUpperCase()
     if (!code) return
     setError('')
+    let host = hostAddr.trim()
+    if (host && !/^https?:\/\//.test(host)) host = `http://${host}`
+    if (host && !/:\d+$/.test(host)) host = `${host}:8000`
+    setServerUrl(host)  // 之后所有请求走该主机后端
     try {
       const room = await api.get<RoomInfo>(`/sessions/by-code/${code}`)
       navigate(`/room/${room.id}`)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '加入房间失败')
+      setError(e instanceof Error ? e.message : '加入房间失败（检查主机地址与房间码、确认同一局域网）')
     }
+  }
+
+  const disconnectHost = () => {
+    setServerUrl('')
+    setHostAddr('')
+    setError('')
+    fetchModules()
+    fetchSessions()
+    refreshCharacters()
   }
 
   // 主角必填；AI 席必填；留空待加入(真人)席可空
@@ -298,9 +312,22 @@ export function GamePage() {
         )}
       </div>
 
-      {/* 加入他人房间（联机）：进大厅后选角色入座 */}
+      {/* 加入他人房间（联机）：先连主机，进大厅后选角色入座 */}
       <div className="card mb-6">
         <h3 className="card-title">加入房间</h3>
+        {getServerUrl() && (
+          <div className="flex items-center gap-2 mb-2 text-xs px-2 py-1 rounded"
+            style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}>
+            <span>已连接到主机 <b style={{ color: 'var(--color-text-accent)' }}>{getServerUrl()}</b></span>
+            <button onClick={disconnectHost} className="btn-secondary !px-2 !py-0.5 ml-auto">断开（回本机）</button>
+          </div>
+        )}
+        <input
+          value={hostAddr}
+          onChange={(e) => setHostAddr(e.target.value)}
+          placeholder="主机地址（如 192.168.1.5；留空 = 本机房间）"
+          className="input w-full mb-2"
+        />
         <div className="flex gap-2">
           <input
             value={joinCode}

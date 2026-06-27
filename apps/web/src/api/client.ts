@@ -1,4 +1,20 @@
-const BASE = '/api'
+/** 主机地址：留空 = 本机后端（开发用 vite 代理 /api；打包客户端用本机 sidecar）；
+ *  设值（如 http://192.168.1.5:8000）= 作为客人连到房主后端。 */
+export function getServerUrl(): string {
+  return localStorage.getItem('trpg_server_url') || ''
+}
+
+export function setServerUrl(url: string) {
+  const clean = url.trim().replace(/\/+$/, '')
+  if (clean) localStorage.setItem('trpg_server_url', clean)
+  else localStorage.removeItem('trpg_server_url')
+}
+
+/** 当前 API 前缀：本机走同源 /api（vite 代理）；连主机时走绝对地址 <host>/api。 */
+export function getApiBase(): string {
+  const s = getServerUrl()
+  return s ? `${s}/api` : '/api'
+}
 
 /** 轻量玩家身份：localStorage 生成并持久化 UUID，作为 X-Player-Token 带上。 */
 export function getPlayerToken(): string {
@@ -15,7 +31,7 @@ function authHeaders(extra?: HeadersInit): HeadersInit {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${getApiBase()}${path}`, {
     ...init,
     headers: authHeaders({ 'Content-Type': 'application/json', ...(init?.headers || {}) }),
   })
@@ -64,7 +80,7 @@ async function* parseSSEStream(res: Response) {
 }
 
 export async function* streamSSE(path: string, body?: unknown) {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${getApiBase()}${path}`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: body ? JSON.stringify(body) : undefined,
@@ -74,7 +90,7 @@ export async function* streamSSE(path: string, body?: unknown) {
 }
 
 export async function* connectSSE(path: string, signal?: AbortSignal) {
-  const res = await fetch(`${BASE}${path}`, { signal, headers: authHeaders() })
+  const res = await fetch(`${getApiBase()}${path}`, { signal, headers: authHeaders() })
   if (res.status === 204 || !res.body) return
   if (!res.ok) throw new Error(`SSE error: ${res.status}`)
   yield* parseSSEStream(res)
