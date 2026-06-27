@@ -27,11 +27,13 @@ def _session_payload(
     token: str | None = None,
 ) -> dict:
     data = SessionRead.model_validate(session).model_dump()
+    online = room_hub.online_tokens(session.id)
     # session.participants 与 data["participants"] 均按 seat_order，可对齐计算 is_mine
     for p, sp in zip(data.get("participants", []), session.participants):
         p["character_name"] = chars_map.get(p["character_id"]) if p["character_id"] else None
         p["is_mine"] = bool(token and sp.owner_token and sp.owner_token == token)
         p["is_host"] = bool(sp.is_primary and sp.owner_token)
+        p["is_online"] = bool(sp.owner_token and sp.owner_token in online)
     return {
         **data,
         "module_title": module_title,
@@ -178,6 +180,47 @@ async def start_game(
     )
 
 
+@router.post("/{session_id}/kick/{seat_order}")
+def kick_seat(
+    session_id: str,
+    seat_order: int,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """大厅：房主把某真人席位的玩家移出，席位回到空席。"""
+    try:
+        session, name = session_service.kick_seat(db, session_id, seat_order, token)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    room_hub.broadcast(session_id, _make_chunk("seat", f"{name} 已被移出席位", actor_name=name))
+    room_hub.broadcast(session_id, _make_chunk("lobby"))
+    module = db.get(Module, session.module_id)
+    return _session_payload(
+        session, _chars_map(db, [session]), module.title if module else None, token,
+    )
+
+
+@router.post("/{session_id}/typing")
+def typing(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """大厅/游戏：广播'正在输入'（短暂、ephemeral，不入库）。"""
+    seat = next(
+        (p for p in session_service.get_participants(db, session_id) if p.owner_token == token and token),
+        None,
+    )
+    if not seat or not seat.character_id:
+        return {"ok": True}
+    char = db.get(Character, seat.character_id)
+    room_hub.broadcast(
+        session_id,
+        _make_chunk("typing", actor_name=char.name if char else "玩家"),
+    )
+    return {"ok": True}
+
+
 @router.get("/{session_id}")
 def get_session(
     session_id: str,
@@ -246,7 +289,7 @@ async def check_generating(session_id: str):
 
 
 @router.get("/{session_id}/live")
-async def live(session_id: str):
+async def live(session_id: str, token: str | None = Depends(player_token)):
     """房间级常驻 SSE（仅实时增量）：所有成员订阅，跨多次生成存活。
 
     历史与重连对齐沿用 ``GET /events``（保留 seq 分页）；本端点只负责实时广播：
@@ -263,14 +306,16 @@ async def live(session_id: str):
         db.close()
 
     # subscribe 会把当前生成的 in-flight buffer 立即重放给中途接入者
-    q = room_hub.subscribe(session_id)
+    q = room_hub.subscribe(session_id, token)
     generating = generation_manager.is_generating(session_id)
+    # 通知房间内其他人：有人上线（触发各端刷新在线态）
+    room_hub.broadcast(session_id, _make_chunk("presence"))
 
     async def gen():
         yield _make_chunk("ready")
         if generating:
             yield _make_chunk("generating")
-        async for chunk in stream_room(session_id, q):
+        async for chunk in stream_room(session_id, q, token):
             yield chunk
 
     return StreamingResponse(

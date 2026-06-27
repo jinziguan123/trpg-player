@@ -40,7 +40,12 @@ export function RoomLobbyPage() {
   const [chatInput, setChatInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [panelChar, setPanelChar] = useState<Character | null>(null)
+  const [typingName, setTypingName] = useState('')
   const chatRef = useRef<HTMLDivElement>(null)
+  const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastTypingSent = useRef(0)
+  const myNameRef = useRef<string | null>(null)
+  myNameRef.current = room?.participants.find((p) => p.is_mine)?.character_name ?? null
 
   const mySeat = room?.participants.find((p) => p.is_mine) ?? null
   const amHost = !!room?.participants.some((p) => p.is_host && p.is_mine)
@@ -68,7 +73,15 @@ export function RoomLobbyPage() {
 
     const handleChunk = (c: Chunk) => {
       if (c.type === 'started') { navigate(`/game/${sessionId}`, { replace: true }); return }
-      if (c.type === 'lobby' || c.type === 'seat') { void refreshRoom(); return }
+      if (c.type === 'lobby' || c.type === 'seat' || c.type === 'presence') { void refreshRoom(); return }
+      if (c.type === 'typing') {
+        if (c.actor_name && c.actor_name !== myNameRef.current) {
+          setTypingName(c.actor_name)
+          if (typingTimer.current) clearTimeout(typingTimer.current)
+          typingTimer.current = setTimeout(() => setTypingName(''), 3000)
+        }
+        return
+      }
       if (c.type === 'ooc') {
         setChat((prev) => prev.some((x) => x.id === c.id)
           ? prev
@@ -169,6 +182,23 @@ export function RoomLobbyPage() {
     } catch (e) { toast.error(e instanceof Error ? e.message : '发送失败') }
   }
 
+  const onChatInput = (v: string) => {
+    setChatInput(v)
+    if (!room || !mySeat) return
+    const now = Date.now()
+    if (now - lastTypingSent.current > 2000) {
+      lastTypingSent.current = now
+      api.post(`/sessions/${room.id}/typing`).catch(() => {})
+    }
+  }
+
+  const kick = async (seatOrder: number) => {
+    if (!room) return
+    try {
+      await api.post(`/sessions/${room.id}/kick/${seatOrder}`)
+    } catch (e) { toast.error(e instanceof Error ? e.message : '移出失败') }
+  }
+
   const viewSeat = async (charId: string | null) => {
     if (!charId) return
     try { setPanelChar(await api.get<Character>(`/characters/${charId}`)) } catch { /* ignore */ }
@@ -225,9 +255,18 @@ export function RoomLobbyPage() {
               const readyBadge = p.role === 'human' && p.character_id
                 ? (p.ready ? '✓ 已准备' : '… 待准备')
                 : (p.character_id ? '就绪' : '')
+              const showDot = p.role === 'human' && p.character_id
+              const canKick = amHost && p.character_id && p.role === 'human' && !p.is_primary
               return (
                 <div key={p.seat_order} className="flex items-center gap-2 px-2 py-1.5 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
                   <span style={{ fontSize: '0.8rem' }}>{seatIcon(p)}</span>
+                  {showDot && (
+                    <span
+                      title={p.is_online ? '在线' : '离线'}
+                      style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                        background: p.is_online ? 'var(--color-success)' : 'var(--color-border)' }}
+                    />
+                  )}
                   <button
                     onClick={() => viewSeat(p.character_id)}
                     disabled={!p.character_id}
@@ -241,6 +280,14 @@ export function RoomLobbyPage() {
                     <span className="text-xs" style={{ color: p.ready || p.role !== 'human' ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>
                       {readyBadge}
                     </span>
+                  )}
+                  {canKick && (
+                    <button
+                      onClick={() => kick(p.seat_order)}
+                      className="text-xs px-1.5 py-0.5 rounded"
+                      style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}
+                      title="移出该玩家（席位回到空席）"
+                    >移出</button>
                   )}
                 </div>
               )
@@ -291,10 +338,13 @@ export function RoomLobbyPage() {
               </div>
             ))}
           </div>
+          <div className="h-4 text-xs italic mb-0.5" style={{ color: 'var(--color-text-secondary)' }}>
+            {typingName ? `${typingName} 正在输入…` : ''}
+          </div>
           <div className="flex gap-2">
             <input
               value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
+              onChange={(e) => onChatInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') sendChat() }}
               placeholder={mySeat ? '说点什么…' : '入座后可发言'}
               disabled={!mySeat}

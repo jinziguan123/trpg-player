@@ -10,6 +10,7 @@ export interface SessionParticipant {
   ready: boolean
   is_mine: boolean
   is_host: boolean
+  is_online: boolean
   character_name?: string | null
 }
 

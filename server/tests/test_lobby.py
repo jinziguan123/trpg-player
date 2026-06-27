@@ -96,6 +96,34 @@ def test_lobby_gating_and_start_flow(db_factory):
     assert started.status == "active"
 
 
+def test_kick_frees_seat_and_host_only(db_factory):
+    db = db_factory()
+    module, host, joiner = _seed(db)
+    session = session_service.create_session(
+        db, module.id,
+        [
+            {"character_id": host.id, "role": "human", "is_primary": True},
+            {"character_id": None, "role": "human"},
+        ],
+        creator_token="host-tok",
+    )
+    sid = session.id
+    empty = next(p for p in session_service.get_participants(db, sid) if not p.character_id)
+    session_service.claim_seat(db, sid, empty.seat_order, joiner.id, "joiner-tok")
+
+    # 非房主踢人 → 拒绝
+    with pytest.raises(ValueError, match="房主"):
+        session_service.kick_seat(db, sid, empty.seat_order, "joiner-tok")
+    # 不能踢房主自己（seat_order 0）
+    with pytest.raises(ValueError, match="房主自己"):
+        session_service.kick_seat(db, sid, 0, "host-tok")
+    # 房主踢加入者 → 席位回到空席
+    _, name = session_service.kick_seat(db, sid, empty.seat_order, "host-tok")
+    assert name == joiner.name
+    freed = next(p for p in session_service.get_participants(db, sid) if p.seat_order == empty.seat_order)
+    assert freed.character_id is None and freed.owner_token is None and freed.claimed is False
+
+
 def test_host_seat_and_ai_seat_default_ready(db_factory):
     db = db_factory()
     module, host, _ = _seed(db)

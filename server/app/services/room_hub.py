@@ -23,21 +23,38 @@ class RoomHub:
     def __init__(self) -> None:
         self._subs: dict[str, list[asyncio.Queue]] = defaultdict(list)
         self._inflight: dict[str, list[str]] = {}
+        # 在线状态：room → {token: 该 token 的活跃 /live 连接数}
+        self._presence: dict[str, dict[str, int]] = defaultdict(dict)
 
-    def subscribe(self, room_id: str) -> asyncio.Queue:
+    def subscribe(self, room_id: str, token: str | None = None) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue()
         # 生成中途接入：先把当前生成已广播的 chunk 重放给新订阅者
         for chunk in self._inflight.get(room_id, []):
             q.put_nowait(chunk)
         self._subs[room_id].append(q)
+        if token:
+            self._presence[room_id][token] = self._presence[room_id].get(token, 0) + 1
         return q
 
-    def unsubscribe(self, room_id: str, q: asyncio.Queue) -> None:
+    def unsubscribe(
+        self, room_id: str, q: asyncio.Queue, token: str | None = None
+    ) -> None:
         subs = self._subs.get(room_id, [])
         if q in subs:
             subs.remove(q)
         if not subs:
             self._subs.pop(room_id, None)
+        if token:
+            p = self._presence.get(room_id)
+            if p and token in p:
+                p[token] -= 1
+                if p[token] <= 0:
+                    del p[token]
+                if not p:
+                    self._presence.pop(room_id, None)
+
+    def online_tokens(self, room_id: str) -> set[str]:
+        return set(self._presence.get(room_id, {}).keys())
 
     def broadcast(self, room_id: str, chunk: str) -> None:
         buf = self._inflight.get(room_id)
@@ -59,8 +76,10 @@ class RoomHub:
 room_hub = RoomHub()
 
 
-async def stream_room(room_id: str, q: asyncio.Queue) -> AsyncIterator[str]:
-    """把房间订阅队列转成 SSE 文本流；连接断开时自动退订。"""
+async def stream_room(
+    room_id: str, q: asyncio.Queue, token: str | None = None
+) -> AsyncIterator[str]:
+    """把房间订阅队列转成 SSE 文本流；连接断开时自动退订并广播在线变更。"""
     try:
         while True:
             chunk = await q.get()
@@ -68,4 +87,5 @@ async def stream_room(room_id: str, q: asyncio.Queue) -> AsyncIterator[str]:
                 break
             yield chunk
     finally:
-        room_hub.unsubscribe(room_id, q)
+        room_hub.unsubscribe(room_id, q, token)
+        room_hub.broadcast(room_id, 'data: {"type":"presence"}\n\n')

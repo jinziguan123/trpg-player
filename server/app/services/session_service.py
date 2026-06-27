@@ -276,6 +276,42 @@ def lobby_gaps(db: Session, session_id: str) -> list[str]:
     return gaps
 
 
+def kick_seat(
+    db: Session, session_id: str, seat_order: int, token: str | None
+) -> tuple[GameSession, str]:
+    """房主把某真人席位的玩家移出，席位回到空席待认领。返回 (session, 被踢角色名)。"""
+    session = db.get(GameSession, session_id)
+    if not session:
+        raise ValueError("房间不存在")
+    if session.status != "setup":
+        raise ValueError("游戏已开始，无法移出席位")
+    if not is_host(db, session_id, token):
+        raise ValueError("只有房主可以移出玩家")
+    seat = (
+        db.query(SessionParticipant)
+        .filter(
+            SessionParticipant.session_id == session_id,
+            SessionParticipant.seat_order == seat_order,
+        )
+        .first()
+    )
+    if not seat:
+        raise ValueError("席位不存在")
+    if seat.is_primary:
+        raise ValueError("不能移出房主自己")
+    if seat.role != "human":
+        raise ValueError("只能移出真人玩家")
+    char = db.get(Character, seat.character_id) if seat.character_id else None
+    name = char.name if char else "玩家"
+    seat.character_id = None
+    seat.owner_token = None
+    seat.claimed = False
+    seat.ready = False
+    db.commit()
+    db.refresh(session)
+    return session, name
+
+
 def start_game(db: Session, session_id: str, token: str | None) -> GameSession:
     """房主校验 + 门槛校验后把房间从 setup 推进到 active。"""
     session = db.get(GameSession, session_id)
