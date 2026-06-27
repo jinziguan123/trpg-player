@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.module import Module
-from app.models.session import GameSession
 from app.schemas.character import (
     CharacterCreate,
     CharacterRead,
@@ -19,7 +18,7 @@ from app.rules.coc.occupations import (
     calc_interest_points,
     calc_occupation_points,
 )
-from app.services import ai_character_service, character_service
+from app.services import ai_character_service, character_service, session_service
 from app.services.excel_import import parse_coc_character_sheet
 
 router = APIRouter(prefix="/api", tags=["characters"])
@@ -177,17 +176,15 @@ def create_character(data: CharacterCreate, db: Session = Depends(get_db)):
 def list_characters(
     module_id: str | None = None,
     available: bool = False,
+    is_player: bool | None = None,
     db: Session = Depends(get_db),
 ):
     chars = character_service.list_characters(db, module_id)
+    if is_player is not None:
+        chars = [c for c in chars if c.is_player == is_player]
     if available:
-        active_char_ids = {
-            s.player_character_id
-            for s in db.query(GameSession).filter(
-                GameSession.status.in_(["active", "paused"])
-            ).all()
-        }
-        chars = [c for c in chars if c.id not in active_char_ids]
+        occupied = session_service.active_character_ids(db)
+        chars = [c for c in chars if c.id not in occupied]
     return chars
 
 

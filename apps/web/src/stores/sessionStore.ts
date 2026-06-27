@@ -1,6 +1,20 @@
 import { create } from 'zustand'
 import { api } from '../api/client'
 
+export interface SessionParticipant {
+  character_id: string
+  role: string // human | ai
+  is_primary: boolean
+  seat_order: number
+  character_name?: string | null
+}
+
+export interface ParticipantInput {
+  character_id: string
+  role: string
+  is_primary: boolean
+}
+
 interface GameSession {
   id: string
   module_id: string
@@ -8,6 +22,7 @@ interface GameSession {
   player_character_id: string | null
   current_scene_id: string | null
   world_state: Record<string, unknown>
+  participants?: SessionParticipant[]
   module_title?: string
   character_name?: string
   created_at?: string
@@ -46,7 +61,7 @@ interface SessionStore {
   loadingOlder: boolean
   streamingMsgId: string | null
   fetchSessions: () => Promise<void>
-  createSession: (moduleId: string, characterId: string) => Promise<GameSession>
+  createSession: (moduleId: string, participants: ParticipantInput[]) => Promise<GameSession>
   setCurrentSession: (session: GameSession) => void
   addMessage: (msg: ChatMessage) => void
   startStreamMessage: (type: string, actorName?: string) => string
@@ -85,10 +100,10 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     set({ sessions })
   },
 
-  createSession: async (moduleId, characterId) => {
+  createSession: async (moduleId, participants) => {
     const session = await api.post<GameSession>('/sessions', {
       module_id: moduleId,
-      player_character_id: characterId,
+      participants,
     })
     set((s) => ({ sessions: [session, ...s.sessions], currentSession: session }))
     return session

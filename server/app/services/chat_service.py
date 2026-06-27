@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.ai.agents.kp_agent import KPAgent
 from app.ai.agents.npc_agent import NPCAgent
-from app.ai.context import build_kp_context, build_npc_context
+from app.ai.agents.team_agent import TeamAgent
+from app.ai.context import build_kp_context, build_npc_context, build_team_context
 from app.ai.deepseek import get_llm
 from app.ai.prompts.kp_system import KP_DICE_CONTINUATION_PROMPT
 from app.models.character import Character
@@ -298,26 +299,80 @@ async def _stream_narration_filtered(
         result[2] = extracted
 
 
-async def _run_generation(
+MAX_TEAMMATES_PER_TURN = 4
+
+TEAM_ACTION_EVENT = {"speak": "dialogue", "act": "action", "assist": "action"}
+
+
+def _parse_team_decision(raw) -> dict | None:
+    """解析队友 agent 的 JSON 决策；失败返回 None（编排层据此 hold）。"""
+    if isinstance(raw, dict):
+        data = raw
+    elif isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            m = re.search(r"\{.*\}", raw, re.S)
+            if not m:
+                return None
+            try:
+                data = json.loads(m.group(0))
+            except json.JSONDecodeError:
+                return None
+    else:
+        return None
+    action = str(data.get("action") or "").strip().lower()
+    if action not in TEAM_ACTION_EVENT and action != "silent":
+        return None
+    return {"action": action, "content": str(data.get("content") or "").strip()}
+
+
+async def _run_team_turn(
     db: Session,
     session_id: str,
     game_session: GameSession,
     module: Module,
     player_char: Character,
-    events: list,
-) -> None:
-    from app.services.generation_manager import generation_manager
+    teammates: list[Character],
+    llm,
+) -> AsyncIterator[str]:
+    """玩家输入后的一轮 AI 队友自动响应。
 
-    llm = get_llm()
-    kp = KPAgent(llm)
-    messages = build_kp_context(game_session, module, player_char, events)
+    每个队友只决策一次；结果写入事件流，并依次让后续队友 / KP 看到。
+    本函数只由 ``run_chat_generation`` 调用，不会自触发，故不存在递归链式生成。
+    """
+    for teammate in teammates[:MAX_TEAMMATES_PER_TURN]:
+        events = session_service.get_session_events(db, session_id)
+        messages = build_team_context(
+            teammate, game_session, module, events, player_char,
+            all_teammates=teammates,
+        )
+        agent = TeamAgent(llm, teammate.id)
+        try:
+            raw = await agent.decide(messages)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("队友决策失败: char=%s", teammate.id)
+            continue
+        decision = _parse_team_decision(raw)
+        if not decision:
+            continue  # 解析失败：hold，不重试不递归
+        action = decision["action"]
+        content = decision["content"]
+        if action == "silent" or not content:
+            continue
+        event_type = TEAM_ACTION_EVENT[action]
+        session_service.add_event(
+            db, session_id, event_type, content,
+            actor_id=teammate.id, actor_name=teammate.name,
+        )
+        # speak 用 npc_dialogue 走前端气泡渲染；act/assist 走通用 action 渲染
+        chunk_type = "npc_dialogue" if event_type == "dialogue" else "action"
+        yield _make_chunk(chunk_type, content, actor_name=teammate.name)
 
-    result = ["", "", []]
-    async for chunk in _stream_narration_filtered(
-        kp, messages, result, npcs=module.npcs,
-    ):
-        generation_manager.publish(session_id, chunk)
 
+def _persist_narration(db: Session, session_id: str, result: list) -> None:
     narration_text = result[0].rstrip()
     if narration_text:
         session_service.add_event(
@@ -328,8 +383,40 @@ async def _run_generation(
             db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
         )
 
+
+async def _run_generation(
+    db: Session,
+    session_id: str,
+    game_session: GameSession,
+    module: Module,
+    player_char: Character,
+    events: list,
+    teammates: list[Character] | None = None,
+) -> None:
+    from app.services.generation_manager import generation_manager
+
+    llm = get_llm()
+    kp = KPAgent(llm)
+    messages = build_kp_context(
+        game_session, module, player_char, events, teammates=teammates,
+    )
+
+    result = ["", "", []]
+    # try/finally 保证流被取消（如硬取消生成 task）时已生成的叙事仍落库，
+    # 避免「刷新丢失」类问题；成功路径只落库一次。
+    try:
+        async for chunk in _stream_narration_filtered(
+            kp, messages, result, npcs=module.npcs,
+        ):
+            generation_manager.publish(session_id, chunk)
+    except asyncio.CancelledError:
+        _persist_narration(db, session_id, result)
+        raise
+    _persist_narration(db, session_id, result)
+
     async for chunk in _process_commands(
         db, session_id, result[1], module, player_char, game_session, llm,
+        teammates=teammates,
     ):
         generation_manager.publish(session_id, chunk)
 
@@ -345,8 +432,21 @@ async def run_chat_generation(session_id: str) -> None:
         game_session = db.get(GameSession, session_id)
         module = db.get(Module, game_session.module_id)
         player_char = db.get(Character, game_session.player_character_id)
+        teammates = session_service.get_ai_teammates(db, session_id)
+
+        # 玩家输入后：先跑一轮 AI 队友自动响应（仅一轮，不自触发），再交 KP 收束
+        if teammates:
+            llm = get_llm()
+            async for chunk in _run_team_turn(
+                db, session_id, game_session, module, player_char, teammates, llm,
+            ):
+                generation_manager.publish(session_id, chunk)
+
         events = session_service.get_session_events(db, session_id)
-        await _run_generation(db, session_id, game_session, module, player_char, events)
+        await _run_generation(
+            db, session_id, game_session, module, player_char, events,
+            teammates=teammates,
+        )
     except asyncio.CancelledError:
         logger.info("生成被取消: session=%s", session_id)
     except Exception:
@@ -363,9 +463,19 @@ async def run_opening_generation(session_id: str) -> None:
     db = SessionLocal()
     try:
         game_session = db.get(GameSession, session_id)
+        # 幂等：已有事件（开局已生成）则不重复生成，只收尾，防止重复开场。
+        existing = session_service.get_session_events(db, session_id, limit=1)
+        if existing:
+            generation_manager.publish(session_id, _make_chunk("done"))
+            return
         module = db.get(Module, game_session.module_id)
         player_char = db.get(Character, game_session.player_character_id)
-        await _run_generation(db, session_id, game_session, module, player_char, [])
+        teammates = session_service.get_ai_teammates(db, session_id)
+        # 开场不跑队友回合（尚无玩家行动），但把队伍信息带进 KP 上下文让其知道谁在场
+        await _run_generation(
+            db, session_id, game_session, module, player_char, [],
+            teammates=teammates,
+        )
     except asyncio.CancelledError:
         logger.info("开场生成被取消: session=%s", session_id)
     except Exception:
@@ -400,6 +510,7 @@ async def _process_commands(
     player_char: Character,
     game_session: GameSession,
     llm,
+    teammates: list[Character] | None = None,
 ) -> AsyncIterator[str]:
     dice_descriptions: list[str] = []
 
@@ -518,7 +629,9 @@ async def _process_commands(
             dice_results="\n".join(dice_descriptions)
         )
         events = session_service.get_session_events(db, session_id)
-        messages = build_kp_context(game_session, module, player_char, events)
+        messages = build_kp_context(
+            game_session, module, player_char, events, teammates=teammates,
+        )
         messages.append({"role": "user", "content": continuation_prompt})
 
         kp = KPAgent(llm)

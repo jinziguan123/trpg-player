@@ -55,9 +55,19 @@ def _narrations(db_factory, session_id) -> list:
     ]
 
 
-def test_stream_and_persist_saves_on_interrupt(db_factory, monkeypatch):
-    """流式被取消（如刷新断连）时，已生成内容仍应落库。"""
-    monkeypatch.setattr(chat_service, "SessionLocal", db_factory)
+def _patch_runtime(monkeypatch, db_factory):
+    """把 chat_service 的运行期依赖换成测试可控的桩。"""
+    import app.database as database
+    from app.services.generation_manager import generation_manager
+
+    monkeypatch.setattr(database, "SessionLocal", db_factory)
+    monkeypatch.setattr(chat_service, "get_llm", lambda: None)
+    monkeypatch.setattr(generation_manager, "publish", lambda *a, **k: None)
+
+
+def test_generation_saves_on_interrupt(db_factory, monkeypatch):
+    """流式被取消（硬取消生成 task）时，已生成内容仍应落库。"""
+    _patch_runtime(monkeypatch, db_factory)
 
     async def fake_stream(kp, messages, result, npcs=None):
         result[0] = "KP 刚说到一半"
@@ -68,25 +78,19 @@ def test_stream_and_persist_saves_on_interrupt(db_factory, monkeypatch):
 
     db = db_factory()
     session_id = _seed_session(db)
-    result = ["", "", []]
+    session_service.add_event(db, session_id, "dialogue", "我环顾四周", actor_name="玩家")
 
-    async def run():
-        async for _ in chat_service._stream_and_persist(
-            db, session_id, None, [], [], result
-        ):
-            pass
-
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(run())
+    # run_chat_generation 内部吞掉 CancelledError，但叙事应已在 finally 落库
+    asyncio.run(chat_service.run_chat_generation(session_id))
 
     narrations = _narrations(db_factory, session_id)
     assert len(narrations) == 1
     assert narrations[0].content == "KP 刚说到一半"
 
 
-def test_stream_and_persist_saves_once_on_success(db_factory, monkeypatch):
-    """正常完成时落库一次且不重复（finally 不应二次写入）。"""
-    monkeypatch.setattr(chat_service, "SessionLocal", db_factory)
+def test_generation_saves_once_on_success(db_factory, monkeypatch):
+    """正常完成时落库一次且不重复。"""
+    _patch_runtime(monkeypatch, db_factory)
 
     async def fake_stream(kp, messages, result, npcs=None):
         result[0] = "完整的开场叙事"
@@ -96,35 +100,31 @@ def test_stream_and_persist_saves_once_on_success(db_factory, monkeypatch):
 
     db = db_factory()
     session_id = _seed_session(db)
-    result = ["", "", []]
-
-    asyncio.run(
-        _collect(chat_service._stream_and_persist(db, session_id, None, [], [], result))
-    )
+    asyncio.run(chat_service.run_opening_generation(session_id))
 
     narrations = _narrations(db_factory, session_id)
     assert len(narrations) == 1
     assert narrations[0].content == "完整的开场叙事"
 
 
-def test_handle_opening_idempotent(db_factory, monkeypatch):
-    """已有开局的会话再次触发 opening 不应重复生成。"""
-    monkeypatch.setattr(chat_service, "SessionLocal", db_factory)
+def test_opening_idempotent(db_factory, monkeypatch):
+    """已有事件的会话再次触发 opening 不应重复生成。"""
+    _patch_runtime(monkeypatch, db_factory)
 
     triggered = {"gen": False}
 
-    async def fake_stream_and_persist(db, session_id, kp, messages, npcs, result):
+    async def fake_stream(kp, messages, result, npcs=None):
         triggered["gen"] = True
+        result[0] = "不该发生"
         yield chat_service._make_chunk("narration", "不该发生", actor_name="KP")
 
-    monkeypatch.setattr(chat_service, "_stream_and_persist", fake_stream_and_persist)
+    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
 
     db = db_factory()
     session_id = _seed_session(db)
     session_service.add_event(db, session_id, "narration", "已有开局", actor_name="KP")
 
-    chunks = asyncio.run(_collect(chat_service.handle_opening(db, session_id)))
+    asyncio.run(chat_service.run_opening_generation(session_id))
 
     assert triggered["gen"] is False
-    assert any('"type": "done"' in c for c in chunks)
     assert len(_narrations(db_factory, session_id)) == 1

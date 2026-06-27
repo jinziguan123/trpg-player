@@ -8,6 +8,7 @@ from app.models.module import Module
 from app.models.session import GameSession
 from app.ai.prompts.kp_system import KP_SYSTEM_PROMPT, KP_OPENING_PROMPT
 from app.ai.prompts.npc_system import NPC_SYSTEM_PROMPT
+from app.ai.prompts.team_system import TEAM_SYSTEM_PROMPT
 
 CONTEXT_TOKEN_BUDGET = 24000
 RESERVE_FOR_OUTPUT = 4096
@@ -140,8 +141,20 @@ def _format_player_info(char: Character) -> str:
 
 
 def _events_to_messages(
-    events: list[EventLog], player_char_id: str | None = None,
+    events: list[EventLog],
+    primary_char_id: str | None = None,
+    party_char_ids: set[str] | None = None,
 ) -> list[dict]:
+    """把事件流转成对话消息。
+
+    ``party_char_ids`` 是玩家方（主角 + AI 队友）的角色 id 集合：他们的发言/行动
+    都算 user 侧输入，**不会被误判成 KP 自己的 assistant 输出**。非主角的队友消息
+    带上「队友·名字」前缀，让 KP 能区分谁在场、谁做了什么。
+    """
+    party = set(party_char_ids or ())
+    if primary_char_id:
+        party.add(primary_char_id)
+
     raw: list[dict] = []
     for ev in events:
         if ev.event_type == "system":
@@ -149,17 +162,23 @@ def _events_to_messages(
         if ev.event_type in ("narration", "dice"):
             raw.append({"role": "assistant", "content": ev.content})
         elif ev.event_type == "dialogue":
-            is_player = (
-                player_char_id and ev.actor_id == player_char_id
-            )
-            if is_player:
-                raw.append({"role": "user", "content": ev.content})
+            if ev.actor_id and ev.actor_id in party:
+                if ev.actor_id == primary_char_id:
+                    raw.append({"role": "user", "content": ev.content})
+                else:
+                    raw.append({
+                        "role": "user",
+                        "content": f"[队友·{ev.actor_name}] “{ev.content}”",
+                    })
             elif ev.actor_name:
                 raw.append({"role": "assistant", "content": ev.actor_name + "：“" + ev.content + "”"})
             else:
                 raw.append({"role": "user", "content": ev.content})
         elif ev.event_type == "action":
-            raw.append({"role": "user", "content": "[行动] " + ev.content})
+            if ev.actor_id and ev.actor_id in party and ev.actor_id != primary_char_id:
+                raw.append({"role": "user", "content": f"[队友·{ev.actor_name} 行动] " + ev.content})
+            else:
+                raw.append({"role": "user", "content": "[行动] " + ev.content})
     merged: list[dict] = []
     for msg in raw:
         if merged and merged[-1]["role"] == msg["role"]:
@@ -172,13 +191,43 @@ def _events_to_messages(
     return merged
 
 
+def _format_teammate_brief(char: Character) -> str:
+    """队友的精简画像：姓名 + 职业 + 关键技能 + 一句背景。"""
+    sd = char.system_data or {}
+    parts = [f"- {char.name}"]
+    if sd.get("occupation"):
+        parts.append(f"（{sd['occupation']}）")
+    top_skills = sorted(
+        ((k, v) for k, v in (char.skills or {}).items() if v >= 50),
+        key=lambda kv: kv[1],
+        reverse=True,
+    )[:4]
+    if top_skills:
+        parts.append("，擅长：" + "、".join(f"{k}{v}" for k, v in top_skills))
+    line = "".join(parts)
+    if char.backstory:
+        line += f"。背景：{char.backstory[:80]}"
+    return line
+
+
 def build_kp_context(
     session: GameSession,
     module: Module,
     player_char: Character,
     events: list[EventLog],
+    teammates: list[Character] | None = None,
 ) -> list[dict]:
     current_scene = _find_scene(module, session.current_scene_id)
+
+    teammates = teammates or []
+    player_info = _format_player_info(player_char)
+    if teammates:
+        team_lines = "\n".join(_format_teammate_brief(t) for t in teammates)
+        player_info += (
+            "\n\n## 同行的 AI 队友（也在场，会自行说话与行动，"
+            "你需把他们当作在场角色来叙述与回应；但绝不要替队友决定下一步）\n"
+            + team_lines
+        )
 
     system_content = KP_SYSTEM_PROMPT.format(
         rule_system=module.rule_system.upper(),
@@ -189,8 +238,10 @@ def build_kp_context(
         current_scene=_format_json(current_scene) if current_scene else "初始场景",
         npcs_info=_compact_npcs(module.npcs),
         clues_info=_compact_clues(module.clues),
-        player_info=_format_player_info(player_char),
+        player_info=player_info,
     )
+
+    party_char_ids = {player_char.id} | {t.id for t in teammates}
 
     system_tokens = _estimate_tokens(system_content)
     if system_tokens > MAX_SYSTEM_TOKENS:
@@ -204,7 +255,9 @@ def build_kp_context(
     else:
         event_budget = CONTEXT_TOKEN_BUDGET - system_tokens - RESERVE_FOR_OUTPUT
 
-        all_msgs = _events_to_messages(events, player_char_id=player_char.id)
+        all_msgs = _events_to_messages(
+            events, primary_char_id=player_char.id, party_char_ids=party_char_ids,
+        )
 
         if len(all_msgs) <= MIN_RECENT_EVENTS:
             recent_msgs = all_msgs
@@ -274,7 +327,7 @@ def build_npc_context(
 
     messages = [{"role": "system", "content": system_content}]
     player_cid = session.player_character_id
-    messages.extend(_events_to_messages(visible_events[-20:], player_char_id=player_cid))
+    messages.extend(_events_to_messages(visible_events[-20:], primary_char_id=player_cid))
 
     if trigger_context:
         messages.append({
@@ -283,6 +336,83 @@ def build_npc_context(
         })
 
     return messages
+
+
+def build_team_context(
+    teammate: Character,
+    session: GameSession,
+    module: Module,
+    events: list[EventLog],
+    player_char: Character,
+    all_teammates: list[Character] | None = None,
+) -> list[dict]:
+    """构建单个 AI 队友的决策上下文：场景 + 队伍 + 最近事件。"""
+    current_scene = _find_scene(module, session.current_scene_id)
+
+    party_members = [player_char] + [
+        t for t in (all_teammates or []) if t.id != teammate.id
+    ]
+    party_info = "\n".join(
+        f"- 主角：{player_char.name}"
+        if m.id == player_char.id
+        else f"- 队友：{m.name}"
+        for m in party_members
+    ) or "无"
+
+    system_content = TEAM_SYSTEM_PROMPT.format(
+        rule_system=module.rule_system.upper(),
+        name=teammate.name,
+        char_info=_format_player_info(teammate),
+        scene=_format_json(current_scene) if current_scene else "初始场景",
+        party_info=party_info,
+    )
+
+    digest = _format_recent_events_digest(
+        events[-20:], primary_char_id=player_char.id, self_char_id=teammate.id,
+    )
+
+    messages = [
+        {"role": "system", "content": system_content},
+        {
+            "role": "user",
+            "content": (
+                "## 最近发生的事（最新在最后）\n"
+                + digest
+                + "\n\n轮到你了。请根据主角刚才的行动和当前局面，"
+                "决定你这一回合做什么，并按 JSON 格式输出。"
+            ),
+        },
+    ]
+    return messages
+
+
+def _format_recent_events_digest(
+    events: list[EventLog],
+    primary_char_id: str | None = None,
+    self_char_id: str | None = None,
+) -> str:
+    """把最近事件渲染成给 AI 队友看的纯文本摘要（不做角色身份映射）。"""
+    lines: list[str] = []
+    for ev in events:
+        content = (ev.content or "").strip()
+        if not content:
+            continue
+        if ev.event_type == "narration":
+            lines.append(f"- 旁白：{content}")
+        elif ev.event_type == "dice":
+            lines.append(f"- 检定：{content}")
+        elif ev.event_type == "system":
+            lines.append(f"- 系统：{content}")
+        elif ev.event_type in ("dialogue", "action"):
+            if ev.actor_id == self_char_id:
+                who = "你"
+            elif ev.actor_id == primary_char_id:
+                who = f"主角{('·' + ev.actor_name) if ev.actor_name else ''}"
+            else:
+                who = ev.actor_name or "某人"
+            verb = "说" if ev.event_type == "dialogue" else "行动"
+            lines.append(f"- {who}{verb}：{content}")
+    return "\n".join(lines) if lines else "（暂无）"
 
 
 def _summarize_old_events(events: list[EventLog], max_tokens: int = 1500) -> str:

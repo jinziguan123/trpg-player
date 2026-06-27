@@ -23,22 +23,78 @@ export function GamePage() {
   const { createSession, fetchSessions, sessions } = useSessionStore()
   const { modules, fetchModules } = useModuleStore()
   const navigate = useNavigate()
-  const [characters, setCharacters] = useState<Character[]>([])
+  const [heroes, setHeroes] = useState<Character[]>([])
+  const [allies, setAllies] = useState<Character[]>([])
   const [moduleId, setModuleId] = useState('')
   const [charId, setCharId] = useState('')
+  const [teammateIds, setTeammateIds] = useState<string[]>([])
+  const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
+
+  const refreshCharacters = async () => {
+    const [h, a] = await Promise.all([
+      api.get<Character[]>('/characters?available=true&is_player=true'),
+      api.get<Character[]>('/characters?available=true&is_player=false'),
+    ])
+    setHeroes(h)
+    setAllies(a)
+  }
 
   useEffect(() => {
     fetchModules()
     fetchSessions()
-    api.get<Character[]>('/characters?available=true').then(setCharacters)
+    refreshCharacters()
   }, [fetchModules, fetchSessions])
+
+  const toggleTeammate = (id: string) => {
+    setTeammateIds((ids) =>
+      ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]
+    )
+  }
+
+  const generateTeammate = async () => {
+    if (!moduleId || generating) return
+    setGenerating(true)
+    setError('')
+    try {
+      const draft = await api.post<Record<string, unknown>>('/characters/ai-generate', {
+        module_id: moduleId,
+        hint: '',
+        is_player: false,
+      })
+      const created = await api.post<Character>('/characters', {
+        name: draft.name,
+        module_id: moduleId,
+        rule_system: (draft.rule_system as string) || 'coc',
+        is_player: false,
+        age: draft.age ?? 25,
+        base_attributes: draft.base_attributes,
+        skills: draft.skills,
+        system_data: draft.system_data,
+        backstory: draft.backstory ?? '',
+      })
+      setAllies((a) => [created, ...a])
+      setTeammateIds((ids) => [...ids, created.id])
+      toast.success(`AI 队友「${created.name}」已加入候选`)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'AI 生成队友失败'
+      setError(msg)
+    } finally {
+      setGenerating(false)
+    }
+  }
 
   const startGame = async () => {
     if (!moduleId || !charId) return
     setError('')
     try {
-      const session = await createSession(moduleId, charId)
+      const participants = [
+        { character_id: charId, role: 'human', is_primary: true },
+        ...teammateIds
+          .filter((id) => id !== charId)
+          .map((id) => ({ character_id: id, role: 'ai', is_primary: false })),
+      ]
+      const session = await createSession(moduleId, participants)
       navigate(`/game/${session.id}`, { state: { isNew: true } })
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : '创建游戏失败'
@@ -50,7 +106,7 @@ export function GamePage() {
     try {
       await api.delete(`/sessions/${sessionId}`)
       await fetchSessions()
-      await api.get<Character[]>('/characters?available=true').then(setCharacters)
+      await refreshCharacters()
       toast.success('游戏存档已删除')
     } catch {
       toast.error('删除失败')
@@ -77,7 +133,7 @@ export function GamePage() {
       <div className="card mb-6">
         <h3 className="card-title">新游戏</h3>
         <div className="flex gap-3 mb-3">
-          <Select value={moduleId} onValueChange={(v) => { setModuleId(v); setCharId('') }}>
+          <Select value={moduleId} onValueChange={(v) => { setModuleId(v); setCharId(''); setTeammateIds([]) }}>
             <SelectTrigger className="flex-1">
               <SelectValue placeholder="— 选择模组 —" />
             </SelectTrigger>
@@ -87,18 +143,63 @@ export function GamePage() {
           </Select>
           <Select value={charId} onValueChange={setCharId}>
             <SelectTrigger className="flex-1">
-              <SelectValue placeholder="— 选择角色 —" />
+              <SelectValue placeholder="— 选择主角 —" />
             </SelectTrigger>
             <SelectContent>
-              {characters.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+              {heroes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
+
+        <div className="mb-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>
+              AI 队友（可选，0~4 名）
+            </span>
+            <button
+              onClick={generateTeammate}
+              disabled={!moduleId || generating}
+              className="btn-secondary !px-2 !py-1 text-xs"
+            >
+              {generating ? '生成中…' : '✨ AI 生成一个队友'}
+            </button>
+          </div>
+          {allies.length === 0 ? (
+            <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+              暂无可选 AI 队友，可点右上角让 AI 现场生成一个。
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {allies.map((c) => {
+                const selected = teammateIds.includes(c.id)
+                const isHero = c.id === charId
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => toggleTeammate(c.id)}
+                    disabled={isHero}
+                    className="px-2.5 py-1 rounded-full text-xs border transition-colors"
+                    style={{
+                      borderColor: selected ? 'var(--color-accent)' : 'var(--color-border)',
+                      background: selected ? 'var(--color-accent)' : 'transparent',
+                      color: selected ? '#fff' : 'var(--color-text-secondary)',
+                      opacity: isHero ? 0.4 : 1,
+                    }}
+                    title={isHero ? '已作为主角' : undefined}
+                  >
+                    {selected ? '✓ ' : ''}{c.name}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
         {error && (
           <p className="text-sm mb-2" style={{ color: 'var(--color-danger)' }}>{error}</p>
         )}
         <button onClick={startGame} disabled={!moduleId || !charId} className="btn-primary">
-          开始冒险
+          开始冒险{teammateIds.filter((id) => id !== charId).length > 0 ? `（含 ${teammateIds.filter((id) => id !== charId).length} 名 AI 队友）` : ''}
         </button>
       </div>
 
