@@ -193,3 +193,37 @@ def test_opening_context_hides_discoverables(db_factory):
     sys_play = ctx.build_kp_context(session, module, hero, [ev])[0]["content"]
     assert "萨沙·卡纳" in sys_play          # 游戏中恢复完整 NPC 资料
     assert "密道坐标" in sys_play           # 游戏中给线索
+
+
+def test_player_brief_used_as_opening_hook(db_factory):
+    """1-A：player_brief 作为开场唯一合法钩子；无则不强加。"""
+    db = db_factory()
+    brief = "你是受雇于波士顿古物商的私家侦探，受托去阿卡姆调查一批失窃的文物。"
+    module = Module(
+        title="失窃案", rule_system="coc",
+        scenes=[{"id": "office", "name": "事务所", "description": "昏暗的办公室"}],
+        npcs=[], clues=[],
+        world_setting={"player_brief": brief},
+    )
+    hero = Character(name="侦探", rule_system="coc", is_player=True)
+    db.add_all([module, hero])
+    db.commit()
+    session = GameSession(
+        module_id=module.id, player_character_id=hero.id,
+        status="active", current_scene_id="office",
+    )
+    db.add(session)
+    db.commit()
+
+    # “除此之外，玩家此刻一无所知” 是注入钩子独有的标记（不在静态开场提示里）
+    HOOK_MARK = "除此之外，玩家此刻一无所知"
+    msgs = ctx.build_kp_context(session, module, hero, [])
+    opening = "\n".join(m["content"] for m in msgs if m["role"] == "user")
+    assert HOOK_MARK in opening
+    assert "受托去阿卡姆" in opening
+
+    # 无 player_brief 时不强加钩子
+    module.world_setting = {}
+    msgs2 = ctx.build_kp_context(session, module, hero, [])
+    opening2 = "\n".join(m["content"] for m in msgs2 if m["role"] == "user")
+    assert HOOK_MARK not in opening2

@@ -285,6 +285,13 @@ def build_kp_context(
 
     if not events:
         opening = KP_OPENING_PROMPT
+        player_brief = (module.world_setting or {}).get("player_brief")
+        if player_brief and str(player_brief).strip():
+            opening += (
+                "\n\n【玩家已知背景（player_brief）——开场唯一可作为「玩家已经知道」的钩子】\n"
+                + str(player_brief).strip()
+                + "\n（除此之外，玩家此刻一无所知；不要把这段之外的任何信息当成玩家已知。）"
+            )
         if teammates:
             opening += (
                 f"\n\n【多人开场】在场共 {len(teammates) + 1} 名玩家角色，地位平等。"
