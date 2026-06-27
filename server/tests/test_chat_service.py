@@ -64,19 +64,49 @@ class _FakeKP:
             yield ch
 
 
-def test_inline_quote_attributed_to_teammate_not_nearby_npc():
-    """KP 行内引号台词应归给真正的说话者（队友），而非附近提到的模组 NPC。"""
+def test_player_adjacent_quote_not_extracted():
+    """玩家方角色附近的引号文本（KP 误代言/书写内容）不应被抽成对话气泡，
+    也不应被错误地归给附近的模组 NPC——整段留在旁白里。"""
     text = (
         "失踪的萨沙·卡纳的帐篷扎在西面。"
         "约翰·卡特似乎想到了这一点，他开口道：“我们先去帐篷找线索吧。”"
     )
-    # 队友约翰·卡特已被加入匹配名单（修复点）
-    npcs = [{"name": "萨沙·卡纳"}, {"name": "约翰·卡特"}]
+    npcs = [{"name": "萨沙·卡纳"}, {"name": "约翰·卡特", "is_player": True}]
     result = ["", "", []]
-    asyncio.run(_collect(chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)))
+    chunks = asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
     speakers = [name for name, _ in result[2]]
-    assert "约翰·卡特" in speakers
-    assert "萨沙·卡纳" not in speakers
+    assert speakers == []  # 玩家方引号不抽取
+    assert "萨沙·卡纳" not in speakers  # 也不会被错记到 NPC 头上
+    assert not any('"npc_dialogue"' in c for c in chunks)
+
+
+def test_written_text_near_player_stays_in_narration():
+    """书写/刻字内容（如笔记封面字母）即便用引号包裹，靠近玩家角色名时也留在旁白。"""
+    text = (
+        "詹姆斯·卡特弯下腰，从碎石堆里拾起那本手记。"
+        "封面正中用烫金压着一行字母——“S. KANA · THEBES · 1915”。"
+    )
+    npcs = [{"name": "詹姆斯·卡特", "is_player": True}]
+    result = ["", "", []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    assert result[2] == []  # 没有对话被抽取
+    assert "S. KANA" in result[0]  # 字母留在旁白文本里
+
+
+def test_npc_dialogue_still_extracted():
+    """模组 NPC 的引号台词仍正常抽取为对话。"""
+    text = "托马斯·金博尔抬起头，露出微笑。“下午好，年轻人。”"
+    npcs = [{"name": "托马斯·金博尔"}]
+    result = ["", "", []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    speakers = [name for name, _ in result[2]]
+    assert "托马斯·金博尔" in speakers
 
 
 def _patch_runtime(monkeypatch, db_factory):

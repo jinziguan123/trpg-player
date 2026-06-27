@@ -84,7 +84,7 @@ def _matcher_npcs(module: Module, teammates: list[Character] | None) -> list[dic
     队友不在 module.npcs 里，若不加进来，KP 偶尔替队友写的引号台词会被
     错误归给附近提到的某个模组 NPC（如把约翰·卡特的话记到萨沙·卡纳头上）。
     """
-    extra = [{"name": t.name} for t in (teammates or []) if t.name]
+    extra = [{"name": t.name, "is_player": True} for t in (teammates or []) if t.name]
     return (module.npcs or []) + extra
 
 
@@ -126,7 +126,10 @@ async def _stream_narration_filtered(
     quote_buf = ""
     # Build (canonical_name, [searchable_parts]) for partial matching.
     # E.g. "托马斯·金博尔" → ["托马斯·金博尔", "托马斯", "金博尔"]
-    npc_matchers: list[tuple[str, list[str]]] = []
+    # (canonical, [searchable_parts], is_player)。玩家方角色（真人/AI 队友）只用于
+    # 命中后**阻止**抽取，绝不作为说话人——玩家不通过 KP 旁白发言，旁白里靠近其名字
+    # 的引号文本多是书写/刻字内容或 KP 误代言，应留在旁白而非渲染成其对话气泡。
+    npc_matchers: list[tuple[str, list[str], bool]] = []
     for _n in (npcs or []):
         _name = _n.get("name", "")
         if not _name:
@@ -138,7 +141,7 @@ async def _stream_narration_filtered(
                     p.strip() for p in _name.split(_sep) if len(p.strip()) >= 2
                 )
                 break
-        npc_matchers.append((_name, _parts))
+        npc_matchers.append((_name, _parts, bool(_n.get("is_player"))))
     extracted = result[2]
     last_speaker: str | None = None
     bracket_speaker: str | None = None
@@ -146,7 +149,9 @@ async def _stream_narration_filtered(
 
     def _match_npc(text: str) -> str | None:
         text = text.strip()
-        for canonical, parts in npc_matchers:
+        for canonical, parts, is_player in npc_matchers:
+            if is_player:
+                continue
             if text == canonical or text in parts:
                 return canonical
         return None
@@ -155,7 +160,9 @@ async def _stream_narration_filtered(
         s = text.rstrip()
         if not s:
             return text, None
-        for canonical, parts in npc_matchers:
+        for canonical, parts, is_player in npc_matchers:
+            if is_player:
+                continue
             for part in parts:
                 for _sfx in (part + "：", part + "说道：", part + "说：", part + "说道，", part + "说，"):
                     if s.endswith(_sfx):
@@ -241,14 +248,20 @@ async def _stream_narration_filtered(
                     best_canonical: str | None = None
                     best_pos = -1
                     best_len = -1
-                    for canonical, parts in npc_matchers:
+                    best_is_player = False
+                    for canonical, parts, is_player in npc_matchers:
                         for part in parts:
                             pos = context.rfind(part)
                             if pos >= 0 and (len(part), pos) > (best_len, best_pos):
                                 best_pos = pos
                                 best_len = len(part)
                                 best_canonical = canonical
-                    if best_canonical is None:
+                                best_is_player = is_player
+                    if best_is_player:
+                        # 最近的匹配是玩家方角色 → 该引号不是 NPC 台词（书写/刻字内容
+                        # 或 KP 误代言）→ 不抽取，整段留在旁白里
+                        best_canonical = None
+                    elif best_canonical is None:
                         best_canonical = last_speaker
                     if best_canonical:
                         last_speaker = best_canonical
