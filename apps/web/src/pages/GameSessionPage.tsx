@@ -7,7 +7,9 @@ import { api, connectSSE } from '../api/client'
 import { useSessionStore } from '../stores/sessionStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { PartyRoster } from '../components/game/PartyRoster'
+import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { GiReturnArrow } from 'react-icons/gi'
+import { Copy, Bot } from 'lucide-react'
 
 const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE):[^\]]*\]/g
 const OOC_RE = /（[^（）]*）|\([^()]*\)/g
@@ -103,13 +105,13 @@ export function GameSessionPage() {
     }
     return m
   }, [currentSession?.participants])
-  const actorIcon = (name?: string, isPlayer?: boolean): string => {
-    if (isPlayer) return '🙋'
+  const actorKind = (name?: string, isPlayer?: boolean): SeatKind => {
+    if (isPlayer) return 'me'
     const p = name ? partyByName[name] : undefined
-    if (p?.isMine) return '🙋'
-    if (p?.role === 'ai') return '🤖'
-    if (p?.role === 'human') return '👤'
-    return ''  // NPC / 未知
+    if (p?.isMine) return 'me'
+    if (p?.role === 'ai') return 'ai'
+    if (p?.role === 'human') return 'human'
+    return 'npc'
   }
 
   const seenIds = useRef<Set<string>>(new Set())
@@ -316,11 +318,11 @@ export function GameSessionPage() {
           {currentSession.room_code && (
             <button
               onClick={() => { navigator.clipboard?.writeText(currentSession.room_code || ''); toast.success(`房间码 ${currentSession.room_code} 已复制`) }}
-              className="text-xs px-2 py-0.5 rounded border"
+              className="text-xs px-2 py-0.5 rounded border inline-flex items-center gap-1"
               style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
               title="点击复制房间码，分享给队友加入"
             >
-              房间码 {currentSession.room_code} ⧉
+              房间码 {currentSession.room_code} <Copy size={11} />
             </button>
           )}
           <button
@@ -387,12 +389,12 @@ export function GameSessionPage() {
                 </div>
               )
             }
-            const icon = showLabel ? actorIcon(msg.actor_name, isPlayer) : ''
+            const kind = showLabel ? actorKind(msg.actor_name, isPlayer) : 'npc'
             return (
               <div key={msg.id} className={`chat-msg chat-msg--${msg.type}`}>
                 {showLabel && (
-                  <div className={isPlayer ? 'chat-actor-player' : 'chat-actor'}>
-                    {icon && <span style={{ marginRight: 3 }}>{icon}</span>}
+                  <div className={`inline-flex items-center gap-1 ${isPlayer ? 'chat-actor-player' : 'chat-actor'}`}>
+                    {kind !== 'npc' && <SeatIcon kind={kind} size={12} />}
                     {msg.actor_name}
                     {fmtTime(msg.ts) && <span style={{ marginLeft: 6, fontSize: '0.6rem', opacity: 0.5 }}>{fmtTime(msg.ts)}</span>}
                   </div>
@@ -449,7 +451,7 @@ export function GameSessionPage() {
             onCompositionStart={() => { composingRef.current = true }}
             onCompositionEnd={() => { composingRef.current = false }}
             onKeyDown={(e) => {
-              if (composingRef.current) return
+              if (composingRef.current || e.nativeEvent.isComposing) return
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
                 sendMessage()
@@ -477,7 +479,7 @@ export function GameSessionPage() {
               className="flex items-center justify-between px-3 py-1.5 text-xs border-b"
               style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
             >
-              <span>🤖 队友角色卡</span>
+              <span className="inline-flex items-center gap-1"><Bot size={12} /> 队友角色卡</span>
               <button
                 onClick={() => setPanelCharId(null)}
                 className="btn-secondary !px-2 !py-0.5"

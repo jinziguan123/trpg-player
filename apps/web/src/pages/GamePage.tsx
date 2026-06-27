@@ -6,7 +6,9 @@ import { useSessionStore } from '../stores/sessionStore'
 import { useModuleStore } from '../stores/moduleStore'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
+import { SeatIcon } from '../components/game/SeatIcon'
 import { GiReturnArrow } from 'react-icons/gi'
+import { Sparkles } from 'lucide-react'
 
 interface Character {
   id: string
@@ -259,10 +261,11 @@ export function GamePage() {
                 return (
                   <div key={i} className="flex items-center gap-2 mb-2">
                     <span
-                      className="badge whitespace-nowrap"
+                      className="badge whitespace-nowrap inline-flex items-center gap-1"
                       style={i === 0 ? { borderColor: 'var(--color-accent)', color: 'var(--color-text-accent)' } : undefined}
                     >
-                      {i === 0 ? '★ 你（真人）' : emptyHuman ? `🪑 真人 ${i}` : `🤖 AI 队友 ${i}`}
+                      <SeatIcon kind={i === 0 ? 'me' : emptyHuman ? 'empty' : 'ai'} size={12} />
+                      {i === 0 ? '你（真人）' : emptyHuman ? `真人 ${i}` : `AI 队友 ${i}`}
                     </span>
                     {emptyHuman ? (
                       <span className="flex-1 text-xs italic" style={{ color: 'var(--color-text-secondary)' }}>
@@ -291,10 +294,10 @@ export function GamePage() {
                       <button
                         onClick={() => generateForSeat(i)}
                         disabled={generatingSeat !== null}
-                        className="btn-secondary !px-2 !py-1 text-xs whitespace-nowrap"
+                        className="btn-secondary !px-2 !py-1 text-xs whitespace-nowrap inline-flex items-center gap-1"
                         title="让 AI 现场生成一张贴合模组的角色卡填入此席位"
                       >
-                        {generatingSeat === i ? '生成中…' : '✨ 生成'}
+                        {generatingSeat === i ? '生成中…' : <><Sparkles size={11} /> 生成</>}
                       </button>
                     )}
                   </div>

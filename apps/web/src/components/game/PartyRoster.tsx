@@ -1,4 +1,5 @@
 import type { SessionParticipant } from '../../stores/sessionStore'
+import { SeatIcon, seatKind } from './SeatIcon'
 
 interface Props {
   participants: SessionParticipant[]
@@ -15,7 +16,6 @@ export function PartyRoster({ participants, selectedId, onSelect }: Props) {
     <div className="flex flex-wrap items-center gap-1.5">
       {sorted.map((p) => {
         const empty = p.role === 'human' && !p.character_id
-        const icon = empty ? '🪑' : p.role === 'ai' ? '🤖' : p.is_mine ? '🙋' : '👤'
         const active = !!p.character_id && selectedId === p.character_id
         const highlight = active || p.is_mine
         return (
@@ -32,7 +32,7 @@ export function PartyRoster({ participants, selectedId, onSelect }: Props) {
             }}
             title={empty ? '空席 · 等待真人加入' : p.role === 'ai' ? 'AI 队友 — 点击查看角色卡' : p.is_mine ? '你 — 点击查看角色卡' : '真人玩家 — 点击查看角色卡'}
           >
-            <span style={{ fontSize: '0.65rem' }}>{icon}</span>
+            <SeatIcon kind={seatKind(p)} size={13} />
             {!empty && p.role === 'human' && (
               <span
                 title={p.is_online ? '在线' : '离线'}

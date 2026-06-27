@@ -4,7 +4,9 @@ import { toast } from 'sonner'
 import { api, connectSSE } from '../api/client'
 import type { SessionParticipant } from '../stores/sessionStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
+import { SeatIcon, seatKind } from '../components/game/SeatIcon'
 import { GiReturnArrow } from 'react-icons/gi'
+import { Copy, Sparkles } from 'lucide-react'
 
 interface Character {
   id: string
@@ -215,14 +217,6 @@ export function RoomLobbyPage() {
   const seatGaps = gaps(room)
   const seats = [...room.participants].sort((a, b) => a.seat_order - b.seat_order)
 
-  const seatIcon = (p: SessionParticipant) => {
-    if (!p.character_id) return '🪑'
-    if (p.role === 'ai') return '🤖'
-    if (p.is_host) return '👑'
-    if (p.is_mine) return '🙋'
-    return '👤'
-  }
-
   return (
     <div className="flex h-full gap-0">
       <div className="flex flex-col flex-1 min-w-0 max-w-3xl mx-auto w-full">
@@ -234,8 +228,8 @@ export function RoomLobbyPage() {
             房间大厅 · {room.module_title || '未知模组'}
           </span>
           {room.room_code && (
-            <button onClick={copyCode} className="ml-auto badge" title="点击复制房间码">
-              房间码 {room.room_code} ⧉
+            <button onClick={copyCode} className="ml-auto badge inline-flex items-center gap-1" title="点击复制房间码">
+              房间码 {room.room_code} <Copy size={11} />
             </button>
           )}
         </div>
@@ -259,7 +253,7 @@ export function RoomLobbyPage() {
               const canKick = amHost && p.character_id && p.role === 'human' && !p.is_primary
               return (
                 <div key={p.seat_order} className="flex items-center gap-2 px-2 py-1.5 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
-                  <span style={{ fontSize: '0.8rem' }}>{seatIcon(p)}</span>
+                  <SeatIcon kind={seatKind(p)} size={15} />
                   {showDot && (
                     <span
                       title={p.is_online ? '在线' : '离线'}
@@ -307,8 +301,8 @@ export function RoomLobbyPage() {
                       {c.name}
                     </button>
                   ))}
-                  <button onClick={generateAndClaim} disabled={busy} className="btn-secondary !px-2 !py-1 text-xs">
-                    {busy ? '处理中…' : '✨ AI 生成角色并入座'}
+                  <button onClick={generateAndClaim} disabled={busy} className="btn-secondary !px-2 !py-1 text-xs inline-flex items-center gap-1">
+                    {busy ? '处理中…' : <><Sparkles size={12} /> AI 生成角色并入座</>}
                   </button>
                 </div>
               </div>
@@ -345,7 +339,11 @@ export function RoomLobbyPage() {
             <input
               value={chatInput}
               onChange={(e) => onChatInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') sendChat() }}
+              onKeyDown={(e) => {
+                // 输入法合成中（中文选词/确认）的回车不当作发送
+                if (e.nativeEvent.isComposing) return
+                if (e.key === 'Enter') { e.preventDefault(); sendChat() }
+              }}
               placeholder={mySeat ? '说点什么…' : '入座后可发言'}
               disabled={!mySeat}
               className="input flex-1"
