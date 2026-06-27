@@ -180,6 +180,16 @@ def retrieve(
     ]
 
 
+def has_rulebook(db: Session, rule_system: str) -> bool:
+    """该规则系统是否已有可检索（ready）的规则书。"""
+    return (
+        db.query(Rulebook.id)
+        .filter(Rulebook.rule_system == rule_system, Rulebook.status == "ready")
+        .first()
+        is not None
+    )
+
+
 def list_rulebooks(db: Session) -> list[Rulebook]:
     return db.query(Rulebook).order_by(Rulebook.created_at.desc()).all()
 

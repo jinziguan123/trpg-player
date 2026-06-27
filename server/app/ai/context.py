@@ -6,7 +6,11 @@ from app.models.character import Character
 from app.models.event_log import EventLog
 from app.models.module import Module
 from app.models.session import GameSession
-from app.ai.prompts.kp_system import KP_SYSTEM_PROMPT, KP_OPENING_PROMPT
+from app.ai.prompts.kp_system import (
+    KP_SYSTEM_PROMPT,
+    KP_OPENING_PROMPT,
+    RULE_LOOKUP_INSTRUCTION,
+)
 from app.ai.prompts.npc_system import NPC_SYSTEM_PROMPT
 from app.ai.prompts.team_system import TEAM_SYSTEM_PROMPT
 
@@ -247,6 +251,7 @@ def build_kp_context(
     player_char: Character,
     events: list[EventLog],
     teammates: list[Character] | None = None,
+    rules_lookup_enabled: bool = False,
 ) -> list[dict]:
     current_scene = _find_scene(module, session.current_scene_id)
 
@@ -296,6 +301,10 @@ def build_kp_context(
         clues_info=clues_info,
         player_info=player_info,
     )
+
+    # 仅在挂载了规则书时广告 [RULE_LOOKUP] 能力（无书时不让 KP 发空查询）。
+    if rules_lookup_enabled:
+        system_content += RULE_LOOKUP_INSTRUCTION
 
     party_char_ids = {player_char.id} | {t.id for t in teammates}
 

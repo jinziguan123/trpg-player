@@ -13,12 +13,15 @@ from app.ai.agents.npc_agent import NPCAgent
 from app.ai.agents.team_agent import TeamAgent
 from app.ai.context import build_kp_context, build_npc_context, build_team_context
 from app.ai.llm_factory import get_llm
-from app.ai.prompts.kp_system import KP_DICE_CONTINUATION_PROMPT
+from app.ai.prompts.kp_system import (
+    KP_DICE_CONTINUATION_PROMPT,
+    KP_RULE_CONTINUATION_PROMPT,
+)
 from app.models.character import Character
 from app.models.module import Module
 from app.models.session import GameSession
 from app.rules.registry import get_engine
-from app.services import session_service
+from app.services import rulebook_service, session_service
 from app.services.room_hub import room_hub
 
 logger = logging.getLogger(__name__)
@@ -38,8 +41,17 @@ NPC_ACT_RE = re.compile(
 SCENE_CHANGE_RE = re.compile(
     r"\[SCENE_CHANGE:\s*scene_id=([^\]]+)\]"
 )
+RULE_LOOKUP_RE = re.compile(
+    r"\[RULE_LOOKUP:\s*query=([^\]]+)\]"
+)
 
-CMD_TAG_PREFIXES = ("DICE_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:", "SCENE_CHANGE:")
+CMD_TAG_PREFIXES = (
+    "DICE_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:", "SCENE_CHANGE:",
+    "RULE_LOOKUP:",
+)
+
+# 单次生成内最多连续查阅规则书的次数（防止 KP 反复查导致长链/慢）
+MAX_RULE_LOOKUPS = 2
 
 # 中/英文小括号内为 OOC（场外交流）：只在房间内广播，不进入 KP 上下文、不触发生成。
 OOC_RE = re.compile(r"（[^（）]*）|\([^()]*\)")
@@ -458,8 +470,11 @@ async def _run_generation(
 ) -> None:
     llm = get_llm()
     kp = KPAgent(llm)
+    # 仅在非开场、且该规则系统已挂载规则书时，向 KP 广告 [RULE_LOOKUP] 能力
+    rules_enabled = bool(events) and rulebook_service.has_rulebook(db, module.rule_system)
     messages = build_kp_context(
         game_session, module, player_char, events, teammates=teammates,
+        rules_lookup_enabled=rules_enabled,
     )
 
     result = ["", "", []]
@@ -579,7 +594,20 @@ async def _process_commands(
     game_session: GameSession,
     llm,
     teammates: list[Character] | None = None,
+    allow_rule_lookup: bool = True,
+    lookup_depth: int = 0,
 ) -> AsyncIterator[str]:
+    # 规则书查阅是终止性指令（独占一次回复的最后一行）：命中即查阅+续写，不再处理本段其余
+    if allow_rule_lookup and lookup_depth < MAX_RULE_LOOKUPS:
+        lookup = RULE_LOOKUP_RE.search(kp_text)
+        if lookup:
+            async for chunk in _handle_rule_lookup(
+                db, session_id, lookup.group(1).strip(), module, player_char,
+                game_session, llm, teammates=teammates, lookup_depth=lookup_depth,
+            ):
+                yield chunk
+            return
+
     dice_descriptions: list[str] = []
 
     for match in SAN_CHECK_RE.finditer(kp_text):
@@ -753,3 +781,61 @@ async def _process_commands(
             "dialogue", npc_response, actor_name=npc_name,
             event_id=ev.id, actor_id=npc_id,
         )
+
+
+async def _handle_rule_lookup(
+    db: Session,
+    session_id: str,
+    query: str,
+    module: Module,
+    player_char: Character,
+    game_session: GameSession,
+    llm,
+    teammates: list[Character] | None = None,
+    lookup_depth: int = 0,
+) -> AsyncIterator[str]:
+    """KP 发起 [RULE_LOOKUP] 后：检索规则书原文 → 回灌让 KP 据此续写裁定。
+
+    透明提示一条 ephemeral system（不落库）；检索不到时给降级文案让 KP 凭经验处理。
+    续写产物再过一遍 _process_commands（禁再查阅），以便"查完规则随即发起检定"成立。
+    """
+    yield _make_chunk("system", "📖 守秘人翻阅规则书……")
+
+    hits = rulebook_service.retrieve(db, query, module.rule_system, k=3)
+    if hits:
+        passages = "\n\n".join(f"[第 {h['page']} 页] {h['text']}" for h in hits)
+    else:
+        passages = "（未在规则书中找到直接匹配的内容，请依据《裁定手册》与你的经验处理。）"
+
+    continuation = KP_RULE_CONTINUATION_PROMPT.format(query=query, passages=passages)
+    events = session_service.get_session_events(db, session_id)
+    messages = build_kp_context(
+        game_session, module, player_char, events, teammates=teammates,
+        rules_lookup_enabled=False,  # 续写阶段不再广告查阅，避免长链
+    )
+    messages.append({"role": "user", "content": continuation})
+
+    kp = KPAgent(llm)
+    cont_result = ["", "", []]
+    try:
+        async for chunk in _stream_narration_filtered(
+            kp, messages, cont_result, npcs=_matcher_npcs(module, teammates),
+        ):
+            yield chunk
+    finally:
+        cont_narration = cont_result[0].rstrip()
+        if cont_narration:
+            session_service.add_event(
+                db, session_id, "narration", cont_narration, actor_name="KP",
+            )
+        for npc_name, dialogue_text in cont_result[2]:
+            session_service.add_event(
+                db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
+            )
+
+    # 续写里可能含查完规则后发起的检定/场景切换等，照常处理（但禁止再次查阅）
+    async for chunk in _process_commands(
+        db, session_id, cont_result[1], module, player_char, game_session, llm,
+        teammates=teammates, allow_rule_lookup=False, lookup_depth=lookup_depth + 1,
+    ):
+        yield chunk
