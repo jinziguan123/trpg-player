@@ -148,7 +148,7 @@ def test_kp_context_includes_party(db_factory):
 
     messages = ctx.build_kp_context(session, module, hero, events, teammates=teammates)
     system = messages[0]["content"]
-    assert "同行的 AI 队友" in system
+    assert "同场的其他玩家角色" in system
     assert "阿尔法" in system and "贝塔" in system
 
     # 队友发言进入 user 侧、带「队友·」前缀，不会被误判成 KP 的 assistant 输出

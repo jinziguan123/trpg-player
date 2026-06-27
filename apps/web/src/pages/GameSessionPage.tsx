@@ -71,7 +71,6 @@ export function GameSessionPage() {
     setCurrentSession, loadHistory, loadOlderEvents,
     hasMoreHistory, loadingOlder,
     startStreamMessage, appendToStream, endStream,
-    fetchSessions, sessions,
   } = useSessionStore()
 
   const [panelChar, setPanelChar] = useState<Character | null>(null)
@@ -129,6 +128,16 @@ export function GameSessionPage() {
     liveTypeRef.current = ''
   }, [sessionId, loadHistory])
 
+  // 节流刷新会话（席位/在线变更用）：合并 400ms 内的连续 presence/seat，避免风暴
+  const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const refetchSession = useCallback(() => {
+    if (!sessionId || refetchTimer.current) return
+    refetchTimer.current = setTimeout(() => {
+      refetchTimer.current = null
+      api.get(`/sessions/${sessionId}`).then((s) => setCurrentSession(s as never)).catch(() => {})
+    }, 400)
+  }, [sessionId, setCurrentSession])
+
   // 处理一条房间实时事件（/live）。离散事件按 id 去重；叙述 token 流式拼接。
   const handleLiveChunk = useCallback((chunk: ChunkPayload) => {
     const t = chunk.type
@@ -145,18 +154,14 @@ export function GameSessionPage() {
     }
     if (t === 'seat') {
       // 有人入座：刷新房间席位（更新队伍条与 is_mine），并提示一条系统消息
-      if (sessionId) {
-        api.get(`/sessions/${sessionId}`).then((s) => setCurrentSession(s as never)).catch(() => {})
-      }
+      refetchSession()
       endStream(); liveTypeRef.current = ''
       addMessage({ id: '', type: 'system', content: chunk.content || '有新成员入座', actor_name: chunk.actor_name })
       return
     }
     if (t === 'presence') {
       // 有人上/下线：刷新席位以更新队伍条上的在线点
-      if (sessionId) {
-        api.get(`/sessions/${sessionId}`).then((s) => setCurrentSession(s as never)).catch(() => {})
-      }
+      refetchSession()
       return
     }
     if (t === 'typing') {
@@ -190,7 +195,7 @@ export function GameSessionPage() {
     } else if (t === 'dice' || t === 'system' || t === 'ooc') {
       addMessage({ id: chunk.id || '', type: t, content: chunk.content || '', actor_name: chunk.actor_name, metadata: chunk.metadata })
     }
-  }, [addMessage, appendToStream, endStream, startStreamMessage, setCurrentSession, sessionId, resyncHistory])
+  }, [addMessage, appendToStream, endStream, startStreamMessage, resyncHistory, refetchSession])
 
   useEffect(() => {
     if (!sessionId) return
@@ -200,17 +205,18 @@ export function GameSessionPage() {
     liveTypeRef.current = ''
     const init = async () => {
       clearMessages()
-      let list = useSessionStore.getState().sessions
-      if (list.length === 0) {
-        await fetchSessions()
-        list = useSessionStore.getState().sessions
+      // 直接拉新鲜会话状态，不信缓存列表——否则刚从大厅开局过来时缓存还是 setup，
+      // 会与大厅页的 active 跳转来回弹跳（疯狂刷新 / 参与者被弹回 /game）。
+      let session
+      try {
+        session = await api.get<{ id: string; status: string }>(`/sessions/${sessionId}`)
+      } catch {
+        navigate('/game', { replace: true }); return
       }
-      const session = list.find((s) => s.id === sessionId)
-      if (!session) { navigate('/game', { replace: true }); return }
-      // 仍在大厅（未开局）→ 去大厅页
-      if (session.status === 'setup') { navigate(`/room/${sessionId}`, { replace: true }); return }
       if (cancelled) return
-      setCurrentSession(session)
+      if (!session) { navigate('/game', { replace: true }); return }
+      if (session.status === 'setup') { navigate(`/room/${sessionId}`, { replace: true }); return }
+      setCurrentSession(session as never)
 
       if (isNew && !openingTriggered.current) {
         openingTriggered.current = true
@@ -313,7 +319,7 @@ export function GameSessionPage() {
             <GiReturnArrow /> 返回列表
           </button>
           <span className="text-sm font-semibold" style={{ color: 'var(--color-text-accent)' }}>
-            {sessions.find((s) => s.id === currentSession.id)?.module_title || '游戏中'}
+            {currentSession.module_title || '游戏中'}
           </span>
           {currentSession.room_code && (
             <button
@@ -393,7 +399,7 @@ export function GameSessionPage() {
             return (
               <div key={msg.id} className={`chat-msg chat-msg--${msg.type}`}>
                 {showLabel && (
-                  <div className={`inline-flex items-center gap-1 ${isPlayer ? 'chat-actor-player' : 'chat-actor'}`}>
+                  <div className={`flex items-center gap-1 ${isPlayer ? 'justify-end chat-actor-player' : 'chat-actor'}`}>
                     {kind !== 'npc' && <SeatIcon kind={kind} size={12} />}
                     {msg.actor_name}
                     {fmtTime(msg.ts) && <span style={{ marginLeft: 6, fontSize: '0.6rem', opacity: 0.5 }}>{fmtTime(msg.ts)}</span>}

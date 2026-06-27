@@ -224,15 +224,17 @@ def build_kp_context(
     if teammates:
         team_lines = "\n".join(_format_teammate_brief(t) for t in teammates)
         player_info += (
-            "\n\n## 同行的 AI 队友（重要规则）\n"
-            "以下队友和玩家一样，是由各自独立的 AI 扮演的「玩家方角色」，"
-            "他们会在轮到自己时自行说话和行动，其发言会作为独立消息出现在对话里"
-            "（形如「[队友·名字] …」）。\n"
+            f"\n\n## 同场的其他玩家角色（共 {len(teammates)} 名，与上面这位**地位完全平等**）\n"
+            "本场是多人同桌：以下每个都是独立的玩家方角色（由真人或各自的 AI 扮演），"
+            "他们会自行说话和行动，发言作为独立消息出现（形如「[队友·名字] …」）。\n"
             + team_lines
-            + "\n\n**铁律（违反即严重错误）**：你绝对不能替这些队友说话、写他们的台词、"
-            "替他们做决定、描述他们的主动行动或心理活动——这与你不能替玩家做决定是同一条规则。"
-            "队友该说什么、做什么，由他们自己产出，不归你管。你只负责：描述环境与场景变化、"
-            "扮演模组中的 NPC、裁定检定结果、对整个队伍已经做出的行动给出世界的回应。"
+            + "\n\n**多人叙事铁律（违反即严重错误）**：\n"
+            "1. **平等对待所有玩家角色**——开场白和叙事绝不要只围绕某一个人（尤其别独宠主角），"
+            "要让每位在场角色都有存在感、各自登场；点名、给戏份要照顾到所有人。\n"
+            "2. **绝不替任何玩家角色行动或说话**——包括上面这位主角和这些同伴："
+            "不写他们的台词、不描述他们的主动行动/姿态/心理活动、不替他们做决定。"
+            "他们做什么、说什么，全部由他们自己产出，不归你管。\n"
+            "你只负责：描述环境与场景、扮演模组 NPC、裁定检定、对全队已经做出的行动给出世界的回应。"
         )
 
     system_content = KP_SYSTEM_PROMPT.format(
@@ -257,7 +259,15 @@ def build_kp_context(
     messages = [{"role": "system", "content": system_content}]
 
     if not events:
-        messages.append({"role": "user", "content": KP_OPENING_PROMPT})
+        opening = KP_OPENING_PROMPT
+        if teammates:
+            opening += (
+                f"\n\n【多人开场】在场共 {len(teammates) + 1} 名玩家角色，地位平等。"
+                "开场白要让每一位都自然登场、各有存在感，不要只对某一个人说话、也不要把镜头只对准主角。"
+                "只铺好场景、氛围与全队共同面对的处境即可；"
+                "绝不要替任何玩家描写其动作、姿态或台词——把第一步行动权完整留给玩家们。"
+            )
+        messages.append({"role": "user", "content": opening})
     else:
         event_budget = CONTEXT_TOKEN_BUDGET - system_tokens - RESERVE_FOR_OUTPUT
 
