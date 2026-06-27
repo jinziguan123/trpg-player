@@ -205,7 +205,14 @@ export function GamePage() {
     return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
   }
 
-  const activeSessions = sessions.filter((s) => s.status === 'active' || s.status === 'paused')
+  // 含 setup（大厅中、等开局）的房间，否则建完房返回就"看不见"了
+  const activeSessions = sessions.filter(
+    (s) => s.status === 'active' || s.status === 'paused' || s.status === 'setup'
+  )
+  const sessionTarget = (s: { id: string; status: string }) =>
+    s.status === 'setup' ? `/room/${s.id}` : `/game/${s.id}`
+  const statusBadge = (status: string) =>
+    status === 'setup' ? '大厅中' : status === 'active' ? '进行中' : '已暂停'
 
   return (
     <div className="max-w-2xl mx-auto mt-8">
@@ -346,14 +353,14 @@ export function GamePage() {
 
       {activeSessions.length > 0 && (
         <div>
-          <h3 className="card-title">继续游戏</h3>
+          <h3 className="card-title">我的房间</h3>
           {activeSessions.map((s) => (
             <div
               key={s.id}
-              onClick={() => navigate(`/game/${s.id}`)}
+              onClick={() => navigate(sessionTarget(s))}
               role="button"
               tabIndex={0}
-              onKeyDown={(e) => { if (e.key === 'Enter') navigate(`/game/${s.id}`) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') navigate(sessionTarget(s)) }}
               className="card w-full text-left mb-2 hover:border-[var(--color-accent)] transition-colors cursor-pointer"
             >
               <div className="flex items-center justify-between">
@@ -368,7 +375,7 @@ export function GamePage() {
                   <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
                     {formatTime(s.created_at)}
                   </span>
-                  <span className="badge">{s.status === 'active' ? '进行中' : '已暂停'}</span>
+                  <span className="badge">{statusBadge(s.status)}</span>
                   <ConfirmDialog
                     title="删除游戏"
                     description="确定要删除该游戏存档吗？聊天记录将一并删除，此操作不可恢复。"
