@@ -33,6 +33,13 @@ export function PartyRoster({ participants, selectedId, onSelect }: Props) {
             title={empty ? '空席 · 等待真人加入' : p.role === 'ai' ? 'AI 队友 — 点击查看角色卡' : p.is_mine ? '你 — 点击查看角色卡' : '真人玩家 — 点击查看角色卡'}
           >
             <span style={{ fontSize: '0.65rem' }}>{icon}</span>
+            {!empty && p.role === 'human' && (
+              <span
+                title={p.is_online ? '在线' : '离线'}
+                style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                  background: p.is_online ? 'var(--color-success)' : 'var(--color-border)' }}
+              />
+            )}
             {empty ? `空席 ${p.seat_order}` : (p.character_name || '未知角色')}
             {p.is_mine && !empty ? '（我）' : ''}
           </button>

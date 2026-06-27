@@ -72,6 +72,12 @@ export function GameSessionPage() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const openingTriggered = useRef(false)
   const composingRef = useRef(false)
+  const [typingName, setTypingName] = useState('')
+  const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastTypingSent = useRef(0)
+  const myName = currentSession?.participants?.find((p) => p.is_mine)?.character_name ?? null
+  const myNameRef = useRef<string | null>(null)
+  myNameRef.current = myName
 
   const seenIds = useRef<Set<string>>(new Set())
   const liveTypeRef = useRef<string>('')
@@ -108,6 +114,21 @@ export function GameSessionPage() {
       }
       endStream(); liveTypeRef.current = ''
       addMessage({ id: '', type: 'system', content: chunk.content || '有新成员入座', actor_name: chunk.actor_name })
+      return
+    }
+    if (t === 'presence') {
+      // 有人上/下线：刷新席位以更新队伍条上的在线点
+      if (sessionId) {
+        api.get(`/sessions/${sessionId}`).then((s) => setCurrentSession(s as never)).catch(() => {})
+      }
+      return
+    }
+    if (t === 'typing') {
+      if (chunk.actor_name && chunk.actor_name !== myNameRef.current) {
+        setTypingName(chunk.actor_name)
+        if (typingTimer.current) clearTimeout(typingTimer.current)
+        typingTimer.current = setTimeout(() => setTypingName(''), 3000)
+      }
       return
     }
     if (t === 'narration') {
@@ -338,6 +359,11 @@ export function GameSessionPage() {
           )}
         </div>
 
+        {typingName && (
+          <div className="px-3 pb-1 text-xs italic" style={{ color: 'var(--color-text-secondary)' }}>
+            {typingName} 正在输入…
+          </div>
+        )}
         <div className="chat-input-bar">
           <textarea
             ref={inputRef}
@@ -346,6 +372,12 @@ export function GameSessionPage() {
               setInput(e.target.value)
               e.target.style.height = 'auto'
               e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'
+              // 节流上报"正在输入"给同房间其他人
+              const now = Date.now()
+              if (currentSession && e.target.value && now - lastTypingSent.current > 2000) {
+                lastTypingSent.current = now
+                api.post(`/sessions/${currentSession.id}/typing`).catch(() => {})
+              }
             }}
             onCompositionStart={() => { composingRef.current = true }}
             onCompositionEnd={() => { composingRef.current = false }}
