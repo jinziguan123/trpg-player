@@ -55,6 +55,30 @@ def _narrations(db_factory, session_id) -> list:
     ]
 
 
+class _FakeKP:
+    def __init__(self, text):
+        self.text = text
+
+    async def narrate(self, messages):
+        for ch in self.text:
+            yield ch
+
+
+def test_inline_quote_attributed_to_teammate_not_nearby_npc():
+    """KP 行内引号台词应归给真正的说话者（队友），而非附近提到的模组 NPC。"""
+    text = (
+        "失踪的萨沙·卡纳的帐篷扎在西面。"
+        "约翰·卡特似乎想到了这一点，他开口道：“我们先去帐篷找线索吧。”"
+    )
+    # 队友约翰·卡特已被加入匹配名单（修复点）
+    npcs = [{"name": "萨沙·卡纳"}, {"name": "约翰·卡特"}]
+    result = ["", "", []]
+    asyncio.run(_collect(chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)))
+    speakers = [name for name, _ in result[2]]
+    assert "约翰·卡特" in speakers
+    assert "萨沙·卡纳" not in speakers
+
+
 def _patch_runtime(monkeypatch, db_factory):
     """把 chat_service 的运行期依赖换成测试可控的桩。"""
     import app.database as database

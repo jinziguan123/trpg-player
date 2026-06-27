@@ -78,6 +78,16 @@ export function GameSessionPage() {
   const myCharIdRef = useRef<string | null>(null)
   useEffect(() => { myCharIdRef.current = myCharId }, [myCharId])
 
+  // 从数据库重新对齐历史（替换式），并重建去重集。用于：每次(重)连接、生成结束。
+  const resyncHistory = useCallback(async () => {
+    if (!sessionId) return
+    await loadHistory(sessionId)
+    const s = new Set<string>()
+    for (const m of useSessionStore.getState().messages) if (m.id) s.add(m.id)
+    seenIds.current = s
+    liveTypeRef.current = ''
+  }, [sessionId, loadHistory])
+
   // 处理一条房间实时事件（/live）。离散事件按 id 去重；叙述 token 流式拼接。
   const handleLiveChunk = useCallback((chunk: ChunkPayload) => {
     const t = chunk.type
@@ -86,6 +96,9 @@ export function GameSessionPage() {
     if (t === 'done') {
       endStream(); liveTypeRef.current = ''
       setStreaming(false); setRefreshTick((x) => x + 1)
+      // 生成结束后从 DB 对齐：用持久化的最终叙述替换流式拼接的内容，
+      // 同时兜住「刷新落在生成完成瞬间」时丢失的那段叙述。
+      void resyncHistory()
       return
     }
     if (t === 'seat') {
@@ -120,7 +133,7 @@ export function GameSessionPage() {
     } else if (t === 'dice' || t === 'system' || t === 'ooc') {
       addMessage({ id: chunk.id || '', type: t, content: chunk.content || '', actor_name: chunk.actor_name, metadata: chunk.metadata })
     }
-  }, [addMessage, appendToStream, endStream, startStreamMessage, setCurrentSession, sessionId])
+  }, [addMessage, appendToStream, endStream, startStreamMessage, setCurrentSession, sessionId, resyncHistory])
 
   useEffect(() => {
     if (!sessionId) return
@@ -140,29 +153,27 @@ export function GameSessionPage() {
       if (cancelled) return
       setCurrentSession(session)
 
-      // 历史 + 分页沿用 /events；先拉历史并把已知 id 种入去重集
-      await loadHistory(sessionId)
-      if (cancelled) return
-      for (const m of useSessionStore.getState().messages) if (m.id) seenIds.current.add(m.id)
-
-      // 后台常驻消费 /live（实时增量），不 await 便于随后触发 opening；
-      // 开连接与触发生成之间的微竞态由服务端 in-flight buffer 兜底重放。
-      void (async () => {
-        try {
-          for await (const chunk of connectSSE(`/sessions/${sessionId}/live`, ac.signal)) {
-            if (cancelled) break
-            handleLiveChunk(chunk as ChunkPayload)
-          }
-        } catch { /* aborted or closed */ }
-      })()
-
       if (isNew && !openingTriggered.current) {
         openingTriggered.current = true
         setStreaming(true)
         api.post(`/sessions/${sessionId}/opening`).catch(() => {})
-      } else {
-        const { generating } = await api.get<{ generating: boolean }>(`/sessions/${sessionId}/generating`)
-        if (!cancelled && generating) setStreaming(true)
+      }
+
+      // /live 常驻消费 + 自动重连：连接断开（服务重启 / 网络抖动 / 休眠）后
+      // 自动重连并每次从 DB 重新对齐，不再「悄悄停更直到手动刷新」。
+      while (!cancelled) {
+        try {
+          await resyncHistory()
+          if (cancelled) break
+          const { generating } = await api.get<{ generating: boolean }>(`/sessions/${sessionId}/generating`)
+          if (!cancelled && generating) setStreaming(true)
+          for await (const chunk of connectSSE(`/sessions/${sessionId}/live`, ac.signal)) {
+            if (cancelled) break
+            handleLiveChunk(chunk as ChunkPayload)
+          }
+        } catch { /* 连接断开或被取消 */ }
+        if (cancelled) break
+        await new Promise((r) => setTimeout(r, 1500))  // 重连退避
       }
     }
     init()

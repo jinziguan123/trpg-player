@@ -78,6 +78,16 @@ def _make_chunk(
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _matcher_npcs(module: Module, teammates: list[Character] | None) -> list[dict]:
+    """供行内台词归属用的名字表：模组 NPC + 在场队友（真人/AI）。
+
+    队友不在 module.npcs 里，若不加进来，KP 偶尔替队友写的引号台词会被
+    错误归给附近提到的某个模组 NPC（如把约翰·卡特的话记到萨沙·卡纳头上）。
+    """
+    extra = [{"name": t.name} for t in (teammates or []) if t.name]
+    return (module.npcs or []) + extra
+
+
 def event_to_chunk(ev) -> str:
     """把一条持久 EventLog 序列化为 /live 重放用的 chunk。"""
     type_map = {"dialogue": "dialogue", "action": "action", "dice": "dice",
@@ -442,9 +452,10 @@ async def _run_generation(
     result = ["", "", []]
     # try/finally 保证流被取消（如硬取消生成 task）时已生成的叙事仍落库，
     # 避免「刷新丢失」类问题；成功路径只落库一次。
+    matcher_npcs = _matcher_npcs(module, teammates)
     try:
         async for chunk in _stream_narration_filtered(
-            kp, messages, result, npcs=module.npcs,
+            kp, messages, result, npcs=matcher_npcs,
         ):
             room_hub.broadcast(session_id, chunk)
     except asyncio.CancelledError:
@@ -682,7 +693,7 @@ async def _process_commands(
         cont_result = ["", "", []]
         try:
             async for chunk in _stream_narration_filtered(
-                kp, messages, cont_result, npcs=module.npcs,
+                kp, messages, cont_result, npcs=_matcher_npcs(module, teammates),
             ):
                 yield chunk
         finally:

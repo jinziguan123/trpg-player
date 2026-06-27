@@ -189,16 +189,30 @@ function SkillsTab({ character }: { character: CharacterData }) {
   )
 }
 
-interface EquipmentItem {
+interface WeaponItem {
   name: string
-  category: string
-  description?: string
+  skill?: string
+  damage?: string
+  range?: string
+  attacks?: number
+  ammo?: string
+}
+
+// 装备可能是字符串数组（AI 建卡/手动选装）或对象数组（兼容历史数据）
+function equipmentName(item: unknown): string {
+  if (typeof item === 'string') return item
+  if (item && typeof item === 'object' && 'name' in item) return String((item as { name: unknown }).name ?? '')
+  return ''
 }
 
 function InventoryTab({ character }: { character: CharacterData }) {
-  const equipment = (character.system_data?.equipment as EquipmentItem[]) || []
+  const sd = character.system_data || {}
+  const equipment = (Array.isArray(sd.equipment) ? sd.equipment : [])
+    .map(equipmentName)
+    .filter(Boolean)
+  const weapons = (Array.isArray(sd.weapons) ? sd.weapons : []) as WeaponItem[]
 
-  if (equipment.length === 0) {
+  if (equipment.length === 0 && weapons.length === 0) {
     return (
       <div className="text-center py-8">
         <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>暂无物品</p>
@@ -206,34 +220,42 @@ function InventoryTab({ character }: { character: CharacterData }) {
     )
   }
 
-  const grouped: Record<string, EquipmentItem[]> = {}
-  for (const item of equipment) {
-    const cat = item.category || '其他'
-    if (!grouped[cat]) grouped[cat] = []
-    grouped[cat].push(item)
-  }
-
   return (
     <div className="space-y-3">
-      {Object.entries(grouped).map(([category, items]) => (
-        <div key={category}>
-          <h4 className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>{category}</h4>
+      {weapons.length > 0 && (
+        <div>
+          <h4 className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>武器</h4>
           <div className="space-y-1">
-            {items.map((item) => (
-              <div
-                key={item.name}
-                className="text-xs px-2 py-1 rounded"
-                style={{ background: 'var(--color-bg-tertiary)' }}
-              >
-                <span>{item.name}</span>
-                {item.description && (
-                  <span className="ml-1" style={{ color: 'var(--color-text-secondary)' }}>— {item.description}</span>
-                )}
+            {weapons.map((w, i) => (
+              <div key={`${w.name}-${i}`} className="text-xs px-2 py-1.5 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+                <div className="flex justify-between">
+                  <span className="font-semibold">{w.name}</span>
+                  {w.damage && <span className="font-mono" style={{ color: 'var(--color-text-secondary)' }}>{w.damage}</span>}
+                </div>
+                <div className="flex gap-2 mt-0.5" style={{ color: 'var(--color-text-secondary)', fontSize: '0.65rem' }}>
+                  {w.skill && <span>技能 {w.skill}</span>}
+                  {w.range && <span>射程 {w.range}</span>}
+                  {w.attacks ? <span>攻击 {w.attacks}</span> : null}
+                  {w.ammo && <span>弹药 {w.ammo}</span>}
+                </div>
               </div>
             ))}
           </div>
         </div>
-      ))}
+      )}
+
+      {equipment.length > 0 && (
+        <div>
+          <h4 className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>随身物品</h4>
+          <div className="flex flex-wrap gap-1">
+            {equipment.map((name, i) => (
+              <span key={`${name}-${i}`} className="text-xs px-2 py-1 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+                {name}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
