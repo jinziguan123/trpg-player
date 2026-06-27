@@ -19,6 +19,20 @@ interface Character {
   status: string
 }
 
+interface Seat {
+  role: 'human' | 'ai'
+  charId: string
+}
+
+/** 从模组 world_setting.player_count（如 "1-4"、"2-6人"）解析推荐人数范围。 */
+function parsePlayerRange(ws?: Record<string, unknown>): { min: number; max: number } {
+  const raw = String((ws?.player_count as string | undefined) ?? '')
+  const nums = (raw.match(/\d+/g) || []).map(Number).filter((n) => n > 0)
+  if (nums.length >= 2) return { min: Math.min(...nums), max: Math.max(...nums) }
+  if (nums.length === 1) return { min: 1, max: nums[0] }
+  return { min: 1, max: 6 }
+}
+
 export function GamePage() {
   const { createSession, fetchSessions, sessions } = useSessionStore()
   const { modules, fetchModules } = useModuleStore()
@@ -26,10 +40,14 @@ export function GamePage() {
   const [heroes, setHeroes] = useState<Character[]>([])
   const [allies, setAllies] = useState<Character[]>([])
   const [moduleId, setModuleId] = useState('')
-  const [charId, setCharId] = useState('')
-  const [teammateIds, setTeammateIds] = useState<string[]>([])
-  const [generating, setGenerating] = useState(false)
+  const [seats, setSeats] = useState<Seat[]>([])
+  const [generatingSeat, setGeneratingSeat] = useState<number | null>(null)
   const [error, setError] = useState('')
+
+  const selectedModule = modules.find((m) => m.id === moduleId)
+  const range = parsePlayerRange(selectedModule?.world_setting)
+  const minSeats = Math.max(range.min, 1)
+  const usedIds = seats.map((s) => s.charId).filter(Boolean)
 
   const refreshCharacters = async () => {
     const [h, a] = await Promise.all([
@@ -46,54 +64,77 @@ export function GamePage() {
     refreshCharacters()
   }, [fetchModules, fetchSessions])
 
-  const toggleTeammate = (id: string) => {
-    setTeammateIds((ids) =>
-      ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]
-    )
+  const onSelectModule = (v: string) => {
+    setModuleId(v)
+    setError('')
+    const r = parsePlayerRange(modules.find((m) => m.id === v)?.world_setting)
+    const n = Math.max(r.min, 1)
+    setSeats(Array.from({ length: n }, (_, i) => ({ role: i === 0 ? 'human' : 'ai', charId: '' })))
   }
 
-  const generateTeammate = async () => {
-    if (!moduleId || generating) return
-    setGenerating(true)
+  const changeSeatCount = (delta: number) => {
+    setSeats((prev) => {
+      const target = Math.max(minSeats, Math.min(range.max, prev.length + delta))
+      const next = prev.slice(0, target)
+      while (next.length < target) next.push({ role: 'ai', charId: '' })
+      if (next[0]) next[0] = { ...next[0], role: 'human' }
+      return next
+    })
+  }
+
+  const assignSeat = (i: number, charId: string) => {
+    setSeats((prev) => prev.map((s, idx) => (idx === i ? { ...s, charId } : s)))
+  }
+
+  const seatOptions = (i: number): Character[] => {
+    const pool = seats[i].role === 'human' ? heroes : allies
+    return pool.filter((c) => c.id === seats[i].charId || !usedIds.includes(c.id))
+  }
+
+  const generateForSeat = async (i: number) => {
+    if (!moduleId || generatingSeat !== null) return
+    const isPlayer = seats[i].role === 'human'
+    setGeneratingSeat(i)
     setError('')
     try {
       const draft = await api.post<Record<string, unknown>>('/characters/ai-generate', {
         module_id: moduleId,
         hint: '',
-        is_player: false,
+        is_player: isPlayer,
       })
       const created = await api.post<Character>('/characters', {
         name: draft.name,
         module_id: moduleId,
         rule_system: (draft.rule_system as string) || 'coc',
-        is_player: false,
+        is_player: isPlayer,
         age: draft.age ?? 25,
         base_attributes: draft.base_attributes,
         skills: draft.skills,
         system_data: draft.system_data,
         backstory: draft.backstory ?? '',
       })
-      setAllies((a) => [created, ...a])
-      setTeammateIds((ids) => [...ids, created.id])
-      toast.success(`AI 队友「${created.name}」已加入候选`)
+      if (isPlayer) setHeroes((h) => [created, ...h])
+      else setAllies((a) => [created, ...a])
+      assignSeat(i, created.id)
+      toast.success(`AI 生成「${created.name}」并填入${i === 0 ? '主角' : `队友${i}`}席位`)
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'AI 生成队友失败'
-      setError(msg)
+      setError(e instanceof Error ? e.message : 'AI 生成角色失败')
     } finally {
-      setGenerating(false)
+      setGeneratingSeat(null)
     }
   }
 
+  const allSeatsFilled = seats.length > 0 && seats.every((s) => s.charId)
+
   const startGame = async () => {
-    if (!moduleId || !charId) return
+    if (!moduleId || !allSeatsFilled) return
     setError('')
     try {
-      const participants = [
-        { character_id: charId, role: 'human', is_primary: true },
-        ...teammateIds
-          .filter((id) => id !== charId)
-          .map((id) => ({ character_id: id, role: 'ai', is_primary: false })),
-      ]
+      const participants = seats.map((s, i) => ({
+        character_id: s.charId,
+        role: s.role,
+        is_primary: i === 0,
+      }))
       const session = await createSession(moduleId, participants)
       navigate(`/game/${session.id}`, { state: { isNew: true } })
     } catch (e: unknown) {
@@ -132,75 +173,80 @@ export function GamePage() {
 
       <div className="card mb-6">
         <h3 className="card-title">新游戏</h3>
-        <div className="flex gap-3 mb-3">
-          <Select value={moduleId} onValueChange={(v) => { setModuleId(v); setCharId(''); setTeammateIds([]) }}>
-            <SelectTrigger className="flex-1">
-              <SelectValue placeholder="— 选择模组 —" />
-            </SelectTrigger>
-            <SelectContent>
-              {modules.map((m) => <SelectItem key={m.id} value={m.id}>{m.title}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Select value={charId} onValueChange={setCharId}>
-            <SelectTrigger className="flex-1">
-              <SelectValue placeholder="— 选择主角 —" />
-            </SelectTrigger>
-            <SelectContent>
-              {heroes.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
 
-        <div className="mb-3">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-medium" style={{ color: 'var(--color-text-secondary)' }}>
-              AI 队友（可选，0~4 名）
-            </span>
-            <button
-              onClick={generateTeammate}
-              disabled={!moduleId || generating}
-              className="btn-secondary !px-2 !py-1 text-xs"
-            >
-              {generating ? '生成中…' : '✨ AI 生成一个队友'}
-            </button>
-          </div>
-          {allies.length === 0 ? (
-            <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-              暂无可选 AI 队友，可点右上角让 AI 现场生成一个。
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {allies.map((c) => {
-                const selected = teammateIds.includes(c.id)
-                const isHero = c.id === charId
-                return (
-                  <button
-                    key={c.id}
-                    onClick={() => toggleTeammate(c.id)}
-                    disabled={isHero}
-                    className="px-2.5 py-1 rounded-full text-xs border transition-colors"
-                    style={{
-                      borderColor: selected ? 'var(--color-accent)' : 'var(--color-border)',
-                      background: selected ? 'var(--color-accent)' : 'transparent',
-                      color: selected ? '#fff' : 'var(--color-text-secondary)',
-                      opacity: isHero ? 0.4 : 1,
-                    }}
-                    title={isHero ? '已作为主角' : undefined}
-                  >
-                    {selected ? '✓ ' : ''}{c.name}
-                  </button>
-                )
-              })}
+        <Select value={moduleId} onValueChange={onSelectModule}>
+          <SelectTrigger className="w-full mb-3">
+            <SelectValue placeholder="— 选择模组 —" />
+          </SelectTrigger>
+          <SelectContent>
+            {modules.map((m) => <SelectItem key={m.id} value={m.id}>{m.title}</SelectItem>)}
+          </SelectContent>
+        </Select>
+
+        {moduleId && (
+          <>
+            {/* 第一步：按模组推荐人数设置玩家席位数 */}
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-sm font-medium">玩家人数</span>
+              <button
+                onClick={() => changeSeatCount(-1)}
+                disabled={seats.length <= minSeats}
+                className="btn-secondary !px-2 !py-0.5 disabled:opacity-40"
+              >−</button>
+              <span className="w-6 text-center font-semibold" style={{ color: 'var(--color-text-accent)' }}>
+                {seats.length}
+              </span>
+              <button
+                onClick={() => changeSeatCount(1)}
+                disabled={seats.length >= range.max}
+                className="btn-secondary !px-2 !py-0.5 disabled:opacity-40"
+              >＋</button>
             </div>
-          )}
-        </div>
+            <p className="text-xs mb-3" style={{ color: 'var(--color-text-secondary)' }}>
+              本模组推荐 {range.min}–{range.max} 人 · KP 由 AI 担任 ·
+              你 1 人 + AI 队友 {Math.max(seats.length - 1, 0)} 人
+              {range.min === 1 && range.max === 6 && !selectedModule?.world_setting?.player_count
+                ? '（模组未标注人数，按默认范围）' : ''}
+            </p>
 
-        {error && (
-          <p className="text-sm mb-2" style={{ color: 'var(--color-danger)' }}>{error}</p>
+            {/* 第二步：逐个席位填入角色 */}
+            <div className="mb-3">
+              {seats.map((seat, i) => (
+                <div key={i} className="flex items-center gap-2 mb-2">
+                  <span
+                    className="badge whitespace-nowrap"
+                    style={i === 0 ? { borderColor: 'var(--color-accent)', color: 'var(--color-text-accent)' } : undefined}
+                  >
+                    {i === 0 ? '★ 你（真人）' : `🤖 AI 队友 ${i}`}
+                  </span>
+                  <Select value={seat.charId} onValueChange={(v) => assignSeat(i, v)}>
+                    <SelectTrigger className="flex-1">
+                      <SelectValue placeholder={i === 0 ? '选择你的角色' : '选择 AI 队友角色'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {seatOptions(i).map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <button
+                    onClick={() => generateForSeat(i)}
+                    disabled={generatingSeat !== null}
+                    className="btn-secondary !px-2 !py-1 text-xs whitespace-nowrap"
+                    title="让 AI 现场生成一张贴合模组的角色卡填入此席位"
+                  >
+                    {generatingSeat === i ? '生成中…' : '✨ 生成'}
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {error && (
+              <p className="text-sm mb-2" style={{ color: 'var(--color-danger)' }}>{error}</p>
+            )}
+            <button onClick={startGame} disabled={!allSeatsFilled} className="btn-primary">
+              开始冒险（{seats.length} 名玩家）
+            </button>
+          </>
         )}
-        <button onClick={startGame} disabled={!moduleId || !charId} className="btn-primary">
-          开始冒险{teammateIds.filter((id) => id !== charId).length > 0 ? `（含 ${teammateIds.filter((id) => id !== charId).length} 名 AI 队友）` : ''}
-        </button>
       </div>
 
       {activeSessions.length > 0 && (
