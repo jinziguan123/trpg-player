@@ -157,7 +157,7 @@ def set_ready(
 
 
 @router.post("/{session_id}/start")
-def start_game(
+async def start_game(
     session_id: str,
     db: Session = Depends(get_db),
     token: str | None = Depends(player_token),

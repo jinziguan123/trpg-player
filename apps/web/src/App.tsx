@@ -6,6 +6,7 @@ import { ModulePage } from './pages/ModulePage'
 import { CharacterPage } from './pages/CharacterPage'
 import { GamePage } from './pages/GamePage'
 import { GameSessionPage } from './pages/GameSessionPage'
+import { RoomLobbyPage } from './pages/RoomLobbyPage'
 import { SettingsPage } from './pages/SettingsPage'
 import './index.css'
 
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="modules" element={<ModulePage />} />
           <Route path="characters" element={<CharacterPage />} />
           <Route path="game" element={<GamePage />} />
+          <Route path="room/:sessionId" element={<RoomLobbyPage />} />
           <Route path="game/:sessionId" element={<GameSessionPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>

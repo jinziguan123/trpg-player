@@ -7,7 +7,9 @@ export interface SessionParticipant {
   is_primary: boolean
   seat_order: number
   claimed: boolean
+  ready: boolean
   is_mine: boolean
+  is_host: boolean
   character_name?: string | null
 }
 

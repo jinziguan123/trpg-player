@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { api } from '../api/client'
 import { useSessionStore } from '../stores/sessionStore'
-import type { SessionParticipant } from '../stores/sessionStore'
 import { useModuleStore } from '../stores/moduleStore'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
@@ -27,10 +26,6 @@ interface Seat {
 
 interface RoomInfo {
   id: string
-  module_id: string
-  module_title?: string
-  room_code?: string | null
-  participants?: SessionParticipant[]
 }
 
 /** 从模组 world_setting.player_count（如 "1-4"、"2-6人"）解析推荐人数范围。 */
@@ -53,9 +48,6 @@ export function GamePage() {
   const [generatingSeat, setGeneratingSeat] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [joinCode, setJoinCode] = useState('')
-  const [joinedRoom, setJoinedRoom] = useState<RoomInfo | null>(null)
-  const [myChars, setMyChars] = useState<Character[]>([])
-  const [claiming, setClaiming] = useState(false)
 
   const selectedModule = modules.find((m) => m.id === moduleId)
   const range = parsePlayerRange(selectedModule?.world_setting)
@@ -137,57 +129,16 @@ export function GamePage() {
     }
   }
 
-  // —— 加入房间（2b）——
+  // —— 加入房间：找到房间后进大厅（选角色/认领在大厅内完成）——
   const joinRoom = async () => {
     const code = joinCode.trim().toUpperCase()
     if (!code) return
     setError('')
     try {
       const room = await api.get<RoomInfo>(`/sessions/by-code/${code}`)
-      if (room.participants?.some((p) => p.is_mine)) {
-        navigate(`/game/${room.id}`)
-        return
-      }
-      setJoinedRoom(room)
-      const mine = await api.get<Character[]>('/characters?available=true&is_player=true&mine=true')
-      setMyChars(mine)
+      navigate(`/room/${room.id}`)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '加入房间失败')
-    }
-  }
-
-  const claimAndEnter = async (charId: string) => {
-    if (!joinedRoom) return
-    const seat = joinedRoom.participants?.find((p) => p.role === 'human' && !p.character_id && !p.claimed)
-    if (!seat) { setError('房间已满，没有空席'); return }
-    setClaiming(true)
-    try {
-      await api.post(`/sessions/${joinedRoom.id}/claim`, { seat_order: seat.seat_order, character_id: charId })
-      navigate(`/game/${joinedRoom.id}`)
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '入座失败')
-    } finally {
-      setClaiming(false)
-    }
-  }
-
-  const generateAndClaim = async () => {
-    if (!joinedRoom) return
-    setClaiming(true)
-    setError('')
-    try {
-      const draft = await api.post<Record<string, unknown>>('/characters/ai-generate', {
-        module_id: joinedRoom.module_id, hint: '', is_player: true,
-      })
-      const created = await api.post<Character>('/characters', {
-        name: draft.name, module_id: joinedRoom.module_id, rule_system: (draft.rule_system as string) || 'coc',
-        is_player: true, age: draft.age ?? 25, base_attributes: draft.base_attributes,
-        skills: draft.skills, system_data: draft.system_data, backstory: draft.backstory ?? '',
-      })
-      await claimAndEnter(created.id)
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'AI 生成角色失败')
-      setClaiming(false)
     }
   }
 
@@ -212,7 +163,9 @@ export function GamePage() {
         is_primary: i === 0,
       }))
       const session = await createSession(moduleId, participants)
-      navigate(`/game/${session.id}`, { state: { isNew: true } })
+      // 有空真人席 → 进大厅等人；否则直接开局
+      if (session.status === 'setup') navigate(`/room/${session.id}`)
+      else navigate(`/game/${session.id}`, { state: { isNew: true } })
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : '创建游戏失败'
       setError(msg)
@@ -345,50 +298,20 @@ export function GamePage() {
         )}
       </div>
 
-      {/* 加入他人房间（联机） */}
+      {/* 加入他人房间（联机）：进大厅后选角色入座 */}
       <div className="card mb-6">
         <h3 className="card-title">加入房间</h3>
-        {!joinedRoom ? (
-          <div className="flex gap-2">
-            <input
-              value={joinCode}
-              onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-              onKeyDown={(e) => { if (e.key === 'Enter') joinRoom() }}
-              placeholder="输入房间码（向房主索取）"
-              className="input flex-1"
-              maxLength={8}
-            />
-            <button onClick={joinRoom} disabled={!joinCode.trim()} className="btn-primary">加入</button>
-          </div>
-        ) : (
-          <div>
-            <p className="text-sm mb-2">
-              已找到房间「{joinedRoom.module_title || '未知模组'}」，请选择你的角色入座空席：
-            </p>
-            <div className="flex flex-wrap gap-2 mb-2">
-              {myChars.map((c) => (
-                <button
-                  key={c.id}
-                  onClick={() => claimAndEnter(c.id)}
-                  disabled={claiming}
-                  className="px-2.5 py-1 rounded-full text-xs border"
-                  style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
-                >
-                  {c.name}
-                </button>
-              ))}
-              <button onClick={generateAndClaim} disabled={claiming} className="btn-secondary !px-2 !py-1 text-xs">
-                {claiming ? '入座中…' : '✨ AI 生成角色并入座'}
-              </button>
-            </div>
-            <button onClick={() => { setJoinedRoom(null); setJoinCode('') }} className="btn-secondary !px-2 !py-1 text-xs">
-              取消
-            </button>
-          </div>
-        )}
-        {error && joinedRoom && (
-          <p className="text-sm mt-2" style={{ color: 'var(--color-danger)' }}>{error}</p>
-        )}
+        <div className="flex gap-2">
+          <input
+            value={joinCode}
+            onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+            onKeyDown={(e) => { if (e.key === 'Enter') joinRoom() }}
+            placeholder="输入房间码（向房主索取）"
+            className="input flex-1"
+            maxLength={8}
+          />
+          <button onClick={joinRoom} disabled={!joinCode.trim()} className="btn-primary">加入</button>
+        </div>
       </div>
 
       {activeSessions.length > 0 && (

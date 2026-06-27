@@ -150,6 +150,8 @@ export function GameSessionPage() {
       }
       const session = list.find((s) => s.id === sessionId)
       if (!session) { navigate('/game', { replace: true }); return }
+      // 仍在大厅（未开局）→ 去大厅页
+      if (session.status === 'setup') { navigate(`/room/${sessionId}`, { replace: true }); return }
       if (cancelled) return
       setCurrentSession(session)
 
