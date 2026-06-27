@@ -18,6 +18,7 @@ export default function App() {
           <Route path="modules" element={<ModulePage />} />
           <Route path="characters" element={<CharacterPage />} />
           <Route path="game" element={<GamePage />} />
+          <Route path="game/:sessionId" element={<GamePage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Routes>

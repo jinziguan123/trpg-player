@@ -1,6 +1,10 @@
 import app.rules  # noqa: F401 — 触发注册
 
-from app.rules.coc.character import compute_derived, roll_attributes
+from app.rules.coc.character import (
+    build_default_skills,
+    compute_derived,
+    roll_attributes,
+)
 from app.rules.coc.checks import resolve_skill_check, san_check
 from app.rules.dice import roll
 from app.rules.registry import get_engine
@@ -54,6 +58,16 @@ class TestCoCCharacter:
         old = compute_derived(attrs, age=60)
         assert old["move"] < young["move"]
 
+    def test_build_default_skills_dodge_from_dex(self):
+        # 回归：闪避取 DEX//2，母语取 EDU（DEX/EDU 在 base_attributes 里，不在 skills 里）
+        skills = build_default_skills({"DEX": 70, "EDU": 65})
+        assert skills["闪避"] == 35  # 70 // 2，而非旧 bug 的固定 25
+        assert skills["母语"] == 65
+
+    def test_build_default_skills_dodge_floor(self):
+        # 奇数 DEX 向下取整
+        assert build_default_skills({"DEX": 55})["闪避"] == 27
+
 
 class TestCoCEngine:
     def test_registry(self):
@@ -80,6 +94,38 @@ class TestCoCEngine:
                  "APP": 45, "INT": 70, "POW": 50, "EDU": 65}
         result = engine.create_character({"base_attributes": attrs})
         assert result["base_attributes"] == attrs
+
+    def test_create_character_dodge_from_dex(self):
+        # 回归：未提供 skills 时，闪避应为 DEX//2 而非旧 bug 的固定 25
+        engine = get_engine("coc")
+        attrs = {"STR": 50, "CON": 60, "SIZ": 65, "DEX": 70,
+                 "APP": 45, "INT": 70, "POW": 50, "EDU": 65}
+        result = engine.create_character({"base_attributes": attrs})
+        assert result["skills"]["闪避"] == 35
+        assert result["skills"]["母语"] == 65
+
+    def test_create_character_floors_provided_skills(self):
+        # 回归：前端自带 skills（闪避=0、无母语）时，后端兜底补齐属性派生值
+        engine = get_engine("coc")
+        attrs = {"STR": 50, "CON": 60, "SIZ": 65, "DEX": 70,
+                 "APP": 45, "INT": 70, "POW": 50, "EDU": 80}
+        provided = {"闪避": 0, "侦查": 60}  # 模拟前端静态默认表 + 加点
+        result = engine.create_character(
+            {"base_attributes": attrs, "skills": provided}
+        )
+        assert result["skills"]["闪避"] == 35  # DEX//2 兜底
+        assert result["skills"]["母语"] == 80  # EDU 兜底
+        assert result["skills"]["侦查"] == 60  # 其他技能保持不变
+
+    def test_create_character_keeps_invested_dodge(self):
+        # 玩家在基线之上加点闪避时，保留较高值（不被兜底下调）
+        engine = get_engine("coc")
+        attrs = {"STR": 50, "CON": 60, "SIZ": 65, "DEX": 70,
+                 "APP": 45, "INT": 70, "POW": 50, "EDU": 65}
+        result = engine.create_character(
+            {"base_attributes": attrs, "skills": {"闪避": 50}}
+        )
+        assert result["skills"]["闪避"] == 50  # max(50, 35)
 
     def test_validate_character(self):
         engine = get_engine("coc")

@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { api, streamSSE } from '../api/client'
 import { useSessionStore } from '../stores/sessionStore'
@@ -29,13 +29,14 @@ interface Character {
 export function GamePage() {
   const {
     currentSession, messages, addMessage, clearMessages,
-    createSession, setCurrentSession, loadHistory,
+    createSession, setCurrentSession, resumeSession,
     fetchSessions, sessions,
     startStreamMessage, appendToStream, endStream,
     replaceLastNarration,
   } = useSessionStore()
   const { modules, fetchModules } = useModuleStore()
   const navigate = useNavigate()
+  const { sessionId } = useParams<{ sessionId?: string }>()
   const [characters, setCharacters] = useState<Character[]>([])
   const [activeChar, setActiveChar] = useState<Character | null>(null)
   const [showPanel, setShowPanel] = useState(true)
@@ -52,6 +53,18 @@ export function GamePage() {
     fetchSessions()
     api.get<Character[]>('/characters?available=true').then(setCharacters)
   }, [fetchModules, fetchSessions])
+
+  // URL 即会话的真实来源：刷新后据 sessionId 恢复会话并加载历史记录
+  useEffect(() => {
+    if (!sessionId) {
+      setCurrentSession(null as never)
+      clearMessages()
+      return
+    }
+    if (useSessionStore.getState().currentSession?.id === sessionId) return
+    resumeSession(sessionId).catch(() => navigate('/game', { replace: true }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
 
   useEffect(() => {
     if (currentSession?.player_character_id) {
@@ -106,6 +119,7 @@ export function GamePage() {
     clearMessages()
     try {
       const session = await createSession(moduleId, charId)
+      navigate(`/game/${session.id}`)
       await processStream(`/sessions/${session.id}/opening`)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : '创建游戏失败'
@@ -113,12 +127,8 @@ export function GamePage() {
     }
   }
 
-  const resumeGame = async (sessionId: string) => {
-    const latestSessions = useSessionStore.getState().sessions
-    const session = latestSessions.find((s) => s.id === sessionId)
-    if (!session) return
-    setCurrentSession(session)
-    await loadHistory(sessionId)
+  const resumeGame = (sessionId: string) => {
+    navigate(`/game/${sessionId}`)
   }
 
   const deleteSession = async (sessionId: string) => {
@@ -242,7 +252,7 @@ export function GamePage() {
       <div className="flex flex-col flex-1 min-w-0">
         <div className="flex items-center gap-3 pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
           <button
-            onClick={() => { setCurrentSession(null as never); clearMessages(); setActiveChar(null) }}
+            onClick={() => navigate('/game')}
             className="btn-secondary flex items-center gap-1 !px-2 !py-1 text-sm"
           >
             <GiReturnArrow /> 返回列表

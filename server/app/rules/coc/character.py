@@ -102,9 +102,20 @@ def compute_derived(attrs: dict[str, int], age: int = 25) -> dict:
     }
 
 
-def build_default_skills(edu: int) -> dict[str, int]:
-    """基于 EDU 构建默认技能列表（含母语和闪避）"""
-    skills = dict(COC_DEFAULT_SKILLS)
-    skills["母语"] = edu
-    skills["闪避"] = skills.get("DEX", 50) // 2
+def apply_attr_derived_skills(
+    skills: dict[str, int], attrs: dict[str, int]
+) -> dict[str, int]:
+    """确保属性派生技能达到其基础底线：母语≥EDU、闪避≥DEX//2。
+
+    母语/闪避依赖具体角色属性，静态的 COC_DEFAULT_SKILLS 无法预置正确值。
+    无论客户端是否自带 skills，都在此兜底，避免出现 0/缺失；取 max 以保留
+    玩家在基线之上的合法加点。原地修改并返回 skills。
+    """
+    skills["母语"] = max(skills.get("母语", 0), attrs.get("EDU", 50))
+    skills["闪避"] = max(skills.get("闪避", 0), attrs.get("DEX", 50) // 2)
     return skills
+
+
+def build_default_skills(attrs: dict[str, int]) -> dict[str, int]:
+    """基于属性构建默认技能列表（全部基础技能 + 母语/闪避派生值）"""
+    return apply_attr_derived_skills(dict(COC_DEFAULT_SKILLS), attrs)

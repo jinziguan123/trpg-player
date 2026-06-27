@@ -12,6 +12,7 @@ from app.ai.agents.npc_agent import NPCAgent
 from app.ai.context import build_kp_context, build_npc_context
 from app.ai.deepseek import get_llm
 from app.ai.prompts.kp_system import KP_DICE_CONTINUATION_PROMPT
+from app.database import SessionLocal
 from app.models.character import Character
 from app.models.module import Module
 from app.models.session import GameSession
@@ -262,6 +263,13 @@ async def _stream_narration_filtered(
                     if chunk.strip():
                         yield _make_chunk("narration", chunk, actor_name="KP")
 
+        # 实时同步已生成内容到 result：当流式被中断（如刷新断连）时，
+        # 调用方仍能据此落库已经产出的部分，避免内容丢失
+        result[0] = narration
+        result[1] = full_response
+        if len(result) > 2:
+            result[2] = extracted
+
     if not tag_found:
         if in_bracket:
             if in_quote:
@@ -283,6 +291,59 @@ async def _stream_narration_filtered(
     result[1] = full_response
     if len(result) > 2:
         result[2] = extracted
+
+
+def _persist_generation(db: Session, session_id: str, result: list) -> None:
+    """把一次生成产出的 KP 叙事与 NPC 对话落库。"""
+    narration = result[0].rstrip()
+    if narration:
+        session_service.add_event(
+            db, session_id, "narration", narration, actor_name="KP",
+        )
+    for npc_name, dialogue_text in result[2]:
+        session_service.add_event(
+            db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
+        )
+
+
+def _persist_generation_safe(session_id: str, result: list) -> None:
+    """流式被中断时落库已生成内容。
+
+    此时请求注入的 db 可能正随连接关闭而失效，故另开独立会话写入。
+    """
+    if not result[0].strip() and not result[2]:
+        return
+    db = SessionLocal()
+    try:
+        _persist_generation(db, session_id, result)
+    finally:
+        db.close()
+
+
+async def _stream_and_persist(
+    db: Session,
+    session_id: str,
+    kp: KPAgent,
+    messages: list,
+    npcs: list[dict] | None,
+    result: list,
+) -> AsyncIterator[str]:
+    """流式产出 KP 叙事并保证落库——即便客户端中途断连。
+
+    正常跑完用请求 db 落库；若被取消（如刷新导致断流），在 finally 中用
+    独立会话落库已产出的部分，避免内容丢失。
+    """
+    persisted = False
+    try:
+        async for chunk in _stream_narration_filtered(
+            kp, messages, result, npcs=npcs,
+        ):
+            yield chunk
+        _persist_generation(db, session_id, result)
+        persisted = True
+    finally:
+        if not persisted:
+            _persist_generation_safe(session_id, result)
 
 
 async def handle_chat(
@@ -319,20 +380,10 @@ async def handle_chat(
     messages = build_kp_context(game_session, module, player_char, events)
 
     result = ["", "", []]
-    async for chunk in _stream_narration_filtered(
-        kp, messages, result, npcs=module.npcs,
+    async for chunk in _stream_and_persist(
+        db, session_id, kp, messages, module.npcs, result,
     ):
         yield chunk
-
-    narration = result[0].rstrip()
-    if narration:
-        session_service.add_event(
-            db, session_id, "narration", narration, actor_name="KP",
-        )
-    for npc_name, dialogue_text in result[2]:
-        session_service.add_event(
-            db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
-        )
 
     async for chunk in _process_commands(
         db, session_id, result[1], module, player_char, game_session, llm
@@ -359,25 +410,21 @@ async def handle_opening(
         yield _make_chunk("done")
         return
 
+    # 幂等：该会话已生成过开局则直接结束，避免刷新/重连触发重复开场
+    existing = session_service.get_session_events(db, session_id)
+    if any(e.event_type == "narration" for e in existing):
+        yield _make_chunk("done")
+        return
+
     llm = get_llm()
     kp = KPAgent(llm)
     messages = build_kp_context(game_session, module, player_char, [])
 
     result = ["", "", []]
-    async for chunk in _stream_narration_filtered(
-        kp, messages, result, npcs=module.npcs,
+    async for chunk in _stream_and_persist(
+        db, session_id, kp, messages, module.npcs, result,
     ):
         yield chunk
-
-    narration = result[0].rstrip()
-    if narration:
-        session_service.add_event(
-            db, session_id, "narration", narration, actor_name="KP",
-        )
-    for npc_name, dialogue_text in result[2]:
-        session_service.add_event(
-            db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
-        )
 
     async for chunk in _process_commands(
         db, session_id, result[1], module, player_char, game_session, llm
@@ -440,20 +487,10 @@ async def _process_commands(
 
         kp = KPAgent(llm)
         cont_result = ["", "", []]
-        async for chunk in _stream_narration_filtered(
-            kp, messages, cont_result, npcs=module.npcs,
+        async for chunk in _stream_and_persist(
+            db, session_id, kp, messages, module.npcs, cont_result,
         ):
             yield chunk
-
-        cont_narration = cont_result[0].rstrip()
-        if cont_narration:
-            session_service.add_event(
-                db, session_id, "narration", cont_narration, actor_name="KP",
-            )
-        for npc_name, dialogue_text in cont_result[2]:
-            session_service.add_event(
-                db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
-            )
 
     for match in SCENE_CHANGE_RE.finditer(kp_text):
         new_scene_id = match.group(1).strip()

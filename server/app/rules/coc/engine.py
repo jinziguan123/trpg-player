@@ -3,6 +3,7 @@
 from app.rules.base import CheckResult, DamageResult, RuleEngine
 from app.rules.coc.character import (
     COC_DEFAULT_SKILLS,
+    apply_attr_derived_skills,
     build_default_skills,
     compute_derived,
     roll_attributes,
@@ -46,7 +47,11 @@ class CoCRuleEngine(RuleEngine):
 
         skills = data.get("skills")
         if not skills:
-            skills = build_default_skills(attrs.get("EDU", 50))
+            skills = build_default_skills(attrs)
+        else:
+            # 客户端自带 skills（如前端加点）时，静态默认表缺少母语/闪避的属性
+            # 派生值，这里兜底补齐，避免绕过 build_default_skills 导致两者为 0
+            skills = apply_attr_derived_skills(dict(skills), attrs)
 
         return {
             "base_attributes": attrs,

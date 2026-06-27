@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { api } from '../api/client'
 
-interface GameSession {
+export interface GameSession {
   id: string
   module_id: string
   status: string
@@ -37,6 +37,7 @@ interface SessionStore {
   replaceLastNarration: (content: string) => void
   clearMessages: () => void
   loadHistory: (sessionId: string) => Promise<void>
+  resumeSession: (sessionId: string) => Promise<void>
 }
 
 let msgCounter = 0
@@ -125,5 +126,11 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       metadata: { ...e.metadata_, is_player: !!(playerCharId && e.actor_id === playerCharId) },
     }))
     set({ messages })
+  },
+
+  resumeSession: async (sessionId) => {
+    const session = await api.get<GameSession>(`/sessions/${sessionId}`)
+    set({ currentSession: session })
+    await get().loadHistory(sessionId)
   },
 }))
