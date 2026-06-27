@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { api } from '../api/client'
 import { useSessionStore } from '../stores/sessionStore'
+import type { SessionParticipant } from '../stores/sessionStore'
 import { useModuleStore } from '../stores/moduleStore'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
@@ -24,6 +25,14 @@ interface Seat {
   charId: string
 }
 
+interface RoomInfo {
+  id: string
+  module_id: string
+  module_title?: string
+  room_code?: string | null
+  participants?: SessionParticipant[]
+}
+
 /** 从模组 world_setting.player_count（如 "1-4"、"2-6人"）解析推荐人数范围。 */
 function parsePlayerRange(ws?: Record<string, unknown>): { min: number; max: number } {
   const raw = String((ws?.player_count as string | undefined) ?? '')
@@ -43,6 +52,10 @@ export function GamePage() {
   const [seats, setSeats] = useState<Seat[]>([])
   const [generatingSeat, setGeneratingSeat] = useState<number | null>(null)
   const [error, setError] = useState('')
+  const [joinCode, setJoinCode] = useState('')
+  const [joinedRoom, setJoinedRoom] = useState<RoomInfo | null>(null)
+  const [myChars, setMyChars] = useState<Character[]>([])
+  const [claiming, setClaiming] = useState(false)
 
   const selectedModule = modules.find((m) => m.id === moduleId)
   const range = parsePlayerRange(selectedModule?.world_setting)
@@ -124,14 +137,77 @@ export function GamePage() {
     }
   }
 
-  const allSeatsFilled = seats.length > 0 && seats.every((s) => s.charId)
+  // —— 加入房间（2b）——
+  const joinRoom = async () => {
+    const code = joinCode.trim().toUpperCase()
+    if (!code) return
+    setError('')
+    try {
+      const room = await api.get<RoomInfo>(`/sessions/by-code/${code}`)
+      if (room.participants?.some((p) => p.is_mine)) {
+        navigate(`/game/${room.id}`)
+        return
+      }
+      setJoinedRoom(room)
+      const mine = await api.get<Character[]>('/characters?available=true&is_player=true&mine=true')
+      setMyChars(mine)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '加入房间失败')
+    }
+  }
+
+  const claimAndEnter = async (charId: string) => {
+    if (!joinedRoom) return
+    const seat = joinedRoom.participants?.find((p) => p.role === 'human' && !p.character_id && !p.claimed)
+    if (!seat) { setError('房间已满，没有空席'); return }
+    setClaiming(true)
+    try {
+      await api.post(`/sessions/${joinedRoom.id}/claim`, { seat_order: seat.seat_order, character_id: charId })
+      navigate(`/game/${joinedRoom.id}`)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '入座失败')
+    } finally {
+      setClaiming(false)
+    }
+  }
+
+  const generateAndClaim = async () => {
+    if (!joinedRoom) return
+    setClaiming(true)
+    setError('')
+    try {
+      const draft = await api.post<Record<string, unknown>>('/characters/ai-generate', {
+        module_id: joinedRoom.module_id, hint: '', is_player: true,
+      })
+      const created = await api.post<Character>('/characters', {
+        name: draft.name, module_id: joinedRoom.module_id, rule_system: (draft.rule_system as string) || 'coc',
+        is_player: true, age: draft.age ?? 25, base_attributes: draft.base_attributes,
+        skills: draft.skills, system_data: draft.system_data, backstory: draft.backstory ?? '',
+      })
+      await claimAndEnter(created.id)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'AI 生成角色失败')
+      setClaiming(false)
+    }
+  }
+
+  // 主角必填；AI 席必填；留空待加入(真人)席可空
+  const allSeatsFilled = seats.length > 0 && seats.every((s, i) => {
+    if (i === 0) return !!s.charId
+    if (s.role === 'human') return true
+    return !!s.charId
+  })
+
+  const setSeatRole = (i: number, role: 'human' | 'ai') => {
+    setSeats((prev) => prev.map((s, idx) => (idx === i ? { role, charId: role === 'human' ? '' : s.charId } : s)))
+  }
 
   const startGame = async () => {
     if (!moduleId || !allSeatsFilled) return
     setError('')
     try {
       const participants = seats.map((s, i) => ({
-        character_id: s.charId,
+        character_id: i > 0 && s.role === 'human' && !s.charId ? null : s.charId,
         role: s.role,
         is_primary: i === 0,
       }))
@@ -209,34 +285,54 @@ export function GamePage() {
                 ? '（模组未标注人数，按默认范围）' : ''}
             </p>
 
-            {/* 第二步：逐个席位填入角色 */}
+            {/* 第二步：逐个席位填入角色（非主角席可设为 AI 或「留空待真人加入」） */}
             <div className="mb-3">
-              {seats.map((seat, i) => (
-                <div key={i} className="flex items-center gap-2 mb-2">
-                  <span
-                    className="badge whitespace-nowrap"
-                    style={i === 0 ? { borderColor: 'var(--color-accent)', color: 'var(--color-text-accent)' } : undefined}
-                  >
-                    {i === 0 ? '★ 你（真人）' : `🤖 AI 队友 ${i}`}
-                  </span>
-                  <Select value={seat.charId} onValueChange={(v) => assignSeat(i, v)}>
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder={i === 0 ? '选择你的角色' : '选择 AI 队友角色'} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {seatOptions(i).map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                  <button
-                    onClick={() => generateForSeat(i)}
-                    disabled={generatingSeat !== null}
-                    className="btn-secondary !px-2 !py-1 text-xs whitespace-nowrap"
-                    title="让 AI 现场生成一张贴合模组的角色卡填入此席位"
-                  >
-                    {generatingSeat === i ? '生成中…' : '✨ 生成'}
-                  </button>
-                </div>
-              ))}
+              {seats.map((seat, i) => {
+                const emptyHuman = i > 0 && seat.role === 'human'
+                return (
+                  <div key={i} className="flex items-center gap-2 mb-2">
+                    <span
+                      className="badge whitespace-nowrap"
+                      style={i === 0 ? { borderColor: 'var(--color-accent)', color: 'var(--color-text-accent)' } : undefined}
+                    >
+                      {i === 0 ? '★ 你（真人）' : emptyHuman ? `🪑 真人 ${i}` : `🤖 AI 队友 ${i}`}
+                    </span>
+                    {emptyHuman ? (
+                      <span className="flex-1 text-xs italic" style={{ color: 'var(--color-text-secondary)' }}>
+                        留空 · 开局后分享房间码，等真人加入认领
+                      </span>
+                    ) : (
+                      <Select value={seat.charId} onValueChange={(v) => assignSeat(i, v)}>
+                        <SelectTrigger className="flex-1">
+                          <SelectValue placeholder={i === 0 ? '选择你的角色' : '选择 AI 队友角色'} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {seatOptions(i).map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    )}
+                    {i > 0 && (
+                      <button
+                        onClick={() => setSeatRole(i, emptyHuman ? 'ai' : 'human')}
+                        className="btn-secondary !px-2 !py-1 text-xs whitespace-nowrap"
+                        title="在「AI 队友」与「留空待真人加入」之间切换"
+                      >
+                        {emptyHuman ? '改为 AI' : '设为真人空席'}
+                      </button>
+                    )}
+                    {!emptyHuman && (
+                      <button
+                        onClick={() => generateForSeat(i)}
+                        disabled={generatingSeat !== null}
+                        className="btn-secondary !px-2 !py-1 text-xs whitespace-nowrap"
+                        title="让 AI 现场生成一张贴合模组的角色卡填入此席位"
+                      >
+                        {generatingSeat === i ? '生成中…' : '✨ 生成'}
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
             </div>
 
             {error && (
@@ -246,6 +342,52 @@ export function GamePage() {
               开始冒险（{seats.length} 名玩家）
             </button>
           </>
+        )}
+      </div>
+
+      {/* 加入他人房间（联机） */}
+      <div className="card mb-6">
+        <h3 className="card-title">加入房间</h3>
+        {!joinedRoom ? (
+          <div className="flex gap-2">
+            <input
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+              onKeyDown={(e) => { if (e.key === 'Enter') joinRoom() }}
+              placeholder="输入房间码（向房主索取）"
+              className="input flex-1"
+              maxLength={8}
+            />
+            <button onClick={joinRoom} disabled={!joinCode.trim()} className="btn-primary">加入</button>
+          </div>
+        ) : (
+          <div>
+            <p className="text-sm mb-2">
+              已找到房间「{joinedRoom.module_title || '未知模组'}」，请选择你的角色入座空席：
+            </p>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {myChars.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => claimAndEnter(c.id)}
+                  disabled={claiming}
+                  className="px-2.5 py-1 rounded-full text-xs border"
+                  style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
+                >
+                  {c.name}
+                </button>
+              ))}
+              <button onClick={generateAndClaim} disabled={claiming} className="btn-secondary !px-2 !py-1 text-xs">
+                {claiming ? '入座中…' : '✨ AI 生成角色并入座'}
+              </button>
+            </div>
+            <button onClick={() => { setJoinedRoom(null); setJoinCode('') }} className="btn-secondary !px-2 !py-1 text-xs">
+              取消
+            </button>
+          </div>
+        )}
+        {error && joinedRoom && (
+          <p className="text-sm mt-2" style={{ color: 'var(--color-danger)' }}>{error}</p>
         )}
       </div>
 

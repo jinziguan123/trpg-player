@@ -14,22 +14,27 @@ export function PartyRoster({ participants, selectedId, onSelect }: Props) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {sorted.map((p) => {
-        const isPrimary = p.is_primary
-        const active = selectedId === p.character_id
+        const empty = p.role === 'human' && !p.character_id
+        const icon = empty ? '🪑' : p.role === 'ai' ? '🤖' : p.is_mine ? '🙋' : '👤'
+        const active = !!p.character_id && selectedId === p.character_id
+        const highlight = active || p.is_mine
         return (
           <button
-            key={p.character_id}
-            onClick={() => onSelect?.(p.character_id)}
+            key={p.seat_order}
+            onClick={() => p.character_id && onSelect?.(p.character_id)}
+            disabled={empty}
             className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-colors"
             style={{
-              borderColor: active || isPrimary ? 'var(--color-accent)' : 'var(--color-border)',
+              borderColor: highlight ? 'var(--color-accent)' : 'var(--color-border)',
               background: active ? 'var(--color-accent)' : 'transparent',
-              color: active ? '#fff' : isPrimary ? 'var(--color-text-accent)' : 'var(--color-text-secondary)',
+              color: active ? '#fff' : p.is_mine ? 'var(--color-text-accent)' : 'var(--color-text-secondary)',
+              opacity: empty ? 0.6 : 1,
             }}
-            title={isPrimary ? '主角（你）— 点击查看角色卡' : 'AI 队友 — 点击查看角色卡'}
+            title={empty ? '空席 · 等待真人加入' : p.role === 'ai' ? 'AI 队友 — 点击查看角色卡' : p.is_mine ? '你 — 点击查看角色卡' : '真人玩家 — 点击查看角色卡'}
           >
-            <span style={{ fontSize: '0.65rem' }}>{isPrimary ? '★' : '🤖'}</span>
-            {p.character_name || '未知角色'}
+            <span style={{ fontSize: '0.65rem' }}>{icon}</span>
+            {empty ? `空席 ${p.seat_order}` : (p.character_name || '未知角色')}
+            {p.is_mine && !empty ? '（我）' : ''}
           </button>
         )
       })}

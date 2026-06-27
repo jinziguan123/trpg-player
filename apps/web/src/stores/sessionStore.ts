@@ -2,15 +2,17 @@ import { create } from 'zustand'
 import { api } from '../api/client'
 
 export interface SessionParticipant {
-  character_id: string
+  character_id: string | null
   role: string // human | ai
   is_primary: boolean
   seat_order: number
+  claimed: boolean
+  is_mine: boolean
   character_name?: string | null
 }
 
 export interface ParticipantInput {
-  character_id: string
+  character_id: string | null
   role: string
   is_primary: boolean
 }
@@ -20,6 +22,7 @@ interface GameSession {
   module_id: string
   status: string
   player_character_id: string | null
+  room_code?: string | null
   current_scene_id: string | null
   world_state: Record<string, unknown>
   participants?: SessionParticipant[]

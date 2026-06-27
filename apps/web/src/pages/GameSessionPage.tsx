@@ -63,7 +63,9 @@ export function GameSessionPage() {
   const [showPanel, setShowPanel] = useState(true)
 
   const primaryId = currentSession?.player_character_id ?? null
-  const shownCharId = panelCharId ?? primaryId
+  // 多人：我在本房间认领的角色（无则回退到主角，兼容单人）
+  const myCharId = currentSession?.participants?.find((p) => p.is_mine)?.character_id ?? primaryId
+  const shownCharId = panelCharId ?? myCharId
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -73,8 +75,8 @@ export function GameSessionPage() {
 
   const seenIds = useRef<Set<string>>(new Set())
   const liveTypeRef = useRef<string>('')
-  const primaryIdRef = useRef<string | null>(null)
-  useEffect(() => { primaryIdRef.current = primaryId }, [primaryId])
+  const myCharIdRef = useRef<string | null>(null)
+  useEffect(() => { myCharIdRef.current = myCharId }, [myCharId])
 
   // 处理一条房间实时事件（/live）。离散事件按 id 去重；叙述 token 流式拼接。
   const handleLiveChunk = useCallback((chunk: ChunkPayload) => {
@@ -84,6 +86,15 @@ export function GameSessionPage() {
     if (t === 'done') {
       endStream(); liveTypeRef.current = ''
       setStreaming(false); setRefreshTick((x) => x + 1)
+      return
+    }
+    if (t === 'seat') {
+      // 有人入座：刷新房间席位（更新队伍条与 is_mine），并提示一条系统消息
+      if (sessionId) {
+        api.get(`/sessions/${sessionId}`).then((s) => setCurrentSession(s as never)).catch(() => {})
+      }
+      endStream(); liveTypeRef.current = ''
+      addMessage({ id: '', type: 'system', content: chunk.content || '有新成员入座', actor_name: chunk.actor_name })
       return
     }
     if (t === 'narration') {
@@ -99,7 +110,7 @@ export function GameSessionPage() {
       seenIds.current.add(chunk.id)
     }
     endStream(); liveTypeRef.current = ''
-    const isPlayer = !!(primaryIdRef.current && chunk.actor_id === primaryIdRef.current)
+    const isPlayer = !!(myCharIdRef.current && chunk.actor_id === myCharIdRef.current)
     if (t === 'dialogue' || t === 'npc_dialogue') {
       addMessage({ id: chunk.id || '', type: 'dialogue', content: chunk.content || '', actor_name: chunk.actor_name, metadata: { ...(chunk.metadata || {}), is_player: isPlayer } })
     } else if (t === 'action') {
@@ -109,7 +120,7 @@ export function GameSessionPage() {
     } else if (t === 'dice' || t === 'system' || t === 'ooc') {
       addMessage({ id: chunk.id || '', type: t, content: chunk.content || '', actor_name: chunk.actor_name, metadata: chunk.metadata })
     }
-  }, [addMessage, appendToStream, endStream, startStreamMessage])
+  }, [addMessage, appendToStream, endStream, startStreamMessage, setCurrentSession, sessionId])
 
   useEffect(() => {
     if (!sessionId) return
@@ -201,12 +212,13 @@ export function GameSessionPage() {
     // fire-and-forget：不做本地乐观回显，自己的消息同样经 /live 广播回来渲染，
     // 保证与其他成员看到的内容/顺序一致。
     const { inChar } = splitOOC(text)
+    const body = { content: text, acting_character_id: myCharId }
     try {
       if (!inChar) {
-        await api.post(`/sessions/${currentSession.id}/ooc`, { content: text })
+        await api.post(`/sessions/${currentSession.id}/ooc`, body)
       } else {
         setStreaming(true)
-        await api.post(`/sessions/${currentSession.id}/chat`, { content: text })
+        await api.post(`/sessions/${currentSession.id}/chat`, body)
       }
     } catch (e: unknown) {
       setStreaming(false)
@@ -232,6 +244,16 @@ export function GameSessionPage() {
           <span className="text-sm font-semibold" style={{ color: 'var(--color-text-accent)' }}>
             {sessions.find((s) => s.id === currentSession.id)?.module_title || '游戏中'}
           </span>
+          {currentSession.room_code && (
+            <button
+              onClick={() => { navigator.clipboard?.writeText(currentSession.room_code || ''); toast.success(`房间码 ${currentSession.room_code} 已复制`) }}
+              className="text-xs px-2 py-0.5 rounded border"
+              style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
+              title="点击复制房间码，分享给队友加入"
+            >
+              房间码 {currentSession.room_code} ⧉
+            </button>
+          )}
           <button
             onClick={() => setShowPanel(!showPanel)}
             className="ml-auto text-xs btn-secondary !px-2 !py-0.5"
