@@ -80,19 +80,32 @@ def _compact_scenes(scenes: list[dict] | None, current_scene_id: str | None) -> 
     return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
 
-def _compact_npcs(npcs: list[dict] | None) -> str:
+def _compact_npcs(
+    npcs: list[dict] | None,
+    only_scene_id: str | None = None,
+    hide_secrets: bool = False,
+) -> str:
+    """压缩 NPC 列表。
+
+    ``only_scene_id`` 给定时（开场用）只保留 initial_location 命中起始场景的 NPC，
+    把藏在深处的 NPC（如墓室里的尸体）挡在开场之外；``hide_secrets`` 剥掉 secrets。
+    """
     if not npcs:
         return "无"
     result = []
     for n in npcs:
-        result.append({
+        if only_scene_id is not None and n.get("initial_location") != only_scene_id:
+            continue
+        item = {
             "id": n.get("id", ""),
             "name": n.get("name", ""),
             "description": (n.get("description") or "")[:100],
             "personality": (n.get("personality") or "")[:60],
-            "secrets": (n.get("secrets") or "")[:100],
-        })
-    return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        }
+        if not hide_secrets:
+            item["secrets"] = (n.get("secrets") or "")[:100]
+        result.append(item)
+    return json.dumps(result, ensure_ascii=False, separators=(",", ":")) if result else "无"
 
 
 def _compact_clues(clues: list[dict] | None) -> str:
@@ -237,6 +250,18 @@ def build_kp_context(
             "你只负责：描述环境与场景、扮演模组 NPC、裁定检定、对全队已经做出的行动给出世界的回应。"
         )
 
+    # 开场隔离：开场（无历史事件）时只给起始场景的 NPC、剥掉 secrets，线索完全不给——
+    # 防止 KP 拿"待发现"的尸体/笔记/线索现编进开场白。游戏开始后恢复完整资料。
+    is_opening = not events
+    if is_opening:
+        npcs_info = _compact_npcs(
+            module.npcs, only_scene_id=session.current_scene_id, hide_secrets=True,
+        )
+        clues_info = "（线索是 KP 专属资料，开场绝不涉及；只能在玩家实际调查发现时才出现）"
+    else:
+        npcs_info = _compact_npcs(module.npcs)
+        clues_info = _compact_clues(module.clues)
+
     system_content = KP_SYSTEM_PROMPT.format(
         rule_system=module.rule_system.upper(),
         module_title=module.title,
@@ -244,8 +269,8 @@ def build_kp_context(
         world_setting=_format_json_compact(module.world_setting),
         scenes_info=_compact_scenes(module.scenes, session.current_scene_id),
         current_scene=_format_json(current_scene) if current_scene else "初始场景",
-        npcs_info=_compact_npcs(module.npcs),
-        clues_info=_compact_clues(module.clues),
+        npcs_info=npcs_info,
+        clues_info=clues_info,
         player_info=player_info,
     )
 

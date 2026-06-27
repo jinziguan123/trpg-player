@@ -154,3 +154,42 @@ def test_kp_context_includes_party(db_factory):
     # 队友发言进入 user 侧、带「队友·」前缀，不会被误判成 KP 的 assistant 输出
     joined_user = "\n".join(m["content"] for m in messages if m["role"] == "user")
     assert "[队友·阿尔法]" in joined_user
+
+
+def test_opening_context_hides_discoverables(db_factory):
+    """开场上下文：只给起始场景 NPC、剥 secrets、不给线索；游戏中恢复完整资料。"""
+    db = db_factory()
+    module = Module(
+        title="陵墓", rule_system="coc",
+        scenes=[{"id": "entrance", "name": "入口", "description": "沙漠中的墓门"}],
+        npcs=[
+            {"id": "g", "name": "老向导", "description": "当地贝都因人",
+             "secrets": "知道附近有水源", "initial_location": "entrance"},
+            {"id": "s", "name": "萨沙·卡纳", "description": "失踪的德国人类学家",
+             "secrets": "尸体在耳室", "initial_location": "side_chamber"},
+        ],
+        clues=[{"id": "c", "name": "萨沙的笔记", "description": "记载了密道坐标",
+                "location": "side_chamber"}],
+    )
+    hero = Character(name="调查员", rule_system="coc", is_player=True)
+    db.add_all([module, hero])
+    db.commit()
+    session = GameSession(
+        module_id=module.id, player_character_id=hero.id,
+        status="active", current_scene_id="entrance",
+    )
+    db.add(session)
+    db.commit()
+
+    sys_open = ctx.build_kp_context(session, module, hero, [])[0]["content"]
+    assert "老向导" in sys_open            # 起始场景 NPC 保留
+    assert "萨沙·卡纳" not in sys_open      # 深处 NPC 不出现在开场
+    assert "尸体在耳室" not in sys_open     # NPC secrets 剥离
+    assert "知道附近有水源" not in sys_open  # 起始 NPC 的 secret 也剥离
+    assert "密道坐标" not in sys_open       # 线索内容开场不给
+
+    ev = EventLog(session_id=session.id, sequence_num=1, event_type="narration",
+                  content="开场已生成", actor_name="KP")
+    sys_play = ctx.build_kp_context(session, module, hero, [ev])[0]["content"]
+    assert "萨沙·卡纳" in sys_play          # 游戏中恢复完整 NPC 资料
+    assert "密道坐标" in sys_play           # 游戏中给线索
