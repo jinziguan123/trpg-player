@@ -41,6 +41,7 @@ interface ChatMessage {
   actor_name?: string
   metadata?: Record<string, unknown>
   sequence_num?: number
+  ts?: number
 }
 
 interface EventPayload {
@@ -51,6 +52,7 @@ interface EventPayload {
   actor_name: string
   content: string
   metadata_: Record<string, unknown>
+  created_at?: string
 }
 
 interface EventsResponse {
@@ -88,6 +90,7 @@ function eventsToMessages(events: EventPayload[], playerCharId: string | null): 
     content: e.content,
     actor_name: e.actor_name,
     sequence_num: e.sequence_num,
+    ts: e.created_at ? new Date(e.created_at).getTime() : undefined,
     metadata: { ...e.metadata_, is_player: !!(playerCharId && e.actor_id === playerCharId) },
   }))
 }
@@ -119,7 +122,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   addMessage: (msg) =>
     set((s) => ({
-      messages: [...s.messages, { ...msg, id: msg.id || `msg-${++msgCounter}` }],
+      messages: [...s.messages, { ts: Date.now(), ...msg, id: msg.id || `msg-${++msgCounter}` }],
     })),
 
   startStreamMessage: (type, actorName) => {

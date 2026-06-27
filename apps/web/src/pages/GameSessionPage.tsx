@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -22,6 +22,21 @@ function splitOOC(text: string): { inChar: string; ooc: string } {
   const inChar = text.replace(OOC_RE, '').trim()
   const ooc = parts.map((p) => p.slice(1, -1).trim()).filter(Boolean).join(' ')
   return { inChar, ooc }
+}
+
+function fmtTime(ts?: number): string {
+  if (!ts) return ''
+  const d = new Date(ts)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/** 检定结果按成败取强调色。兼容引擎英文枚举与 SAN 检定的中文。 */
+function diceAccent(outcome: string): string {
+  const s = String(outcome || '')
+  if (s.includes('critical') || s.includes('大成功')) return 'var(--color-accent)'
+  if (s.includes('fumble') || s.includes('大失败')) return 'var(--color-danger)'
+  if (s.includes('success') || s === '成功') return 'var(--color-success)'
+  return 'var(--color-text-secondary)'
 }
 
 interface Character {
@@ -78,6 +93,24 @@ export function GameSessionPage() {
   const myName = currentSession?.participants?.find((p) => p.is_mine)?.character_name ?? null
   const myNameRef = useRef<string | null>(null)
   myNameRef.current = myName
+  const [liveConnected, setLiveConnected] = useState(true)
+
+  // 角色名 → 归属（用于消息前的身份图标：我 / AI 队友 / 其他真人 / NPC）
+  const partyByName = useMemo(() => {
+    const m: Record<string, { isMine: boolean; role: string }> = {}
+    for (const p of currentSession?.participants || []) {
+      if (p.character_name) m[p.character_name] = { isMine: p.is_mine, role: p.role }
+    }
+    return m
+  }, [currentSession?.participants])
+  const actorIcon = (name?: string, isPlayer?: boolean): string => {
+    if (isPlayer) return '🙋'
+    const p = name ? partyByName[name] : undefined
+    if (p?.isMine) return '🙋'
+    if (p?.role === 'ai') return '🤖'
+    if (p?.role === 'human') return '👤'
+    return ''  // NPC / 未知
+  }
 
   const seenIds = useRef<Set<string>>(new Set())
   const liveTypeRef = useRef<string>('')
@@ -97,7 +130,8 @@ export function GameSessionPage() {
   // 处理一条房间实时事件（/live）。离散事件按 id 去重；叙述 token 流式拼接。
   const handleLiveChunk = useCallback((chunk: ChunkPayload) => {
     const t = chunk.type
-    if (t === 'ready' || t === 'replay_done') return
+    if (t === 'ready') { setLiveConnected(true); return }
+    if (t === 'replay_done') return
     if (t === 'generating') { setStreaming(true); return }
     if (t === 'done') {
       endStream(); liveTypeRef.current = ''
@@ -196,6 +230,7 @@ export function GameSessionPage() {
           }
         } catch { /* 连接断开或被取消 */ }
         if (cancelled) break
+        setLiveConnected(false)  // 断开 → 显示「连接中…」，下次 ready 复位
         await new Promise((r) => setTimeout(r, 1500))  // 重连退避
       }
     }
@@ -304,6 +339,11 @@ export function GameSessionPage() {
             />
           </div>
         )}
+        {!liveConnected && (
+          <div className="text-center text-xs py-1 mb-1 rounded" style={{ color: 'var(--color-text-secondary)', background: 'var(--color-bg-tertiary)' }}>
+            与房间连接中断，正在重连…
+          </div>
+        )}
         <div ref={scrollRef} className="flex-1 overflow-auto pb-4 chat-scroll">
           {loadingOlder && (
             <div className="text-center py-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
@@ -325,10 +365,37 @@ export function GameSessionPage() {
                 </div>
               )
             }
+            if (msg.type === 'dice') {
+              const accent = diceAccent(String(msg.metadata?.outcome ?? ''))
+              return (
+                <div key={msg.id} className="chat-msg py-1">
+                  <div className="rounded-md px-3 py-2 text-sm flex items-start gap-2"
+                    style={{ background: 'var(--color-bg-tertiary)', borderLeft: `3px solid ${accent}` }}>
+                    <span className="whitespace-pre-wrap flex-1">{msg.content}</span>
+                    {fmtTime(msg.ts) && <span style={{ fontSize: '0.6rem', opacity: 0.5, flexShrink: 0 }}>{fmtTime(msg.ts)}</span>}
+                  </div>
+                </div>
+              )
+            }
+            if (msg.type === 'system') {
+              return (
+                <div key={msg.id} className="chat-msg py-1 text-center">
+                  <span className="inline-block text-xs px-2.5 py-1 rounded whitespace-pre-wrap"
+                    style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}>
+                    {msg.content}
+                  </span>
+                </div>
+              )
+            }
+            const icon = showLabel ? actorIcon(msg.actor_name, isPlayer) : ''
             return (
               <div key={msg.id} className={`chat-msg chat-msg--${msg.type}`}>
                 {showLabel && (
-                  <div className={isPlayer ? 'chat-actor-player' : 'chat-actor'}>{msg.actor_name}</div>
+                  <div className={isPlayer ? 'chat-actor-player' : 'chat-actor'}>
+                    {icon && <span style={{ marginRight: 3 }}>{icon}</span>}
+                    {msg.actor_name}
+                    {fmtTime(msg.ts) && <span style={{ marginLeft: 6, fontSize: '0.6rem', opacity: 0.5 }}>{fmtTime(msg.ts)}</span>}
+                  </div>
                 )}
                 {isPlayer && msg.type === 'dialogue' ? (
                   <div className="chat-player">
