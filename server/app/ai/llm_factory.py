@@ -1,3 +1,8 @@
+"""LLM Provider 工厂：按激活配置创建对应厂商的 Provider。
+
+与具体厂商解耦——文件名不绑定任何一家。新增视觉/多模态 Provider 也从这里接入。
+"""
+
 import json
 from collections.abc import AsyncIterator
 
@@ -6,7 +11,9 @@ import httpx
 from app.ai.provider import LLMProvider
 
 
-class DeepSeekProvider(LLMProvider):
+class OpenAICompatProvider(LLMProvider):
+    """OpenAI 兼容协议的通用 Provider（DeepSeek / OpenAI / 任意 OpenAI 兼容端点）。"""
+
     def __init__(self, model: str = "deepseek-chat", base_url: str = "", api_key: str = ""):
         self.model = model
         self._api_key = api_key
@@ -78,7 +85,7 @@ def get_llm() -> LLMProvider:
     """根据激活的配置创建对应的 LLM Provider。
 
     - protocol="anthropic" -> AnthropicProvider
-    - protocol="openai" (默认) -> DeepSeekProvider (兼容 OpenAI API)
+    - protocol="openai"（默认）-> OpenAICompatProvider（兼容 OpenAI API）
     - 没有激活配置时，回退到 .env 环境变量
     """
     from app.api.ai_settings import load_active_profile
@@ -93,15 +100,15 @@ def get_llm() -> LLMProvider:
                 base_url=profile.base_url,
                 api_key=profile.api_key,
             )
-        return DeepSeekProvider(
+        return OpenAICompatProvider(
             model=profile.model_name,
             base_url=profile.base_url,
             api_key=profile.api_key,
         )
 
-    # 没有激活配置，回退到 .env 的 deepseek 配置
+    # 没有激活配置，回退到 .env 配置
     from app.config import settings
-    return DeepSeekProvider(
+    return OpenAICompatProvider(
         model="deepseek-chat",
         base_url=settings.deepseek_base_url,
         api_key=settings.deepseek_api_key,

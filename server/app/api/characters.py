@@ -88,7 +88,7 @@ async def evaluate_character(data: EvaluateRequest, db: Session = Depends(get_db
     era = (module.world_setting or {}).get("era", "未知")
     era_tag = (module.world_setting or {}).get("era", "")
 
-    from app.ai.deepseek import get_llm
+    from app.ai.llm_factory import get_llm
     llm = get_llm()
     prompt = (
         f"你是一个 TRPG 角色审核专家。请评估以下角色是否适合参与指定的模组。\n\n"

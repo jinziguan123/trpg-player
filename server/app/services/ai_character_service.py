@@ -14,7 +14,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.ai.deepseek import get_llm
+from app.ai.llm_factory import get_llm
 from app.models.module import Module
 from app.rules.coc.character import (
     COC_DEFAULT_SKILLS,

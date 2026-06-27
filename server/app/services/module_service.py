@@ -3,7 +3,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.ai.deepseek import get_llm
+from app.ai.llm_factory import get_llm
 from app.models.module import Module
 
 logger = logging.getLogger(__name__)

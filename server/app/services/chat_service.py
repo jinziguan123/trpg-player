@@ -12,7 +12,7 @@ from app.ai.agents.kp_agent import KPAgent
 from app.ai.agents.npc_agent import NPCAgent
 from app.ai.agents.team_agent import TeamAgent
 from app.ai.context import build_kp_context, build_npc_context, build_team_context
-from app.ai.deepseek import get_llm
+from app.ai.llm_factory import get_llm
 from app.ai.prompts.kp_system import KP_DICE_CONTINUATION_PROMPT
 from app.models.character import Character
 from app.models.module import Module
