@@ -9,9 +9,18 @@ import { PartyRoster } from '../components/game/PartyRoster'
 import { GiReturnArrow } from 'react-icons/gi'
 
 const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE):[^\]]*\]/g
+const OOC_RE = /（[^（）]*）|\([^()]*\)/g
 
 function stripCommandTags(text: string): string {
   return text.replace(CMD_TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/** 拆出正式行动与 OOC（小括号场外）内容，与后端 split_ooc 对齐。 */
+function splitOOC(text: string): { inChar: string; ooc: string } {
+  const parts = text.match(OOC_RE) || []
+  const inChar = text.replace(OOC_RE, '').trim()
+  const ooc = parts.map((p) => p.slice(1, -1).trim()).filter(Boolean).join(' ')
+  return { inChar, ooc }
 }
 
 interface Character {
@@ -41,8 +50,15 @@ export function GameSessionPage() {
     replaceLastNarration, fetchSessions, sessions,
   } = useSessionStore()
 
-  const [activeChar, setActiveChar] = useState<Character | null>(null)
+  const [panelChar, setPanelChar] = useState<Character | null>(null)
+  const [panelCharId, setPanelCharId] = useState<string | null>(null)
+  const [refreshTick, setRefreshTick] = useState(0)
   const [showPanel, setShowPanel] = useState(true)
+
+  const primaryId = currentSession?.player_character_id ?? null
+  const shownCharId = panelCharId ?? primaryId
+  const primaryName =
+    currentSession?.participants?.find((p) => p.is_primary)?.character_name || '玩家'
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -80,11 +96,10 @@ export function GameSessionPage() {
       endStream()
     } finally {
       setStreaming(false)
-      if (currentSession?.player_character_id) {
-        api.get<Character>(`/characters/${currentSession.player_character_id}`).then(setActiveChar)
-      }
+      // 生成结束后刷新当前面板角色（玩家行动可能改了 HP/SAN 等）
+      setRefreshTick((t) => t + 1)
     }
-  }, [addMessage, appendToStream, endStream, replaceLastNarration, startStreamMessage, currentSession?.player_character_id])
+  }, [addMessage, appendToStream, endStream, replaceLastNarration, startStreamMessage])
 
   useEffect(() => {
     if (!sessionId) return
@@ -124,12 +139,12 @@ export function GameSessionPage() {
   }, [sessionId])
 
   useEffect(() => {
-    if (currentSession?.player_character_id) {
-      api.get<Character>(`/characters/${currentSession.player_character_id}`).then(setActiveChar)
+    if (shownCharId) {
+      api.get<Character>(`/characters/${shownCharId}`).then(setPanelChar)
     } else {
-      setActiveChar(null)
+      setPanelChar(null)
     }
-  }, [currentSession?.player_character_id])
+  }, [shownCharId, refreshTick])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -162,7 +177,22 @@ export function GameSessionPage() {
     const text = input.trim()
     setInput('')
     if (inputRef.current) inputRef.current.style.height = 'auto'
-    addMessage({ id: '', type: 'dialogue', content: text, actor_name: activeChar?.name || '玩家', metadata: { is_player: true } })
+
+    const { inChar, ooc } = splitOOC(text)
+    if (!inChar) {
+      // 纯 OOC（场外）：只在房间内广播 + 入库，不发给 KP、不触发生成
+      addMessage({ id: '', type: 'ooc', content: ooc || text, actor_name: primaryName, metadata: { is_player: true } })
+      try {
+        await api.post(`/sessions/${currentSession.id}/ooc`, { content: text })
+      } catch { /* 广播失败不阻塞 */ }
+      return
+    }
+
+    // 正式行动：括号外发给 KP，括号内作为场外旁注单独展示
+    addMessage({ id: '', type: 'dialogue', content: inChar, actor_name: primaryName, metadata: { is_player: true } })
+    if (ooc) {
+      addMessage({ id: '', type: 'ooc', content: ooc, actor_name: primaryName, metadata: { is_player: true } })
+    }
     await consumeStream(streamSSE(`/sessions/${currentSession.id}/chat`, { content: text }))
   }
 
@@ -192,7 +222,11 @@ export function GameSessionPage() {
         </div>
         {currentSession.participants && currentSession.participants.length > 1 && (
           <div className="pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
-            <PartyRoster participants={currentSession.participants} />
+            <PartyRoster
+              participants={currentSession.participants}
+              selectedId={shownCharId}
+              onSelect={(id) => { setPanelCharId(id); setShowPanel(true) }}
+            />
           </div>
         )}
         <div ref={scrollRef} className="flex-1 overflow-auto pb-4 chat-scroll">
@@ -204,6 +238,18 @@ export function GameSessionPage() {
           {messages.map((msg) => {
             const isPlayer = !!msg.metadata?.is_player
             const showLabel = msg.actor_name && (msg.type === 'dialogue' || msg.type === 'action')
+            if (msg.type === 'ooc') {
+              return (
+                <div key={msg.id} className="chat-msg chat-msg--ooc py-1">
+                  <span
+                    className="text-xs italic"
+                    style={{ color: 'var(--color-text-secondary)', opacity: 0.85 }}
+                  >
+                    （场外·{msg.actor_name || '玩家'}）{msg.content}
+                  </span>
+                </div>
+              )
+            }
             return (
               <div key={msg.id} className={`chat-msg chat-msg--${msg.type}`}>
                 {showLabel && (
@@ -268,12 +314,26 @@ export function GameSessionPage() {
         </div>
       </div>
 
-      {showPanel && activeChar && (
+      {showPanel && panelChar && (
         <aside
           className="w-64 flex-shrink-0 border-l overflow-y-auto"
           style={{ borderColor: 'var(--color-border)', background: 'var(--color-bg-card)' }}
         >
-          <CharacterPanel character={activeChar} />
+          {shownCharId !== primaryId && (
+            <div
+              className="flex items-center justify-between px-3 py-1.5 text-xs border-b"
+              style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
+            >
+              <span>🤖 队友角色卡</span>
+              <button
+                onClick={() => setPanelCharId(null)}
+                className="btn-secondary !px-2 !py-0.5"
+              >
+                看主角
+              </button>
+            </div>
+          )}
+          <CharacterPanel character={panelChar} />
         </aside>
       )}
     </div>

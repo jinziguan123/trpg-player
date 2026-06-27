@@ -157,7 +157,7 @@ def _events_to_messages(
 
     raw: list[dict] = []
     for ev in events:
-        if ev.event_type == "system":
+        if ev.event_type in ("system", "ooc"):
             continue
         if ev.event_type in ("narration", "dice"):
             raw.append({"role": "assistant", "content": ev.content})
@@ -224,9 +224,15 @@ def build_kp_context(
     if teammates:
         team_lines = "\n".join(_format_teammate_brief(t) for t in teammates)
         player_info += (
-            "\n\n## 同行的 AI 队友（也在场，会自行说话与行动，"
-            "你需把他们当作在场角色来叙述与回应；但绝不要替队友决定下一步）\n"
+            "\n\n## 同行的 AI 队友（重要规则）\n"
+            "以下队友和玩家一样，是由各自独立的 AI 扮演的「玩家方角色」，"
+            "他们会在轮到自己时自行说话和行动，其发言会作为独立消息出现在对话里"
+            "（形如「[队友·名字] …」）。\n"
             + team_lines
+            + "\n\n**铁律（违反即严重错误）**：你绝对不能替这些队友说话、写他们的台词、"
+            "替他们做决定、描述他们的主动行动或心理活动——这与你不能替玩家做决定是同一条规则。"
+            "队友该说什么、做什么，由他们自己产出，不归你管。你只负责：描述环境与场景变化、"
+            "扮演模组中的 NPC、裁定检定结果、对整个队伍已经做出的行动给出世界的回应。"
         )
 
     system_content = KP_SYSTEM_PROMPT.format(

@@ -14,7 +14,10 @@ class EventLog(Base, UUIDMixin):
     )
     sequence_num: Mapped[int] = mapped_column()
     event_type: Mapped[str] = mapped_column(
-        Enum("dialogue", "action", "dice", "narration", "system", name="event_type")
+        Enum(
+            "dialogue", "action", "dice", "narration", "system", "ooc",
+            name="event_type",
+        )
     )
     actor_id: Mapped[str | None] = mapped_column(nullable=True)
     actor_name: Mapped[str] = mapped_column(default="")

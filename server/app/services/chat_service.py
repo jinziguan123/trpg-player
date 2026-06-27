@@ -40,6 +40,21 @@ SCENE_CHANGE_RE = re.compile(
 
 CMD_TAG_PREFIXES = ("DICE_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:", "SCENE_CHANGE:")
 
+# 中/英文小括号内为 OOC（场外交流）：只在房间内广播，不进入 KP 上下文、不触发生成。
+OOC_RE = re.compile(r"（[^（）]*）|\([^()]*\)")
+
+
+def split_ooc(text: str) -> tuple[str, str]:
+    """拆出正式行动与 OOC 内容。
+
+    返回 ``(in_character, ooc)``：``in_character`` 是去掉括号段后的正式行动文本，
+    ``ooc`` 是括号内文字（去掉括号、多段以空格连接）。
+    """
+    ooc_parts = OOC_RE.findall(text or "")
+    in_character = OOC_RE.sub("", text or "").strip()
+    ooc = " ".join(p[1:-1].strip() for p in ooc_parts if len(p) >= 2).strip()
+    return in_character, ooc
+
 
 def _make_chunk(
     chunk_type: str,
