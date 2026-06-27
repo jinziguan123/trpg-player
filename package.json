@@ -2,7 +2,7 @@
   "name": "trpg-player",
   "private": true,
   "scripts": {
-    "dev:web": "pnpm --filter web dev -- --host",
+    "dev:web": "pnpm --filter web dev",
     "dev:server": "cd server && .venv/bin/uvicorn app.main:app --reload --port 8000",
     "dev:server:win": "cd server && .venv\\Scripts\\python -m uvicorn app.main:app --reload --port 8000",
     "build:web": "pnpm --filter web build",
