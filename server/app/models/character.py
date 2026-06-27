@@ -13,6 +13,8 @@ class Character(Base, UUIDMixin, TimestampMixin):
     module_id: Mapped[Optional[str]] = mapped_column(ForeignKey("modules.id"), nullable=True)
     rule_system: Mapped[str] = mapped_column(Enum("coc", "dnd", name="rule_system"))
     is_player: Mapped[bool] = mapped_column(default=True)
+    # 角色归属于某玩家 token（阶段 2 联机：带角色入场认领席位）；AI 角色为 None
+    owner_token: Mapped[Optional[str]] = mapped_column(nullable=True, index=True)
     base_attributes: Mapped[dict] = mapped_column(JSON, default=dict)
     skills: Mapped[dict] = mapped_column(JSON, default=dict)
     system_data: Mapped[dict] = mapped_column(JSON, default=dict)

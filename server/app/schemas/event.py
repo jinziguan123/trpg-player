@@ -23,6 +23,8 @@ class EventRead(BaseModel):
 
 class ChatRequest(BaseModel):
     content: str
+    # 多人：以哪个角色发言（不传则用会话主角，兼容单人）
+    acting_character_id: str | None = None
 
 
 class StreamChunk(BaseModel):

@@ -30,6 +30,7 @@ def create_character(db: Session, data: dict) -> Character:
         module_id=data.get("module_id"),
         rule_system=rule_system,
         is_player=data.get("is_player", True),
+        owner_token=data.get("owner_token"),
         base_attributes=computed["base_attributes"],
         skills=computed["skills"],
         system_data=computed["system_data"],

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.api.deps import player_token
 from app.database import get_db
 from app.models.module import Module
 from app.schemas.character import (
@@ -164,9 +165,17 @@ def roll_attributes(rule_system: str = "coc", count: int = 3):
 
 
 @router.post("/characters", response_model=CharacterRead)
-def create_character(data: CharacterCreate, db: Session = Depends(get_db)):
+def create_character(
+    data: CharacterCreate,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
     try:
-        char = character_service.create_character(db, data.model_dump())
+        # 真人角色绑定到创建者 token；AI 角色（is_player=false）不绑定
+        payload = data.model_dump()
+        if data.is_player and token:
+            payload["owner_token"] = token
+        char = character_service.create_character(db, payload)
         return char
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -177,11 +186,16 @@ def list_characters(
     module_id: str | None = None,
     available: bool = False,
     is_player: bool | None = None,
+    mine: bool = False,
     db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
 ):
     chars = character_service.list_characters(db, module_id)
     if is_player is not None:
         chars = [c for c in chars if c.is_player == is_player]
+    if mine:
+        # 仅返回当前 token 拥有的角色（认领席位时用）
+        chars = [c for c in chars if c.owner_token and c.owner_token == token]
     if available:
         occupied = session_service.active_character_ids(db)
         chars = [c for c in chars if c.id not in occupied]

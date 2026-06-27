@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy.orm import Session
 
 from app.models.character import Character
@@ -7,6 +9,14 @@ from app.models.event_log import EventLog
 from app.models.module import Module
 from app.models.session import GameSession
 from app.models.session_participant import SessionParticipant
+
+
+def _gen_room_code(db: Session) -> str:
+    for _ in range(20):
+        code = uuid.uuid4().hex[:6].upper()
+        if not db.query(GameSession).filter(GameSession.room_code == code).first():
+            return code
+    return uuid.uuid4().hex[:8].upper()
 
 
 def active_character_ids(
@@ -38,10 +48,11 @@ def _normalize_participants(participants: list[dict]) -> list[dict]:
     seen: set[str] = set()
     seats: list[dict] = []
     for p in participants:
-        cid = p["character_id"]
-        if cid in seen:
-            raise ValueError("同一角色不能在同一会话中占据多个席位")
-        seen.add(cid)
+        cid = p.get("character_id")
+        if cid:
+            if cid in seen:
+                raise ValueError("同一角色不能在同一会话中占据多个席位")
+            seen.add(cid)
         seats.append(
             {
                 "character_id": cid,
@@ -49,19 +60,33 @@ def _normalize_participants(participants: list[dict]) -> list[dict]:
                 "is_primary": bool(p.get("is_primary", False)),
             }
         )
+    # 空席（无角色）只能是 human 席
+    for s in seats:
+        if not s["character_id"]:
+            s["role"] = "human"
+
     primaries = [s for s in seats if s["is_primary"]]
     if not primaries:
-        seats[0]["is_primary"] = True
-        primaries = [seats[0]]
+        # 取第一个有角色的席位作主角
+        filled = [s for s in seats if s["character_id"]]
+        if not filled:
+            raise ValueError("必须至少有一个已填角色的主角席位")
+        filled[0]["is_primary"] = True
+        primaries = [filled[0]]
     elif len(primaries) > 1:
         raise ValueError("只能有一个主角席位")
+    if not primaries[0]["character_id"]:
+        raise ValueError("主角席位必须填入角色")
     # 主角必为真人
     primaries[0]["role"] = "human"
     return seats
 
 
 def create_session(
-    db: Session, module_id: str, participants: list[dict]
+    db: Session,
+    module_id: str,
+    participants: list[dict],
+    creator_token: str | None = None,
 ) -> GameSession:
     module = db.get(Module, module_id)
     if not module:
@@ -72,15 +97,19 @@ def create_session(
     seats = _normalize_participants(participants)
 
     for seat in seats:
-        if not db.get(Character, seat["character_id"]):
+        if seat["character_id"] and not db.get(Character, seat["character_id"]):
             raise ValueError("角色不存在")
 
     occupied = active_character_ids(db)
-    clash = [s["character_id"] for s in seats if s["character_id"] in occupied]
+    clash = [
+        s["character_id"] for s in seats
+        if s["character_id"] and s["character_id"] in occupied
+    ]
     if clash:
         raise ValueError("所选角色正在进行其他游戏，请先完成或结束当前游戏")
 
-    primary_id = next(s["character_id"] for s in seats if s["is_primary"])
+    primary = next(s for s in seats if s["is_primary"])
+    primary_id = primary["character_id"]
 
     first_scene_id = None
     if module.scenes:
@@ -90,22 +119,85 @@ def create_session(
         module_id=module_id,
         player_character_id=primary_id,
         status="active",
+        room_code=_gen_room_code(db),
         current_scene_id=first_scene_id,
         world_state={"visited_scenes": [first_scene_id] if first_scene_id else []},
     )
     for order, seat in enumerate(seats):
+        claimed = bool(seat["character_id"])
+        # 主角席归创建者 token；其它已填真人席暂不预设归属（留给认领或本机）
+        owner = creator_token if seat["is_primary"] else None
         game_session.participants.append(
             SessionParticipant(
                 character_id=seat["character_id"],
                 role=seat["role"],
                 is_primary=seat["is_primary"],
                 seat_order=order,
+                claimed=claimed,
+                owner_token=owner,
             )
         )
     db.add(game_session)
+    # 创建者的主角绑定到其 token
+    if creator_token and primary_id:
+        char = db.get(Character, primary_id)
+        if char and not char.owner_token:
+            char.owner_token = creator_token
     db.commit()
     db.refresh(game_session)
     return game_session
+
+
+def get_session_by_code(db: Session, room_code: str) -> GameSession | None:
+    return (
+        db.query(GameSession)
+        .filter(GameSession.room_code == room_code.upper())
+        .first()
+    )
+
+
+def claim_seat(
+    db: Session, session_id: str, seat_order: int, character_id: str, token: str,
+) -> GameSession:
+    """玩家用 token 认领一个空 human 席并带角色入座。"""
+    if not token:
+        raise ValueError("缺少玩家身份")
+    session = db.get(GameSession, session_id)
+    if not session:
+        raise ValueError("房间不存在")
+
+    seat = (
+        db.query(SessionParticipant)
+        .filter(
+            SessionParticipant.session_id == session_id,
+            SessionParticipant.seat_order == seat_order,
+        )
+        .first()
+    )
+    if not seat:
+        raise ValueError("席位不存在")
+    if seat.role != "human":
+        raise ValueError("只能认领真人席位")
+    if seat.claimed:
+        raise ValueError("该席位已被认领")
+
+    char = db.get(Character, character_id)
+    if not char:
+        raise ValueError("角色不存在")
+    if char.owner_token and char.owner_token != token:
+        raise ValueError("该角色属于其他玩家")
+
+    occupied = active_character_ids(db)
+    if character_id in occupied:
+        raise ValueError("该角色正在进行其他游戏")
+
+    seat.character_id = character_id
+    seat.owner_token = token
+    seat.claimed = True
+    char.owner_token = token
+    db.commit()
+    db.refresh(session)
+    return session
 
 
 def get_participants(db: Session, session_id: str) -> list[SessionParticipant]:
@@ -115,6 +207,45 @@ def get_participants(db: Session, session_id: str) -> list[SessionParticipant]:
         .order_by(SessionParticipant.seat_order.asc())
         .all()
     )
+
+
+def resolve_actor(
+    db: Session, session_id: str, token: str | None, acting_character_id: str | None,
+) -> Character:
+    """自由式多人：校验并返回本次行动的角色（按 token 校验席位归属）。"""
+    session = db.get(GameSession, session_id)
+    if not session:
+        raise ValueError("房间不存在")
+    target_id = acting_character_id or session.player_character_id
+    if not target_id:
+        raise ValueError("未指定行动角色")
+    parts = get_participants(db, session_id)
+    seat = next((p for p in parts if p.character_id == target_id), None)
+    if not seat:
+        raise ValueError("该角色不在本房间")
+    if seat.role != "human":
+        raise ValueError("只能以真人席位行动")
+    # 席位有归属时校验 token；无归属（旧本机会话）放行
+    if seat.owner_token and token and seat.owner_token != token:
+        raise ValueError("无权以该角色行动")
+    char = db.get(Character, target_id)
+    if not char:
+        raise ValueError("角色不存在")
+    return char
+
+
+def get_party_members(
+    db: Session, session_id: str, exclude_id: str | None = None,
+) -> list[Character]:
+    """会话内所有已填角色（真人 + AI），可排除某角色；用于 KP 整队上下文。"""
+    out: list[Character] = []
+    for p in get_participants(db, session_id):
+        if not p.character_id or p.character_id == exclude_id:
+            continue
+        c = db.get(Character, p.character_id)
+        if c:
+            out.append(c)
+    return out
 
 
 def get_ai_teammates(db: Session, session_id: str) -> list[Character]:

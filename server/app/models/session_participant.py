@@ -17,9 +17,16 @@ class SessionParticipant(Base, UUIDMixin, TimestampMixin):
     session_id: Mapped[str] = mapped_column(
         ForeignKey("game_sessions.id"), index=True
     )
-    character_id: Mapped[str] = mapped_column(ForeignKey("characters.id"), index=True)
+    # 阶段 2：human 空席可先建后认领，故 character_id 可空
+    character_id: Mapped[str | None] = mapped_column(
+        ForeignKey("characters.id"), index=True, nullable=True
+    )
     role: Mapped[str] = mapped_column(
         Enum("human", "ai", name="participant_role"), default="human"
     )
     seat_order: Mapped[int] = mapped_column(default=0)
     is_primary: Mapped[bool] = mapped_column(default=False)
+    # 认领该席位的玩家 token（AI 席与未认领的空 human 席为 None）
+    owner_token: Mapped[str | None] = mapped_column(nullable=True, index=True)
+    # human 席是否已被认领并填入角色
+    claimed: Mapped[bool] = mapped_column(default=True)

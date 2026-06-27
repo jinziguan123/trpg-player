@@ -2,13 +2,19 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from app.api.deps import player_token
 from app.database import get_db
 from app.models.character import Character
 from app.models.module import Module
 from app.schemas.event import EventRead
-from app.schemas.session import SessionCreate, SessionRead, SessionStatusUpdate
+from app.schemas.session import (
+    ClaimSeatRequest,
+    SessionCreate,
+    SessionRead,
+    SessionStatusUpdate,
+)
 from app.services import session_service
-from app.services.chat_service import _make_chunk, run_opening_generation
+from app.services.chat_service import _make_chunk, event_to_chunk, run_opening_generation
 from app.services.generation_manager import generation_manager
 from app.services.room_hub import room_hub, stream_room
 
@@ -16,11 +22,14 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
 def _session_payload(
-    session, chars_map: dict[str, str], module_title: str | None
+    session, chars_map: dict[str, str], module_title: str | None,
+    token: str | None = None,
 ) -> dict:
     data = SessionRead.model_validate(session).model_dump()
-    for p in data.get("participants", []):
-        p["character_name"] = chars_map.get(p["character_id"])
+    # session.participants 与 data["participants"] 均按 seat_order，可对齐计算 is_mine
+    for p, sp in zip(data.get("participants", []), session.participants):
+        p["character_name"] = chars_map.get(p["character_id"]) if p["character_id"] else None
+        p["is_mine"] = bool(token and sp.owner_token and sp.owner_token == token)
     return {
         **data,
         "module_title": module_title,
@@ -32,72 +41,112 @@ def _session_payload(
     }
 
 
-@router.post("")
-def create_session(data: SessionCreate, db: Session = Depends(get_db)):
-    if data.participants:
-        seats = [p.model_dump() for p in data.participants]
-    else:
-        # 旧单人路径：只有主角
-        seats = [
-            {
-                "character_id": data.player_character_id,
-                "role": "human",
-                "is_primary": True,
-            }
-        ]
-    try:
-        session = session_service.create_session(db, data.module_id, seats)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-    char_ids = {p.character_id for p in session.participants}
-    chars_map = {
-        c.id: c.name
-        for c in db.query(Character).filter(Character.id.in_(char_ids)).all()
-    } if char_ids else {}
-    module = db.get(Module, session.module_id)
-    return _session_payload(session, chars_map, module.title if module else None)
-
-
-@router.get("")
-def list_sessions(db: Session = Depends(get_db)):
-    sessions = session_service.list_sessions(db)
-    module_ids = {s.module_id for s in sessions}
+def _chars_map(db: Session, sessions) -> dict[str, str]:
     char_ids: set[str] = set()
     for s in sessions:
         if s.player_character_id:
             char_ids.add(s.player_character_id)
-        char_ids.update(p.character_id for p in s.participants)
+        char_ids.update(p.character_id for p in s.participants if p.character_id)
+    if not char_ids:
+        return {}
+    return {
+        c.id: c.name
+        for c in db.query(Character).filter(Character.id.in_(char_ids)).all()
+    }
 
+
+@router.post("")
+def create_session(
+    data: SessionCreate,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    if data.participants:
+        seats = [p.model_dump() for p in data.participants]
+    else:
+        seats = [
+            {"character_id": data.player_character_id, "role": "human", "is_primary": True}
+        ]
+    try:
+        session = session_service.create_session(db, data.module_id, seats, creator_token=token)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    module = db.get(Module, session.module_id)
+    return _session_payload(
+        session, _chars_map(db, [session]), module.title if module else None, token,
+    )
+
+
+@router.get("")
+def list_sessions(
+    db: Session = Depends(get_db), token: str | None = Depends(player_token),
+):
+    sessions = session_service.list_sessions(db)
+    module_ids = {s.module_id for s in sessions}
     modules_map = (
         {m.id: m.title for m in db.query(Module).filter(Module.id.in_(module_ids)).all()}
         if module_ids else {}
     )
-    chars_map = (
-        {c.id: c.name for c in db.query(Character).filter(Character.id.in_(char_ids)).all()}
-        if char_ids else {}
-    )
-
+    chars_map = _chars_map(db, sessions)
     return [
-        _session_payload(s, chars_map, modules_map.get(s.module_id))
+        _session_payload(s, chars_map, modules_map.get(s.module_id), token)
         for s in sessions
     ]
 
 
+@router.get("/by-code/{room_code}")
+def get_session_by_code(
+    room_code: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    session = session_service.get_session_by_code(db, room_code)
+    if not session:
+        raise HTTPException(404, "房间不存在或房间码有误")
+    module = db.get(Module, session.module_id)
+    return _session_payload(
+        session, _chars_map(db, [session]), module.title if module else None, token,
+    )
+
+
+@router.post("/{session_id}/claim")
+def claim_seat(
+    session_id: str,
+    data: ClaimSeatRequest,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    try:
+        session = session_service.claim_seat(
+            db, session_id, data.seat_order, data.character_id, token or "",
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    module = db.get(Module, session.module_id)
+    payload = _session_payload(
+        session, _chars_map(db, [session]), module.title if module else None, token,
+    )
+    # 广播入座事件给房间内所有人
+    seat = next((p for p in payload["participants"] if p["seat_order"] == data.seat_order), None)
+    name = seat["character_name"] if seat else "新成员"
+    room_hub.broadcast(session_id, _make_chunk("seat", f"{name} 已入座", actor_name=name))
+    return payload
+
+
 @router.get("/{session_id}")
-def get_session(session_id: str, db: Session = Depends(get_db)):
+def get_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
     session = session_service.get_session(db, session_id)
     if not session:
         raise HTTPException(404, "会话不存在")
-    char_ids = {p.character_id for p in session.participants}
-    if session.player_character_id:
-        char_ids.add(session.player_character_id)
-    chars_map = {
-        c.id: c.name
-        for c in db.query(Character).filter(Character.id.in_(char_ids)).all()
-    } if char_ids else {}
     module = db.get(Module, session.module_id)
-    return _session_payload(session, chars_map, module.title if module else None)
+    return _session_payload(
+        session, _chars_map(db, [session]), module.title if module else None, token,
+    )
 
 
 @router.put("/{session_id}/status", response_model=SessionRead)

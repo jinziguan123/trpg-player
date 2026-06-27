@@ -469,20 +469,24 @@ async def run_chat_generation(session_id: str) -> None:
         game_session = db.get(GameSession, session_id)
         module = db.get(Module, game_session.module_id)
         player_char = db.get(Character, game_session.player_character_id)
-        teammates = session_service.get_ai_teammates(db, session_id)
+        ai_teammates = session_service.get_ai_teammates(db, session_id)
+        # KP 上下文整队：主角之外的所有已填角色（真人 + AI），让 KP 知道全员在场
+        party_others = session_service.get_party_members(
+            db, session_id, exclude_id=game_session.player_character_id,
+        )
 
-        # 玩家输入后：先跑一轮 AI 队友自动响应（仅一轮，不自触发），再交 KP 收束
-        if teammates:
+        # 玩家输入后：先跑一轮 AI 队友自动响应（仅 AI 席、仅一轮、不自触发），再交 KP 收束
+        if ai_teammates:
             llm = get_llm()
             async for chunk in _run_team_turn(
-                db, session_id, game_session, module, player_char, teammates, llm,
+                db, session_id, game_session, module, player_char, ai_teammates, llm,
             ):
                 room_hub.broadcast(session_id, chunk)
 
         events = session_service.get_session_events(db, session_id)
         await _run_generation(
             db, session_id, game_session, module, player_char, events,
-            teammates=teammates,
+            teammates=party_others,
         )
     except asyncio.CancelledError:
         logger.info("生成被取消: session=%s", session_id)
@@ -507,11 +511,13 @@ async def run_opening_generation(session_id: str) -> None:
             return
         module = db.get(Module, game_session.module_id)
         player_char = db.get(Character, game_session.player_character_id)
-        teammates = session_service.get_ai_teammates(db, session_id)
+        party_others = session_service.get_party_members(
+            db, session_id, exclude_id=game_session.player_character_id,
+        )
         # 开场不跑队友回合（尚无玩家行动），但把队伍信息带进 KP 上下文让其知道谁在场
         await _run_generation(
             db, session_id, game_session, module, player_char, [],
-            teammates=teammates,
+            teammates=party_others,
         )
     except asyncio.CancelledError:
         logger.info("开场生成被取消: session=%s", session_id)
