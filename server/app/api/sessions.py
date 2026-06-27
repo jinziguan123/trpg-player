@@ -9,6 +9,7 @@ from app.models.module import Module
 from app.schemas.event import EventRead
 from app.schemas.session import (
     ClaimSeatRequest,
+    ReadyRequest,
     SessionCreate,
     SessionRead,
     SessionStatusUpdate,
@@ -30,6 +31,7 @@ def _session_payload(
     for p, sp in zip(data.get("participants", []), session.participants):
         p["character_name"] = chars_map.get(p["character_id"]) if p["character_id"] else None
         p["is_mine"] = bool(token and sp.owner_token and sp.owner_token == token)
+        p["is_host"] = bool(sp.is_primary and sp.owner_token)
     return {
         **data,
         "module_title": module_title,
@@ -132,6 +134,48 @@ def claim_seat(
     name = seat["character_name"] if seat else "新成员"
     room_hub.broadcast(session_id, _make_chunk("seat", f"{name} 已入座", actor_name=name))
     return payload
+
+
+@router.post("/{session_id}/ready")
+def set_ready(
+    session_id: str,
+    data: ReadyRequest,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """大厅：把当前玩家席位的准备态置位，并广播 lobby 刷新。"""
+    try:
+        session = session_service.set_ready(db, session_id, token, data.ready)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    module = db.get(Module, session.module_id)
+    payload = _session_payload(
+        session, _chars_map(db, [session]), module.title if module else None, token,
+    )
+    room_hub.broadcast(session_id, _make_chunk("lobby"))
+    return payload
+
+
+@router.post("/{session_id}/start")
+def start_game(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """大厅：房主开局。校验门槛后 setup→active，并触发开场生成。"""
+    try:
+        session = session_service.start_game(db, session_id, token)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    # 推进到 active 后触发开场（fire-and-forget，输出经 /live 下发）
+    room_hub.broadcast(session_id, _make_chunk("started"))
+    if not generation_manager.is_generating(session_id):
+        room_hub.broadcast(session_id, _make_chunk("generating"))
+        generation_manager.start(session_id, run_opening_generation(session_id))
+    module = db.get(Module, session.module_id)
+    return _session_payload(
+        session, _chars_map(db, [session]), module.title if module else None, token,
+    )
 
 
 @router.get("/{session_id}")

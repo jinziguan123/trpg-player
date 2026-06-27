@@ -30,3 +30,5 @@ class SessionParticipant(Base, UUIDMixin, TimestampMixin):
     owner_token: Mapped[str | None] = mapped_column(nullable=True, index=True)
     # human 席是否已被认领并填入角色
     claimed: Mapped[bool] = mapped_column(default=True)
+    # 大厅准备态：AI 席与房主席默认 True；空/已认领的真人席需玩家手动准备
+    ready: Mapped[bool] = mapped_column(default=False)

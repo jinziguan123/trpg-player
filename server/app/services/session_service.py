@@ -115,10 +115,17 @@ def create_session(
     if module.scenes:
         first_scene_id = module.scenes[0].get("id")
 
+    # 有空的真人席 → 进大厅（setup，等真人认领+准备后房主开局）；
+    # 否则（单人/全 AI 已填满）→ 直接 active，保持原快速开局体验。
+    has_open_seat = any(
+        (not s["character_id"]) and s["role"] == "human" for s in seats
+    )
+    status = "setup" if has_open_seat else "active"
+
     game_session = GameSession(
         module_id=module_id,
         player_character_id=primary_id,
-        status="active",
+        status=status,
         room_code=_gen_room_code(db),
         current_scene_id=first_scene_id,
         world_state={"visited_scenes": [first_scene_id] if first_scene_id else []},
@@ -127,6 +134,8 @@ def create_session(
         claimed = bool(seat["character_id"])
         # 主角席归创建者 token；其它已填真人席暂不预设归属（留给认领或本机）
         owner = creator_token if seat["is_primary"] else None
+        # AI 席与房主席默认就绪；空/待认领的真人席需手动准备
+        ready = seat["role"] == "ai" or seat["is_primary"]
         game_session.participants.append(
             SessionParticipant(
                 character_id=seat["character_id"],
@@ -135,6 +144,7 @@ def create_session(
                 seat_order=order,
                 claimed=claimed,
                 owner_token=owner,
+                ready=ready,
             )
         )
     db.add(game_session)
@@ -207,6 +217,81 @@ def get_participants(db: Session, session_id: str) -> list[SessionParticipant]:
         .order_by(SessionParticipant.seat_order.asc())
         .all()
     )
+
+
+def _primary_seat(db: Session, session_id: str) -> SessionParticipant | None:
+    return (
+        db.query(SessionParticipant)
+        .filter(
+            SessionParticipant.session_id == session_id,
+            SessionParticipant.is_primary.is_(True),
+        )
+        .first()
+    )
+
+
+def is_host(db: Session, session_id: str, token: str | None) -> bool:
+    """房主 = 主角席的 owner_token 持有者（建房者）。"""
+    seat = _primary_seat(db, session_id)
+    return bool(token and seat and seat.owner_token == token)
+
+
+def set_ready(
+    db: Session, session_id: str, token: str | None, ready: bool
+) -> GameSession:
+    """把当前 token 拥有的席位的准备态置位。"""
+    session = db.get(GameSession, session_id)
+    if not session:
+        raise ValueError("房间不存在")
+    seat = (
+        db.query(SessionParticipant)
+        .filter(
+            SessionParticipant.session_id == session_id,
+            SessionParticipant.owner_token == token,
+        )
+        .first()
+    )
+    if not token or not seat:
+        raise ValueError("你不在该房间中")
+    seat.ready = bool(ready)
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def lobby_gaps(db: Session, session_id: str) -> list[str]:
+    """返回开局门槛缺口；空列表代表满足开局条件。"""
+    parts = get_participants(db, session_id)
+    gaps: list[str] = []
+    empty = [p for p in parts if not p.character_id]
+    if empty:
+        gaps.append(f"还有 {len(empty)} 个空席未填角色")
+    not_ready = [
+        p for p in parts if p.character_id and p.role == "human" and not p.ready
+    ]
+    if not_ready:
+        gaps.append(f"还有 {len(not_ready)} 名玩家未准备")
+    if not any(p.role == "human" and p.character_id for p in parts):
+        gaps.append("至少需要 1 名真人玩家")
+    return gaps
+
+
+def start_game(db: Session, session_id: str, token: str | None) -> GameSession:
+    """房主校验 + 门槛校验后把房间从 setup 推进到 active。"""
+    session = db.get(GameSession, session_id)
+    if not session:
+        raise ValueError("房间不存在")
+    if session.status != "setup":
+        raise ValueError("房间不在大厅状态")
+    if not is_host(db, session_id, token):
+        raise ValueError("只有房主可以开始游戏")
+    gaps = lobby_gaps(db, session_id)
+    if gaps:
+        raise ValueError("；".join(gaps))
+    session.status = "active"
+    db.commit()
+    db.refresh(session)
+    return session
 
 
 def resolve_actor(

@@ -22,8 +22,10 @@ class ParticipantRead(BaseModel):
     is_primary: bool
     seat_order: int
     claimed: bool = True
+    ready: bool = True
     character_name: str | None = None
     is_mine: bool = False  # 该席位是否归当前请求 token 所有（由端点按 token 计算）
+    is_host: bool = False  # 该席位是否房主（主角席 + 有 owner_token），端点按 token 计算
 
     model_config = {"from_attributes": True}
 
@@ -64,3 +66,7 @@ class SessionStatusUpdate(BaseModel):
 class ClaimSeatRequest(BaseModel):
     seat_order: int
     character_id: str
+
+
+class ReadyRequest(BaseModel):
+    ready: bool = True
