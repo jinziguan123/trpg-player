@@ -272,7 +272,7 @@ export function CharacterPage() {
   const goToSkills = async () => {
     const schema = await api.get<{ default_skills: Record<string, number> }>('/rules/coc/character-schema')
     setDefaultSkills(schema.default_skills || {})
-    setSkillAlloc({})
+    if (!isImported) setSkillAlloc({})
     setStep('技能加点')
   }
 
