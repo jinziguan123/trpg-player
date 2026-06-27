@@ -43,7 +43,9 @@ class CoCRuleEngine(RuleEngine):
 
         extra_sd = data.get("system_data", {})
         if isinstance(extra_sd, dict):
-            system_data["occupation"] = extra_sd.get("occupation", "")
+            for k, v in extra_sd.items():
+                if v is not None and v != "":
+                    system_data[k] = v
 
         skills = data.get("skills")
         if not skills:

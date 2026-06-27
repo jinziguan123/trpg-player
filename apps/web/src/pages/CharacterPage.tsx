@@ -6,7 +6,7 @@ import { useModuleStore } from '../stores/moduleStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
-import { GiDiceSixFacesSix, GiCharacter, GiReturnArrow } from 'react-icons/gi'
+import { GiDiceSixFacesSix, GiCharacter, GiReturnArrow, GiUpCard } from 'react-icons/gi'
 
 interface Character {
   id: string
@@ -49,8 +49,55 @@ const ATTR_RANGES: Record<string, { min: number; max: number }> = {
 
 const POINT_POOL = 460
 
-const STEPS = ['基本信息', '属性设定', '职业选择', '技能加点', '背景故事'] as const
+const STEPS = ['基本信息', '属性设定', '职业选择', '技能加点', '背景故事', '随身物品'] as const
 type Step = (typeof STEPS)[number]
+
+interface EquipmentItem {
+  name: string
+  category: string
+  era: string[]
+  min_credit: number
+}
+
+interface WeaponItem {
+  name: string
+  skill: string
+  damage: string
+  range: string
+  attacks: number
+  ammo: string
+}
+
+// Excel 导入与 AI 建卡返回的统一数据结构
+interface ImportedCharacterData {
+  name?: string
+  age?: number
+  base_attributes?: Record<string, number>
+  skills?: Record<string, number>
+  backstory?: string
+  equipment?: string[]
+  weapons?: WeaponItem[]
+  system_data?: {
+    gender?: string
+    residence?: string
+    birthplace?: string
+    creditRating?: number
+    luck?: number
+    occupation?: string
+    personalDescription?: string
+    ideologyBeliefs?: string
+    significantPeople?: string
+    meaningfulLocations?: string
+    treasuredPossessions?: string
+    traits?: string
+    scarsAndWounds?: string
+    phobiasAndManias?: string
+    investigatorHistory?: string
+  }
+}
+
+const MAX_EQUIPMENT = 10
+const NON_ALLOCATABLE_SKILLS = ['克苏鲁神话']
 
 function initAttrs(): Record<string, number> {
   const attrs: Record<string, number> = {}
@@ -72,9 +119,13 @@ export function CharacterPage() {
   const [creating, setCreating] = useState(false)
   const [selectedChar, setSelectedChar] = useState<Character | null>(null)
 
-  // Step 1
+  // Step 1: 基本信息
   const [name, setName] = useState('')
   const [moduleId, setModuleId] = useState('')
+  const [age, setAge] = useState(25)
+  const [gender, setGender] = useState('')
+  const [residence, setResidence] = useState('')
+  const [birthplace, setBirthplace] = useState('')
 
   // Evaluation
   const [evaluating, setEvaluating] = useState(false)
@@ -93,12 +144,31 @@ export function CharacterPage() {
   const [intPoints, setIntPoints] = useState(0)
   const [occSearch, setOccSearch] = useState('')
 
+  // Step 2: 幸运值
+  const [luck, setLuck] = useState(0)
+
+  // Step 3: 信用评级
+  const [creditRating, setCreditRating] = useState(0)
+
   // Step 4: 技能
   const [skillAlloc, setSkillAlloc] = useState<Record<string, number>>({})
   const [defaultSkills, setDefaultSkills] = useState<Record<string, number>>({})
 
-  // Step 5
-  const [backstory, setBackstory] = useState('')
+  // Step 5: 物品
+  const [availableEquipment, setAvailableEquipment] = useState<EquipmentItem[]>([])
+  const [selectedEquipment, setSelectedEquipment] = useState<string[]>([])
+  const [weapons, setWeapons] = useState<WeaponItem[]>([])
+
+  // Step 5: 结构化背景故事
+  const [personalDesc, setPersonalDesc] = useState('')
+  const [ideologyBeliefs, setIdeologyBeliefs] = useState('')
+  const [significantPeople, setSignificantPeople] = useState('')
+  const [meaningfulLocations, setMeaningfulLocations] = useState('')
+  const [treasuredPossessions, setTreasuredPossessions] = useState('')
+  const [traits, setTraits] = useState('')
+  const [scarsAndWounds, setScarsAndWounds] = useState('')
+  const [phobiasAndManias, setPhobiasAndManias] = useState('')
+  const [investigatorHistory, setInvestigatorHistory] = useState('')
 
   useEffect(() => {
     loadCharacters()
@@ -134,7 +204,42 @@ export function CharacterPage() {
 
   const effectiveAttrs = useDice ? selectedAttrs : customAttrs
 
+  // ---- 派生属性计算 ----
+  const derivedStats = (() => {
+    if (!effectiveAttrs) return null
+    const str = effectiveAttrs.STR ?? 50
+    const con = effectiveAttrs.CON ?? 50
+    const siz = effectiveAttrs.SIZ ?? 50
+    const dex = effectiveAttrs.DEX ?? 50
+    const pow = effectiveAttrs.POW ?? 50
+    const hp = Math.floor((con + siz) / 10)
+    const mp = Math.floor(pow / 5)
+    const san = pow
+    let mov = (dex < siz && str < siz) ? 7 : (dex >= siz || str >= siz) ? 8 : 9
+    if (age >= 80) mov -= 5
+    else if (age >= 70) mov -= 4
+    else if (age >= 60) mov -= 3
+    else if (age >= 50) mov -= 2
+    else if (age >= 40) mov -= 1
+    const combined = str + siz
+    let db: string, build: number
+    if (combined <= 64) { db = '-2'; build = -2 }
+    else if (combined <= 84) { db = '-1'; build = -1 }
+    else if (combined <= 124) { db = '0'; build = 0 }
+    else if (combined <= 164) { db = '1D4'; build = 1 }
+    else { db = '1D6'; build = 2 }
+    const dodge = Math.floor(dex / 2)
+    return { hp, mp, san, mov, db, build, dodge }
+  })()
+
   // ---- 掷骰 ----
+  const rollLuck = () => {
+    const d1 = Math.floor(Math.random() * 6) + 1
+    const d2 = Math.floor(Math.random() * 6) + 1
+    const d3 = Math.floor(Math.random() * 6) + 1
+    setLuck((d1 + d2 + d3) * 5)
+  }
+
   const rollAttributes = async () => {
     const data = await api.post<AttrSet>('/characters/roll-attributes?rule_system=coc')
     setAttrSets(data.sets)
@@ -144,6 +249,7 @@ export function CharacterPage() {
   // ---- 职业 ----
   const selectOccupation = async (occ: OccupationDef) => {
     setSelectedOcc(occ)
+    setCreditRating(occ.credit_min)
     if (effectiveAttrs) {
       const data = await api.post<{ occupation_points: number; interest_points: number }>(
         '/rules/coc/calc-skill-points',
@@ -182,13 +288,52 @@ export function CharacterPage() {
   const remainingInt = intPoints - allocatedIntTotal
 
   const updateSkill = (skillName: string, delta: number) => {
-    const isOccSkill = selectedOcc?.skills.includes(skillName) ?? false
-    const remaining = isOccSkill ? remainingOcc : remainingInt
+    if (!isImported) {
+      const isOccSkill = selectedOcc?.skills.includes(skillName) ?? false
+      const remaining = isOccSkill ? remainingOcc : remainingInt
+      if (delta > 0 && remaining <= 0) return
+      if (delta > 0 && delta > remaining) return
+    }
     const current = skillAlloc[skillName] || 0
     const newVal = Math.max(0, current + delta)
-    if (delta > 0 && remaining <= 0) return
-    if (delta > 0 && delta > remaining) return
     setSkillAlloc({ ...skillAlloc, [skillName]: newVal })
+  }
+
+  // ---- 构建背景文本 ----
+  const buildBackstoryText = () => {
+    const parts: string[] = []
+    if (personalDesc) parts.push(`【个人描述】${personalDesc}`)
+    if (ideologyBeliefs) parts.push(`【思想/信念】${ideologyBeliefs}`)
+    if (significantPeople) parts.push(`【重要之人】${significantPeople}`)
+    if (meaningfulLocations) parts.push(`【意义非凡之地】${meaningfulLocations}`)
+    if (treasuredPossessions) parts.push(`【宝贵之物】${treasuredPossessions}`)
+    if (traits) parts.push(`【特点】${traits}`)
+    if (scarsAndWounds) parts.push(`【伤口/疤痕】${scarsAndWounds}`)
+    if (phobiasAndManias) parts.push(`【恐惧症/狂躁症】${phobiasAndManias}`)
+    if (investigatorHistory) parts.push(`【调查员经历】${investigatorHistory}`)
+    return parts.join('\n')
+  }
+
+  const buildSystemData = () => {
+    const sd: Record<string, unknown> = {}
+    if (selectedOcc) sd.occupation = selectedOcc.name
+    if (gender) sd.gender = gender
+    if (residence) sd.residence = residence
+    if (birthplace) sd.birthplace = birthplace
+    if (creditRating > 0) sd.creditRating = creditRating
+    if (luck > 0) sd.luck = luck
+    if (personalDesc) sd.personalDescription = personalDesc
+    if (ideologyBeliefs) sd.ideologyBeliefs = ideologyBeliefs
+    if (significantPeople) sd.significantPeople = significantPeople
+    if (meaningfulLocations) sd.meaningfulLocations = meaningfulLocations
+    if (treasuredPossessions) sd.treasuredPossessions = treasuredPossessions
+    if (traits) sd.traits = traits
+    if (scarsAndWounds) sd.scarsAndWounds = scarsAndWounds
+    if (phobiasAndManias) sd.phobiasAndManias = phobiasAndManias
+    if (investigatorHistory) sd.investigatorHistory = investigatorHistory
+    if (selectedEquipment.length > 0) sd.equipment = selectedEquipment
+    if (weapons.length > 0) sd.weapons = weapons
+    return sd
   }
 
   // ---- 评估 + 创建 ----
@@ -201,7 +346,7 @@ export function CharacterPage() {
         module_id: moduleId,
         name,
         occupation: selectedOcc?.name || '',
-        backstory,
+        backstory: buildBackstoryText(),
       })
       if (result.compatible && result.warnings.length === 0) {
         await doCreate()
@@ -219,18 +364,25 @@ export function CharacterPage() {
     if (!name || !effectiveAttrs || !moduleId) return
     setCreating(true)
     try {
-      const finalSkills: Record<string, number> = { ...defaultSkills }
-      for (const [k, v] of Object.entries(skillAlloc)) {
-        finalSkills[k] = (finalSkills[k] || 0) + v
+      let finalSkills: Record<string, number>
+      if (isImported) {
+        finalSkills = { ...defaultSkills, ...skillAlloc }
+      } else {
+        finalSkills = { ...defaultSkills }
+        for (const [k, v] of Object.entries(skillAlloc)) {
+          finalSkills[k] = (finalSkills[k] || 0) + v
+        }
       }
+      finalSkills['信用评级'] = creditRating
       await api.post('/characters', {
         name,
         module_id: moduleId,
         rule_system: 'coc',
+        age,
         base_attributes: effectiveAttrs,
         skills: finalSkills,
-        backstory,
-        system_data: selectedOcc ? { occupation: selectedOcc.name } : {},
+        backstory: buildBackstoryText(),
+        system_data: buildSystemData(),
       })
       await loadCharacters()
       toast.success(`角色「${name}」创建成功`)
@@ -246,15 +398,160 @@ export function CharacterPage() {
     setStep('基本信息')
     setName('')
     setModuleId('')
+    setAge(25)
+    setGender('')
+    setResidence('')
+    setBirthplace('')
     setUseDice(false)
     setCustomAttrs(initAttrs())
     setAttrSets(null)
     setSelectedAttrs(null)
+    setLuck(0)
     setSelectedOcc(null)
+    setCreditRating(0)
     setSkillAlloc({})
-    setBackstory('')
+    setAvailableEquipment([])
+    setSelectedEquipment([])
+    setWeapons([])
+    setPersonalDesc('')
+    setIdeologyBeliefs('')
+    setSignificantPeople('')
+    setMeaningfulLocations('')
+    setTreasuredPossessions('')
+    setTraits('')
+    setScarsAndWounds('')
+    setPhobiasAndManias('')
+    setInvestigatorHistory('')
     setOccSearch('')
     setEvalResult(null)
+    setIsImported(false)
+    setAiHint('')
+  }
+
+  const [importing, setImporting] = useState(false)
+  const [isImported, setIsImported] = useState(false)
+  const [aiHint, setAiHint] = useState('')
+  const [aiGenerating, setAiGenerating] = useState(false)
+
+  // 把导入/AI 生成的数据填入创建表单（Excel 导入与 AI 建卡共用）
+  const applyImportedData = (data: ImportedCharacterData) => {
+    if (data.name) setName(data.name)
+    if (data.age) setAge(data.age)
+    const sd = data.system_data || {}
+    if (sd.gender) setGender(sd.gender)
+    if (sd.residence) setResidence(sd.residence)
+    if (sd.birthplace) setBirthplace(sd.birthplace)
+    if (sd.creditRating) setCreditRating(sd.creditRating)
+    if (sd.luck) setLuck(sd.luck)
+    if (sd.personalDescription) setPersonalDesc(sd.personalDescription)
+    if (sd.ideologyBeliefs) setIdeologyBeliefs(sd.ideologyBeliefs)
+    if (sd.significantPeople) setSignificantPeople(sd.significantPeople)
+    if (sd.meaningfulLocations) setMeaningfulLocations(sd.meaningfulLocations)
+    if (sd.treasuredPossessions) setTreasuredPossessions(sd.treasuredPossessions)
+    if (sd.traits) setTraits(sd.traits)
+    if (sd.scarsAndWounds) setScarsAndWounds(sd.scarsAndWounds)
+    if (sd.phobiasAndManias) setPhobiasAndManias(sd.phobiasAndManias)
+    if (sd.investigatorHistory) setInvestigatorHistory(sd.investigatorHistory)
+
+    // 若结构化字段为空但有自由文本背景故事，填入个人描述
+    const hasStructured = sd.personalDescription || sd.ideologyBeliefs || sd.significantPeople
+      || sd.meaningfulLocations || sd.treasuredPossessions || sd.traits
+    if (!hasStructured && data.backstory) {
+      setPersonalDesc(data.backstory)
+    }
+
+    if (data.base_attributes && Object.keys(data.base_attributes).length > 0) {
+      setUseDice(false)
+      setCustomAttrs(data.base_attributes)
+    }
+
+    if (data.skills && Object.keys(data.skills).length > 0) {
+      setSkillAlloc(data.skills)
+    }
+
+    if (data.equipment && data.equipment.length > 0) {
+      setSelectedEquipment(data.equipment)
+    }
+
+    if (data.weapons && data.weapons.length > 0) {
+      setWeapons(data.weapons)
+    }
+
+    // 查找匹配职业；找不到则建为自定义职业
+    if (sd.occupation) {
+      const match = occupations.find((o) => o.name === sd.occupation)
+      if (match) {
+        selectOccupation(match)
+      } else {
+        const importedSkillNames = Object.keys(data.skills || {})
+        setSelectedOcc({
+          name: String(sd.occupation),
+          credit_min: 0,
+          credit_max: 99,
+          skill_formula: '自定义',
+          skills: importedSkillNames,
+          choices: 0,
+        })
+        const totalPoints = Object.values(data.skills || {})
+          .reduce((s, v) => s + (typeof v === 'number' ? v : 0), 0)
+        setOccPoints(totalPoints)
+        setIntPoints(0)
+      }
+    }
+
+    setIsImported(true)
+  }
+
+  const handleExcelImport = async (file: File) => {
+    if (!moduleId) {
+      toast.error('请先选择模组')
+      return
+    }
+    setImporting(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const resp = await fetch(`/api/characters/import-excel?module_id=${encodeURIComponent(moduleId)}`, {
+        method: 'POST',
+        body: formData,
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: '导入失败' }))
+        throw new Error(err.detail || '导入失败')
+      }
+      const data: ImportedCharacterData = await resp.json()
+      applyImportedData(data)
+      toast.success(`已导入角色「${data.name}」的数据，请检查后继续`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '导入失败')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const handleAIGenerate = async () => {
+    if (!moduleId) {
+      toast.error('请先选择模组')
+      return
+    }
+    setAiGenerating(true)
+    try {
+      const data = await api.post<ImportedCharacterData & { _fallback?: boolean }>(
+        '/characters/ai-generate',
+        { module_id: moduleId, hint: aiHint.trim() },
+      )
+      applyImportedData(data)
+      setStep('属性设定')
+      if (data._fallback) {
+        toast.warning('AI 暂时不可用，已用规则生成一张草稿，请检查后调整')
+      } else {
+        toast.success(`AI 已生成角色「${data.name}」，请逐步检查后创建`)
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'AI 生成失败')
+    } finally {
+      setAiGenerating(false)
+    }
   }
 
   const deleteCharacter = async (id: string) => {
@@ -270,7 +567,10 @@ export function CharacterPage() {
 
   const stepIndex = STEPS.indexOf(step)
 
-  const allSkillNames = Object.keys(defaultSkills).sort((a, b) => {
+  const allSkillNames = [...new Set([
+    ...Object.keys(defaultSkills),
+    ...(isImported ? Object.keys(skillAlloc) : []),
+  ])].sort((a, b) => {
     const aIsOcc = selectedOcc?.skills.includes(a) ?? false
     const bIsOcc = selectedOcc?.skills.includes(b) ?? false
     if (aIsOcc !== bIsOcc) return aIsOcc ? -1 : 1
@@ -331,10 +631,75 @@ export function CharacterPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="mb-3">
-                  <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>角色名</label>
-                  <input value={name} onChange={(e) => setName(e.target.value)} placeholder="输入角色名" className="input w-full" />
+                <div className="flex items-center gap-2 mb-3 p-2 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+                  <GiUpCard className="text-lg flex-shrink-0" style={{ color: 'var(--color-text-accent)' }} />
+                  <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>有现成角色卡？</span>
+                  <label className="btn-secondary !px-2 !py-0.5 text-xs cursor-pointer">
+                    {importing ? '导入中...' : '导入 Excel 角色卡'}
+                    <input
+                      type="file"
+                      accept=".xlsx"
+                      className="hidden"
+                      disabled={importing}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0]
+                        if (f) handleExcelImport(f)
+                        e.target.value = ''
+                      }}
+                    />
+                  </label>
                 </div>
+                <div className="flex items-center gap-2 mb-3 p-2 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+                  <GiDiceSixFacesSix className="text-lg flex-shrink-0" style={{ color: 'var(--color-text-accent)' }} />
+                  <span className="text-xs flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }}>让 AI 建卡？</span>
+                  <input
+                    value={aiHint}
+                    onChange={(e) => setAiHint(e.target.value)}
+                    placeholder="角色概念（可选，如：胆小的图书管理员）"
+                    disabled={aiGenerating}
+                    className="input flex-1 !py-0.5 text-xs"
+                  />
+                  <button
+                    onClick={handleAIGenerate}
+                    disabled={aiGenerating || !moduleId}
+                    className="btn-secondary !px-2 !py-0.5 text-xs flex-shrink-0 whitespace-nowrap"
+                  >
+                    {aiGenerating ? '生成中...' : 'AI 生成角色卡'}
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>姓名</label>
+                    <input value={name} onChange={(e) => setName(e.target.value)} placeholder="调查员姓名" className="input w-full" />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>性别</label>
+                    <input value={gender} onChange={(e) => setGender(e.target.value)} placeholder="如：男/女" className="input w-full" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-3 mb-3">
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>年龄</label>
+                    <input
+                      type="number" value={age} min={15} max={90}
+                      onChange={(e) => setAge(Math.max(15, Math.min(90, parseInt(e.target.value) || 25)))}
+                      className="input w-full font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>住地</label>
+                    <input value={residence} onChange={(e) => setResidence(e.target.value)} placeholder="现居住地" className="input w-full" />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>故乡</label>
+                    <input value={birthplace} onChange={(e) => setBirthplace(e.target.value)} placeholder="出生地" className="input w-full" />
+                  </div>
+                </div>
+                {age >= 40 && (
+                  <div className="text-xs mb-3 px-2 py-1 rounded" style={{ background: 'rgba(139, 37, 0, 0.08)', color: 'var(--color-text-accent)' }}>
+                    注意：年龄 {age} 岁，移动力将减少 {age >= 80 ? 5 : age >= 70 ? 4 : age >= 60 ? 3 : age >= 50 ? 2 : 1} 点
+                  </div>
+                )}
                 <button onClick={() => setStep('属性设定')} disabled={!name || !moduleId} className="btn-primary">
                   下一步
                 </button>
@@ -361,15 +726,21 @@ export function CharacterPage() {
                 {!useDice ? (
                   /* ===== 自定义分配 ===== */
                   <div>
-                    <div className="flex justify-between items-center mb-3 text-sm">
-                      <span>总点数池：<strong className="font-mono">{POINT_POOL}</strong></span>
-                      <span>
-                        剩余：
-                        <strong className="font-mono" style={{ color: remainingPoints > 0 ? 'var(--color-success)' : remainingPoints < 0 ? 'var(--color-danger)' : 'var(--color-text-secondary)' }}>
-                          {remainingPoints}
-                        </strong>
-                      </span>
-                    </div>
+                    {isImported ? (
+                      <div className="mb-3 text-xs px-2 py-1.5 rounded" style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-accent)' }}>
+                        属性已自动填入，如需可手动微调（导入/AI 角色不受创建点数池限制）
+                      </div>
+                    ) : (
+                      <div className="flex justify-between items-center mb-3 text-sm">
+                        <span>总点数池：<strong className="font-mono">{POINT_POOL}</strong></span>
+                        <span>
+                          剩余：
+                          <strong className="font-mono" style={{ color: remainingPoints > 0 ? 'var(--color-success)' : remainingPoints < 0 ? 'var(--color-danger)' : 'var(--color-text-secondary)' }}>
+                            {remainingPoints}
+                          </strong>
+                        </span>
+                      </div>
+                    )}
                     <div className="space-y-1.5 mb-3">
                       {ATTR_KEYS.map((k) => {
                         const range = ATTR_RANGES[k]
@@ -446,11 +817,41 @@ export function CharacterPage() {
                   </div>
                 )}
 
+                {/* 幸运值 */}
+                <div className="flex items-center gap-3 mb-3 py-2 px-3 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+                  <span className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>幸运 LUCK</span>
+                  <span className="font-mono font-bold text-sm w-10 text-center">{luck || '—'}</span>
+                  <button onClick={rollLuck} className="btn-secondary !px-2 !py-0.5 text-xs flex items-center gap-1">
+                    <GiDiceSixFacesSix /> 掷骰 (3D6×5)
+                  </button>
+                  {luck > 0 && (
+                    <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                      半值 {Math.floor(luck / 2)} / 五分之一 {Math.floor(luck / 5)}
+                    </span>
+                  )}
+                </div>
+
+                {/* 派生属性预览 */}
+                {derivedStats && (
+                  <div className="mb-3 py-2 px-3 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+                    <div className="text-xs mb-1.5 font-semibold" style={{ color: 'var(--color-text-accent)' }}>派生属性</div>
+                    <div className="grid grid-cols-4 gap-2 text-sm">
+                      <div><span style={{ color: 'var(--color-text-secondary)' }}>HP </span><span className="font-mono font-bold">{derivedStats.hp}</span></div>
+                      <div><span style={{ color: 'var(--color-text-secondary)' }}>SAN </span><span className="font-mono font-bold">{derivedStats.san}</span></div>
+                      <div><span style={{ color: 'var(--color-text-secondary)' }}>MP </span><span className="font-mono font-bold">{derivedStats.mp}</span></div>
+                      <div><span style={{ color: 'var(--color-text-secondary)' }}>MOV </span><span className="font-mono font-bold">{derivedStats.mov}</span></div>
+                      <div><span style={{ color: 'var(--color-text-secondary)' }}>伤害加值 </span><span className="font-mono font-bold">{derivedStats.db}</span></div>
+                      <div><span style={{ color: 'var(--color-text-secondary)' }}>体格 </span><span className="font-mono font-bold">{derivedStats.build}</span></div>
+                      <div><span style={{ color: 'var(--color-text-secondary)' }}>闪避 </span><span className="font-mono font-bold">{derivedStats.dodge}</span></div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex gap-2">
                   <button onClick={() => setStep('基本信息')} className="btn-secondary">上一步</button>
                   <button
                     onClick={() => setStep('职业选择')}
-                    disabled={useDice ? !selectedAttrs : remainingPoints < 0}
+                    disabled={isImported ? false : ((useDice ? !selectedAttrs : remainingPoints < 0) || luck <= 0)}
                     className="btn-primary"
                   >
                     下一步
@@ -462,6 +863,17 @@ export function CharacterPage() {
             {/* Step 3: 职业选择 */}
             {step === '职业选择' && (
               <div>
+                {isImported && selectedOcc && !occupations.some((o) => o.name === selectedOcc.name) && (
+                  <div className="card mb-3 !bg-[var(--color-bg-tertiary)]" style={{ borderColor: 'var(--color-accent)' }}>
+                    <div className="font-semibold" style={{ color: 'var(--color-text-accent)' }}>
+                      {selectedOcc.name}
+                      <span className="text-xs font-normal ml-2" style={{ color: 'var(--color-text-secondary)' }}>（自定义职业，从角色卡导入）</span>
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+                      也可从下方列表选择系统内置职业替换
+                    </div>
+                  </div>
+                )}
                 <input
                   value={occSearch}
                   onChange={(e) => setOccSearch(e.target.value)}
@@ -501,6 +913,23 @@ export function CharacterPage() {
                       <p className="mt-1">本职技能：{selectedOcc.skills.join('、')}</p>
                       {selectedOcc.choices > 0 && <p>可自选 {selectedOcc.choices} 项技能</p>}
                     </div>
+                    <div className="mt-2 pt-2 border-t" style={{ borderColor: 'var(--color-border)' }}>
+                      <label className="block text-xs mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+                        信用评级（{selectedOcc.credit_min}-{selectedOcc.credit_max}）
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range"
+                          min={selectedOcc.credit_min}
+                          max={selectedOcc.credit_max}
+                          value={creditRating}
+                          onChange={(e) => setCreditRating(parseInt(e.target.value))}
+                          className="flex-1"
+                          style={{ accentColor: 'var(--color-accent)' }}
+                        />
+                        <span className="font-mono font-bold text-sm w-10 text-right">{creditRating}%</span>
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -514,20 +943,28 @@ export function CharacterPage() {
             {/* Step 4: 技能加点 */}
             {step === '技能加点' && (
               <div>
-                <div className="flex gap-4 mb-3 text-sm">
-                  <span>
-                    职业点剩余：<strong className="font-mono" style={{ color: remainingOcc > 0 ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>{remainingOcc}</strong>
-                  </span>
-                  <span>
-                    兴趣点剩余：<strong className="font-mono" style={{ color: remainingInt > 0 ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>{remainingInt}</strong>
-                  </span>
-                </div>
+                {isImported ? (
+                  <div className="text-xs mb-3 px-2 py-1.5 rounded" style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-accent)' }}>
+                    导入模式：技能值已从角色卡导入，可自由调整
+                  </div>
+                ) : (
+                  <div className="flex gap-4 mb-3 text-sm">
+                    <span>
+                      职业点剩余：<strong className="font-mono" style={{ color: remainingOcc > 0 ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>{remainingOcc}</strong>
+                    </span>
+                    <span>
+                      兴趣点剩余：<strong className="font-mono" style={{ color: remainingInt > 0 ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>{remainingInt}</strong>
+                    </span>
+                  </div>
+                )}
 
                 <div className="max-h-72 overflow-auto space-y-0.5 mb-3">
                   {allSkillNames.map((skillName) => {
                     const base = defaultSkills[skillName] || 0
                     const alloc = skillAlloc[skillName] || 0
                     const isOcc = selectedOcc?.skills.includes(skillName) ?? false
+                    const displayVal = isImported ? alloc : base + alloc
+                    const isLocked = NON_ALLOCATABLE_SKILLS.includes(skillName)
                     return (
                       <div
                         key={skillName}
@@ -535,30 +972,37 @@ export function CharacterPage() {
                         style={{ background: isOcc ? 'rgba(139, 37, 0, 0.06)' : undefined }}
                       >
                         <div className="flex items-center gap-2">
-                          {isOcc && <span className="text-xs" style={{ color: 'var(--color-accent)' }}>职</span>}
+                          {!isImported && isOcc && <span className="text-xs" style={{ color: 'var(--color-accent)' }}>职</span>}
                           <span>{skillName}</span>
-                          <span className="text-xs font-mono" style={{ color: 'var(--color-text-secondary)' }}>
-                            ({base}{alloc > 0 ? `+${alloc}` : ''})
-                          </span>
+                          {isLocked && <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>🔒</span>}
+                          {!isImported && !isLocked && (
+                            <span className="text-xs font-mono" style={{ color: 'var(--color-text-secondary)' }}>
+                              ({base}{alloc > 0 ? `+${alloc}` : ''})
+                            </span>
+                          )}
                         </div>
                         <div className="flex items-center gap-1">
-                          <span className="font-mono font-bold w-8 text-right">{base + alloc}</span>
-                          <button
-                            onClick={() => updateSkill(skillName, -5)}
-                            disabled={alloc <= 0}
-                            className="w-6 h-6 rounded text-xs border flex items-center justify-center"
-                            style={{ borderColor: 'var(--color-border)', opacity: alloc <= 0 ? 0.3 : 1 }}
-                          >
-                            -
-                          </button>
-                          <button
-                            onClick={() => updateSkill(skillName, 5)}
-                            disabled={(isOcc ? remainingOcc : remainingInt) < 5}
-                            className="w-6 h-6 rounded text-xs border flex items-center justify-center"
-                            style={{ borderColor: 'var(--color-border)', opacity: (isOcc ? remainingOcc : remainingInt) < 5 ? 0.3 : 1 }}
-                          >
-                            +
-                          </button>
+                          <span className="font-mono font-bold w-8 text-right">{displayVal}</span>
+                          {!isLocked && (
+                            <>
+                              <button
+                                onClick={() => updateSkill(skillName, -5)}
+                                disabled={alloc <= 0}
+                                className="w-6 h-6 rounded text-xs border flex items-center justify-center"
+                                style={{ borderColor: 'var(--color-border)', opacity: alloc <= 0 ? 0.3 : 1 }}
+                              >
+                                -
+                              </button>
+                              <button
+                                onClick={() => updateSkill(skillName, 5)}
+                                disabled={!isImported && (isOcc ? remainingOcc : remainingInt) < 5}
+                                className="w-6 h-6 rounded text-xs border flex items-center justify-center"
+                                style={{ borderColor: 'var(--color-border)', opacity: (!isImported && (isOcc ? remainingOcc : remainingInt) < 5) ? 0.3 : 1 }}
+                              >
+                                +
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
                     )
@@ -575,14 +1019,201 @@ export function CharacterPage() {
             {/* Step 5: 背景故事 */}
             {step === '背景故事' && (
               <div>
-                <textarea
-                  value={backstory}
-                  onChange={(e) => { setBackstory(e.target.value); setEvalResult(null) }}
-                  placeholder="描述你角色的背景故事、性格特点、重要经历等（可选）..."
-                  rows={6}
-                  className="input w-full mb-3"
-                  style={{ resize: 'vertical' }}
-                />
+                <div className="space-y-3 mb-3">
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>个人描述</label>
+                    <textarea
+                      value={personalDesc}
+                      onChange={(e) => { setPersonalDesc(e.target.value); setEvalResult(null) }}
+                      placeholder="外貌、穿着、气质等外在特征..."
+                      rows={2} className="input w-full" style={{ resize: 'vertical' }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>思想 / 信念</label>
+                    <textarea
+                      value={ideologyBeliefs}
+                      onChange={(e) => { setIdeologyBeliefs(e.target.value); setEvalResult(null) }}
+                      placeholder="角色信奉的理念、宗教信仰或价值观..."
+                      rows={2} className="input w-full" style={{ resize: 'vertical' }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>重要之人</label>
+                    <textarea
+                      value={significantPeople}
+                      onChange={(e) => { setSignificantPeople(e.target.value); setEvalResult(null) }}
+                      placeholder="对角色最重要的人，以及为什么重要..."
+                      rows={2} className="input w-full" style={{ resize: 'vertical' }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>意义非凡之地</label>
+                    <textarea
+                      value={meaningfulLocations}
+                      onChange={(e) => { setMeaningfulLocations(e.target.value); setEvalResult(null) }}
+                      placeholder="对角色有特殊意义的地点..."
+                      rows={2} className="input w-full" style={{ resize: 'vertical' }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>宝贵之物</label>
+                    <textarea
+                      value={treasuredPossessions}
+                      onChange={(e) => { setTreasuredPossessions(e.target.value); setEvalResult(null) }}
+                      placeholder="角色珍视的物品..."
+                      rows={2} className="input w-full" style={{ resize: 'vertical' }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>特点</label>
+                    <textarea
+                      value={traits}
+                      onChange={(e) => { setTraits(e.target.value); setEvalResult(null) }}
+                      placeholder="性格特点、习惯、口头禅等..."
+                      rows={2} className="input w-full" style={{ resize: 'vertical' }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>伤口 / 疤痕</label>
+                    <textarea
+                      value={scarsAndWounds}
+                      onChange={(e) => { setScarsAndWounds(e.target.value); setEvalResult(null) }}
+                      placeholder="角色身上的伤疤或旧伤..."
+                      rows={1} className="input w-full" style={{ resize: 'vertical' }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>恐惧症 / 狂躁症</label>
+                    <textarea
+                      value={phobiasAndManias}
+                      onChange={(e) => { setPhobiasAndManias(e.target.value); setEvalResult(null) }}
+                      placeholder="角色的恐惧或狂躁倾向..."
+                      rows={1} className="input w-full" style={{ resize: 'vertical' }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>调查员经历</label>
+                    <textarea
+                      value={investigatorHistory}
+                      onChange={(e) => { setInvestigatorHistory(e.target.value); setEvalResult(null) }}
+                      placeholder="曾经历的模组、事件记录..."
+                      rows={2} className="input w-full" style={{ resize: 'vertical' }}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <button onClick={() => setStep('技能加点')} className="btn-secondary">上一步</button>
+                  <button
+                    onClick={async () => {
+                      const mod = modules.find((m) => m.id === moduleId)
+                      const era = (mod?.world_setting?.era as string) || '1920s'
+                      const items = await api.get<EquipmentItem[]>(
+                        `/rules/coc/equipment?era=${encodeURIComponent(era)}&credit_rating=${creditRating}`,
+                      )
+                      setAvailableEquipment(items)
+                      setStep('随身物品')
+                    }}
+                    className="btn-primary"
+                  >
+                    下一步
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 6: 随身物品 */}
+            {step === '随身物品' && (
+              <div>
+                {/* 武器区域 */}
+                {weapons.length > 0 && (
+                  <div className="mb-4">
+                    <div className="text-xs font-semibold mb-2" style={{ color: 'var(--color-text-accent)' }}>武器（从角色卡导入）</div>
+                    <div className="space-y-1.5">
+                      {weapons.map((w, i) => (
+                        <div key={i} className="flex items-center justify-between py-1.5 px-2 rounded text-sm" style={{ background: 'var(--color-bg-tertiary)' }}>
+                          <div>
+                            <span className="font-semibold">{w.name}</span>
+                            <span className="text-xs ml-2" style={{ color: 'var(--color-text-secondary)' }}>
+                              {w.skill && `技能: ${w.skill}`}
+                              {w.damage && ` | 伤害: ${w.damage}`}
+                              {w.range && w.range !== '——' && ` | 射程: ${w.range}`}
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => setWeapons(weapons.filter((_, j) => j !== i))}
+                            className="text-xs px-1.5 py-0.5 rounded"
+                            style={{ color: 'var(--color-danger)' }}
+                          >
+                            移除
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex justify-between items-center mb-3 text-sm">
+                  <span style={{ color: 'var(--color-text-secondary)' }}>
+                    根据信用评级 <strong className="font-mono">{creditRating}%</strong> 筛选可用物品
+                  </span>
+                  <span>
+                    已选：
+                    <strong className="font-mono" style={{ color: selectedEquipment.length >= MAX_EQUIPMENT ? 'var(--color-danger)' : 'var(--color-text-primary)' }}>
+                      {selectedEquipment.length}/{MAX_EQUIPMENT}
+                    </strong>
+                  </span>
+                </div>
+
+                {(() => {
+                  const categories = [...new Set(availableEquipment.map((e) => e.category))]
+                  return categories.map((cat) => (
+                    <div key={cat} className="mb-3">
+                      <div className="text-xs font-semibold mb-1 px-1" style={{ color: 'var(--color-text-accent)' }}>{cat}</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {availableEquipment
+                          .filter((e) => e.category === cat)
+                          .map((eq) => {
+                            const selected = selectedEquipment.includes(eq.name)
+                            return (
+                              <button
+                                key={eq.name}
+                                onClick={() => {
+                                  if (selected) {
+                                    setSelectedEquipment(selectedEquipment.filter((n) => n !== eq.name))
+                                  } else if (selectedEquipment.length < MAX_EQUIPMENT) {
+                                    setSelectedEquipment([...selectedEquipment, eq.name])
+                                  }
+                                }}
+                                disabled={!selected && selectedEquipment.length >= MAX_EQUIPMENT}
+                                className="px-2 py-1 rounded text-xs border transition-colors"
+                                style={{
+                                  borderColor: selected ? 'var(--color-accent)' : 'var(--color-border)',
+                                  background: selected ? 'rgba(139, 37, 0, 0.1)' : 'transparent',
+                                  color: selected ? 'var(--color-text-accent)' : 'var(--color-text-primary)',
+                                  fontWeight: selected ? 600 : 400,
+                                  opacity: !selected && selectedEquipment.length >= MAX_EQUIPMENT ? 0.4 : 1,
+                                }}
+                              >
+                                {eq.name}
+                                {eq.min_credit > 0 && (
+                                  <span style={{ color: 'var(--color-text-secondary)', marginLeft: 4 }}>≥{eq.min_credit}%</span>
+                                )}
+                              </button>
+                            )
+                          })}
+                      </div>
+                    </div>
+                  ))
+                })()}
+
+                {selectedEquipment.length > 0 && (
+                  <div className="card !bg-[var(--color-bg-tertiary)] mb-3">
+                    <div className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>已选物品</div>
+                    <div className="text-sm">{selectedEquipment.join('、')}</div>
+                  </div>
+                )}
 
                 {evalResult && (
                   <div
@@ -618,7 +1249,7 @@ export function CharacterPage() {
 
                 {!evalResult && (
                   <div className="flex gap-2">
-                    <button onClick={() => setStep('技能加点')} className="btn-secondary">上一步</button>
+                    <button onClick={() => setStep('背景故事')} className="btn-secondary">上一步</button>
                     <button onClick={evaluateAndCreate} disabled={evaluating || creating} className="btn-primary">
                       {evaluating ? 'AI 评估中...' : creating ? '创建中...' : '完成创建'}
                     </button>
@@ -631,8 +1262,8 @@ export function CharacterPage() {
           {/* 已有角色列表 */}
           <div className="space-y-3">
             {characters.map((c) => {
-              const hp = (c.system_data?.hitPoints as { current: number; max: number }) || {}
-              const san = (c.system_data?.sanity as { current: number; max: number }) || {}
+              const hp = (c.system_data?.hitPoints as { current: number; max: number }) || { current: 0, max: 0 }
+              const san = (c.system_data?.sanity as { current: number; max: number }) || { current: 0, max: 0 }
               const occ = (c.system_data?.occupation as string) || ''
               const isActive = selectedChar?.id === c.id
               return (
@@ -690,7 +1321,7 @@ export function CharacterPage() {
       {/* 右侧角色详情面板 */}
       {selectedChar && (
         <aside
-          className="w-72 flex-shrink-0 border-l overflow-hidden"
+          className="w-72 flex-shrink-0 border-l overflow-y-auto"
           style={{ borderColor: 'var(--color-border)', background: 'var(--color-bg-card)' }}
         >
           <CharacterPanel character={selectedChar} />

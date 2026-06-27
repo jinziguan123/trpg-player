@@ -26,13 +26,8 @@ export const api = {
   delete: <T = void>(path: string) => request<T>(path, { method: 'DELETE' }),
 }
 
-export async function* streamSSE(path: string, body?: unknown) {
-  const res = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  })
-  if (!res.ok || !res.body) throw new Error(`SSE error: ${res.status}`)
+async function* parseSSEStream(res: Response) {
+  if (!res.body) return
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
@@ -52,4 +47,21 @@ export async function* streamSSE(path: string, body?: unknown) {
       yield data
     }
   }
+}
+
+export async function* streamSSE(path: string, body?: unknown) {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  if (!res.ok || !res.body) throw new Error(`SSE error: ${res.status}`)
+  yield* parseSSEStream(res)
+}
+
+export async function* connectSSE(path: string) {
+  const res = await fetch(`${BASE}${path}`)
+  if (res.status === 204 || !res.body) return
+  if (!res.ok) throw new Error(`SSE error: ${res.status}`)
+  yield* parseSSEStream(res)
 }

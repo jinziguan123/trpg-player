@@ -18,7 +18,8 @@ export function ConfirmDialog({
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
 
-  const handleConfirm = async () => {
+  const handleConfirm = async (e: React.MouseEvent) => {
+    e.stopPropagation()
     setLoading(true)
     try {
       await onConfirm()

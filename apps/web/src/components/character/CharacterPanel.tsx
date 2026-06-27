@@ -25,6 +25,15 @@ const RADAR_LABELS = ['力量', '敏捷', '意志', '体质', '外貌', '教育'
 
 const TAB_KEYS = ['基本信息', '技能', '道具'] as const
 
+const BACKSTORY_SECTIONS: { key: string; label: string }[] = [
+  { key: 'personalDescription', label: '个人描述' },
+  { key: 'ideologyBeliefs', label: '思想/信念' },
+  { key: 'significantPeople', label: '重要之人' },
+  { key: 'meaningfulLocations', label: '意义非凡之地' },
+  { key: 'treasuredPossessions', label: '宝贵之物' },
+  { key: 'traits', label: '特点' },
+]
+
 function StatBar({ label, current, max }: { label: string; current: number; max: number }) {
   const pct = max > 0 ? (current / max) * 100 : 0
   const isLow = pct < 30
@@ -47,6 +56,16 @@ function StatBar({ label, current, max }: { label: string; current: number; max:
   )
 }
 
+function InfoRow({ label, value }: { label: string; value: string | number }) {
+  if (!value && value !== 0) return null
+  return (
+    <div className="flex justify-between text-xs py-0.5">
+      <span style={{ color: 'var(--color-text-secondary)' }}>{label}</span>
+      <span className="font-mono">{value}</span>
+    </div>
+  )
+}
+
 function BasicInfoTab({ character }: { character: CharacterData }) {
   const sd = character.system_data || {}
   const hp = sd.hitPoints as { current: number; max: number } | undefined
@@ -55,62 +74,94 @@ function BasicInfoTab({ character }: { character: CharacterData }) {
   const luck = (sd.luck as number) || 0
   const mov = (sd.move as number) || 0
   const occupation = (sd.occupation as string) || ''
+  const age = (sd.age as number) || 0
+  const gender = (sd.gender as string) || ''
+  const residence = (sd.residence as string) || ''
+  const birthplace = (sd.birthplace as string) || ''
+  const creditRating = (sd.creditRating as number) || character.skills?.['信用评级'] || 0
+  const damageBonus = (sd.damageBonus as string) || '0'
+  const build = sd.build as number
+  const dodge = character.skills?.['闪避'] || 0
 
   const radarValues = RADAR_KEYS.map((k) =>
     k === 'LUK' ? luck : (character.base_attributes[k] || 0)
   )
 
+  const hasBackstorySections = BACKSTORY_SECTIONS.some((s) => sd[s.key])
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div className="text-center">
         <div
-          className="w-20 h-20 mx-auto rounded-full flex items-center justify-center text-2xl mb-2"
+          className="w-16 h-16 mx-auto rounded-full flex items-center justify-center text-xl mb-1.5"
           style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}
         >
           {character.name.charAt(0)}
         </div>
-        <h3 className="font-semibold text-lg" style={{ color: 'var(--color-text-accent)', fontFamily: 'var(--font-title)' }}>
+        <h3 className="font-semibold text-base" style={{ color: 'var(--color-text-accent)', fontFamily: 'var(--font-title)' }}>
           {character.name}
         </h3>
-        {occupation && (
-          <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{occupation}</span>
-        )}
+        <div className="text-xs space-x-2" style={{ color: 'var(--color-text-secondary)' }}>
+          {occupation && <span>{occupation}</span>}
+          {gender && <span>{gender}</span>}
+          {age > 0 && <span>{age}岁</span>}
+        </div>
       </div>
 
       {hp && <StatBar label="HP" current={hp.current} max={hp.max} />}
       {san && <StatBar label="SAN" current={san.current} max={san.max} />}
       {mp && <StatBar label="MP" current={mp.current} max={mp.max} />}
 
-      <div className="flex justify-between text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-        <span>幸运 <strong className="font-mono">{luck}</strong></span>
-        <span>移动力 <strong className="font-mono">{mov}</strong></span>
+      <div className="rounded p-2 space-y-0.5" style={{ background: 'var(--color-bg-tertiary)' }}>
+        <InfoRow label="幸运" value={luck} />
+        <InfoRow label="移动力" value={mov} />
+        <InfoRow label="伤害加值" value={damageBonus} />
+        {build !== undefined && <InfoRow label="体格" value={build} />}
+        <InfoRow label="闪避" value={dodge} />
+        <InfoRow label="信用评级" value={creditRating} />
       </div>
+
+      {(residence || birthplace) && (
+        <div className="rounded p-2 space-y-0.5" style={{ background: 'var(--color-bg-tertiary)' }}>
+          {residence && <InfoRow label="居住地" value={residence} />}
+          {birthplace && <InfoRow label="出生地" value={birthplace} />}
+        </div>
+      )}
 
       <div className="flex justify-center">
-        <RadarChart labels={RADAR_LABELS} values={radarValues} size={200} />
+        <RadarChart labels={RADAR_LABELS} values={radarValues} size={180} />
       </div>
 
-      <div className="grid grid-cols-3 gap-1 text-center text-xs">
+      <div className="grid grid-cols-4 gap-1 text-center text-xs">
         {Object.entries(ATTR_LABELS).map(([k, label]) => (
           <div key={k} className="py-1 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
-            <div style={{ color: 'var(--color-text-secondary)' }}>{label}</div>
+            <div style={{ color: 'var(--color-text-secondary)', fontSize: '0.65rem' }}>{label}</div>
             <div className="font-mono font-bold">{character.base_attributes[k] || 0}</div>
           </div>
         ))}
-        <div className="py-1 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
-          <div style={{ color: 'var(--color-text-secondary)' }}>幸运</div>
-          <div className="font-mono font-bold">{luck}</div>
-        </div>
       </div>
 
-      {character.backstory && (
+      {hasBackstorySections ? (
+        <div className="space-y-2">
+          {BACKSTORY_SECTIONS.map(({ key, label }) => {
+            const val = sd[key] as string | undefined
+            if (!val) return null
+            return (
+              <div key={key}>
+                <h4 className="text-xs font-semibold mb-0.5" style={{ color: 'var(--color-text-accent)' }}>{label}</h4>
+                <p className="text-xs leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>{val}</p>
+              </div>
+            )
+          })}
+        </div>
+      ) : character.backstory ? (
         <div>
-          <h4 className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>背景故事</h4>
-          <p className="text-xs leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
+          <h4 className="text-xs font-semibold mb-0.5" style={{ color: 'var(--color-text-accent)' }}>背景故事</h4>
+          <p className="text-xs leading-relaxed whitespace-pre-wrap" style={{ color: 'var(--color-text-secondary)' }}>
             {character.backstory}
           </p>
         </div>
-      )}
+      ) : null}
     </div>
   )
 }
@@ -138,10 +189,51 @@ function SkillsTab({ character }: { character: CharacterData }) {
   )
 }
 
-function InventoryTab() {
+interface EquipmentItem {
+  name: string
+  category: string
+  description?: string
+}
+
+function InventoryTab({ character }: { character: CharacterData }) {
+  const equipment = (character.system_data?.equipment as EquipmentItem[]) || []
+
+  if (equipment.length === 0) {
+    return (
+      <div className="text-center py-8">
+        <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>暂无物品</p>
+      </div>
+    )
+  }
+
+  const grouped: Record<string, EquipmentItem[]> = {}
+  for (const item of equipment) {
+    const cat = item.category || '其他'
+    if (!grouped[cat]) grouped[cat] = []
+    grouped[cat].push(item)
+  }
+
   return (
-    <div className="text-center py-8">
-      <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>暂无物品</p>
+    <div className="space-y-3">
+      {Object.entries(grouped).map(([category, items]) => (
+        <div key={category}>
+          <h4 className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>{category}</h4>
+          <div className="space-y-1">
+            {items.map((item) => (
+              <div
+                key={item.name}
+                className="text-xs px-2 py-1 rounded"
+                style={{ background: 'var(--color-bg-tertiary)' }}
+              >
+                <span>{item.name}</span>
+                {item.description && (
+                  <span className="ml-1" style={{ color: 'var(--color-text-secondary)' }}>— {item.description}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
@@ -161,7 +253,7 @@ export function CharacterPanel({ character }: CharacterPanelProps) {
         <SkillsTab character={character} />
       </TabsContent>
       <TabsContent value="道具">
-        <InventoryTab />
+        <InventoryTab character={character} />
       </TabsContent>
     </Tabs>
   )

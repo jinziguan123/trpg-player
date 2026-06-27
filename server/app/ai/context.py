@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 
-from sqlalchemy.orm import Session
-
 from app.models.character import Character
 from app.models.event_log import EventLog
 from app.models.module import Module
@@ -11,8 +9,28 @@ from app.models.session import GameSession
 from app.ai.prompts.kp_system import KP_SYSTEM_PROMPT, KP_OPENING_PROMPT
 from app.ai.prompts.npc_system import NPC_SYSTEM_PROMPT
 
-MAX_RECENT_EVENTS = 40
-SUMMARY_THRESHOLD = 60
+CONTEXT_TOKEN_BUDGET = 24000
+RESERVE_FOR_OUTPUT = 4096
+MAX_SYSTEM_TOKENS = 6000
+MAX_SUMMARY_TOKENS = 1500
+MIN_RECENT_EVENTS = 10
+MAX_RECENT_EVENTS = 60
+
+
+def _estimate_tokens(text: str) -> int:
+    """粗估 token 数：中文约 1.5 token/字，英文约 0.75 token/word"""
+    cn_chars = sum(1 for c in text if '一' <= c <= '鿿')
+    other = len(text) - cn_chars
+    return int(cn_chars * 1.5 + other * 0.4)
+
+
+def _truncate_to_tokens(text: str, max_tokens: int) -> str:
+    """将文本截断到大约 max_tokens 以内"""
+    if _estimate_tokens(text) <= max_tokens:
+        return text
+    ratio = max_tokens / max(_estimate_tokens(text), 1)
+    cut = int(len(text) * ratio * 0.9)
+    return text[:cut] + "\n…（内容过长，已截断）"
 
 
 def _format_json(data) -> str:
@@ -21,6 +39,14 @@ def _format_json(data) -> str:
     if isinstance(data, str):
         return data
     return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _format_json_compact(data) -> str:
+    if not data:
+        return "无"
+    if isinstance(data, str):
+        return data
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
 def _find_npc_def(module: Module, npc_id: str) -> dict | None:
@@ -39,21 +65,77 @@ def _find_scene(module: Module, scene_id: str | None) -> dict | None:
     return None
 
 
+def _compact_scenes(scenes: list[dict] | None, current_scene_id: str | None) -> str:
+    """只保留当前和相邻场景的完整信息，其余只保留 id + name"""
+    if not scenes:
+        return "无"
+    result = []
+    for s in scenes:
+        sid = s.get("id", "")
+        if sid == current_scene_id:
+            result.append(s)
+        else:
+            result.append({"id": sid, "name": s.get("name", ""), "description": s.get("description", "")[:60]})
+    return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+
+
+def _compact_npcs(npcs: list[dict] | None) -> str:
+    if not npcs:
+        return "无"
+    result = []
+    for n in npcs:
+        result.append({
+            "id": n.get("id", ""),
+            "name": n.get("name", ""),
+            "description": (n.get("description") or "")[:100],
+            "personality": (n.get("personality") or "")[:60],
+            "secrets": (n.get("secrets") or "")[:100],
+        })
+    return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+
+
+def _compact_clues(clues: list[dict] | None) -> str:
+    if not clues:
+        return "无"
+    result = []
+    for c in clues:
+        result.append({
+            "id": c.get("id", ""),
+            "name": c.get("name", ""),
+            "description": (c.get("description") or "")[:80],
+            "location": c.get("location", ""),
+        })
+    return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+
+
 def _format_player_info(char: Character) -> str:
     lines = [
         f"姓名：{char.name}",
-        f"属性：{_format_json(char.base_attributes)}",
-        f"技能（非默认值）：{_format_json({k: v for k, v in (char.skills or {}).items() if v > 0})}",
+        f"属性：{_format_json_compact(char.base_attributes)}",
+        f"技能（非默认值）：{_format_json_compact({k: v for k, v in (char.skills or {}).items() if v > 0})}",
     ]
     sd = char.system_data or {}
+    if sd.get("occupation"):
+        lines.append(f"职业：{sd['occupation']}")
+    if sd.get("age"):
+        lines.append(f"年龄：{sd['age']}")
+    if sd.get("gender"):
+        lines.append(f"性别：{sd['gender']}")
+    if sd.get("residence"):
+        lines.append(f"住地：{sd['residence']}")
+    if sd.get("birthplace"):
+        lines.append(f"故乡：{sd['birthplace']}")
     hp = sd.get("hitPoints", {})
     san = sd.get("sanity", {})
+    mp = sd.get("magicPoints", {})
     if hp:
         lines.append(f"HP：{hp.get('current', '?')}/{hp.get('max', '?')}")
     if san:
         lines.append(f"SAN：{san.get('current', '?')}/{san.get('max', '?')}")
+    if mp:
+        lines.append(f"MP：{mp.get('current', '?')}/{mp.get('max', '?')}")
     if char.backstory:
-        lines.append(f"背景：{char.backstory}")
+        lines.append(f"背景：{char.backstory[:200]}")
     return "\n".join(lines)
 
 
@@ -102,30 +184,57 @@ def build_kp_context(
         rule_system=module.rule_system.upper(),
         module_title=module.title,
         module_description=module.description,
-        world_setting=_format_json(module.world_setting),
-        scenes_info=_format_json(module.scenes),
+        world_setting=_format_json_compact(module.world_setting),
+        scenes_info=_compact_scenes(module.scenes, session.current_scene_id),
         current_scene=_format_json(current_scene) if current_scene else "初始场景",
-        npcs_info=_format_json(module.npcs),
-        clues_info=_format_json(module.clues),
+        npcs_info=_compact_npcs(module.npcs),
+        clues_info=_compact_clues(module.clues),
         player_info=_format_player_info(player_char),
     )
+
+    system_tokens = _estimate_tokens(system_content)
+    if system_tokens > MAX_SYSTEM_TOKENS:
+        system_content = _truncate_to_tokens(system_content, MAX_SYSTEM_TOKENS)
+        system_tokens = MAX_SYSTEM_TOKENS
 
     messages = [{"role": "system", "content": system_content}]
 
     if not events:
         messages.append({"role": "user", "content": KP_OPENING_PROMPT})
     else:
-        recent = events[-MAX_RECENT_EVENTS:]
-        if len(events) > SUMMARY_THRESHOLD:
-            older_summary = _summarize_old_events(events[:-MAX_RECENT_EVENTS])
-            if older_summary:
-                messages.append({
-                    "role": "system",
-                    "content": "[之前发生的事件摘要]\n" + older_summary,
-                })
-        messages.extend(_events_to_messages(
-            recent, player_char_id=player_char.id,
-        ))
+        event_budget = CONTEXT_TOKEN_BUDGET - system_tokens - RESERVE_FOR_OUTPUT
+
+        all_msgs = _events_to_messages(events, player_char_id=player_char.id)
+
+        if len(all_msgs) <= MIN_RECENT_EVENTS:
+            recent_msgs = all_msgs
+            summary = ""
+        else:
+            recent_msgs = all_msgs[-MIN_RECENT_EVENTS:]
+            recent_tokens = sum(_estimate_tokens(m["content"]) for m in recent_msgs)
+
+            remaining = event_budget - recent_tokens
+            while remaining > 0 and len(recent_msgs) < len(all_msgs):
+                next_idx = len(all_msgs) - len(recent_msgs) - 1
+                next_msg = all_msgs[next_idx]
+                msg_tokens = _estimate_tokens(next_msg["content"])
+                if remaining - msg_tokens < 0 and len(recent_msgs) >= MIN_RECENT_EVENTS:
+                    break
+                recent_msgs.insert(0, next_msg)
+                remaining -= msg_tokens
+
+            if len(recent_msgs) < len(all_msgs):
+                older_events = events[:len(events) - len(recent_msgs)]
+                summary = _summarize_old_events(older_events, max_tokens=min(MAX_SUMMARY_TOKENS, max(remaining, 500)))
+            else:
+                summary = ""
+
+        if summary:
+            messages.append({
+                "role": "system",
+                "content": "[之前发生的事件摘要]\n" + summary,
+            })
+        messages.extend(recent_msgs)
         if len(messages) >= 3 and messages[-1]["role"] == "user":
             messages.insert(-1, {
                 "role": "system",
@@ -176,14 +285,23 @@ def build_npc_context(
     return messages
 
 
-def _summarize_old_events(events: list[EventLog]) -> str:
+def _summarize_old_events(events: list[EventLog], max_tokens: int = 1500) -> str:
     if not events:
         return ""
     for ev in reversed(events):
         if ev.summary:
-            return ev.summary
+            return _truncate_to_tokens(ev.summary, max_tokens)
+
     lines = []
-    for ev in events[-10:]:
+    token_count = 0
+    for ev in events:
         prefix = ev.actor_name or ev.event_type
-        lines.append(f"- [{prefix}] {ev.content[:80]}")
-    return "\n".join(lines)
+        snippet = ev.content[:120].replace("\n", " ")
+        line = f"- [{prefix}] {snippet}"
+        line_tokens = _estimate_tokens(line)
+        if token_count + line_tokens > max_tokens:
+            break
+        lines.append(line)
+        token_count += line_tokens
+
+    return "\n".join(lines) if lines else ""

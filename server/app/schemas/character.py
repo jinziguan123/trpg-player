@@ -10,6 +10,7 @@ class CharacterCreate(BaseModel):
     module_id: str
     rule_system: str
     is_player: bool = True
+    age: int = 25
     base_attributes: dict[str, int] = {}
     skills: dict[str, int] = {}
     system_data: dict = {}

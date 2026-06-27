@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -13,12 +13,14 @@ from app.schemas.character import (
     CharacterUpdate,
     RollAttributesResponse,
 )
+from app.rules.coc.equipment import get_available_equipment
 from app.rules.coc.occupations import (
     COC_OCCUPATIONS,
     calc_interest_points,
     calc_occupation_points,
 )
-from app.services import character_service
+from app.services import ai_character_service, character_service
+from app.services.excel_import import parse_coc_character_sheet
 
 router = APIRouter(prefix="/api", tags=["characters"])
 
@@ -63,6 +65,13 @@ def calc_skill_points(rule_system: str, data: SkillPointsRequest):
     }
 
 
+@router.get("/rules/{rule_system}/equipment")
+def get_equipment(rule_system: str, era: str = "1920s", credit_rating: int = 0):
+    if rule_system != "coc":
+        raise HTTPException(400, f"暂不支持 {rule_system}")
+    return get_available_equipment(era, credit_rating)
+
+
 class EvaluateRequest(BaseModel):
     module_id: str
     name: str
@@ -101,6 +110,49 @@ async def evaluate_character(data: EvaluateRequest, db: Session = Depends(get_db
         max_tokens=1024,
     )
     return json.loads(result)
+
+
+@router.post("/characters/import-excel")
+async def import_from_excel(
+    module_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    if not file.filename or not file.filename.endswith(".xlsx"):
+        raise HTTPException(400, "请上传 .xlsx 格式的 Excel 文件")
+
+    content = await file.read()
+    try:
+        parsed = parse_coc_character_sheet(content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        raise HTTPException(400, "Excel 解析失败，请确认是 COC 七版角色卡格式")
+
+    return {
+        **parsed,
+        "module_id": module_id,
+        "rule_system": "coc",
+    }
+
+
+class AIGenerateRequest(BaseModel):
+    module_id: str
+    hint: str = ""
+    is_player: bool = False
+
+
+@router.post("/characters/ai-generate")
+async def ai_generate_character(data: AIGenerateRequest, db: Session = Depends(get_db)):
+    try:
+        result = await ai_character_service.generate_ai_character(
+            db, data.module_id, data.hint, data.is_player,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        raise HTTPException(502, "AI 生成失败，请重试")
+    return {**result, "module_id": data.module_id, "rule_system": "coc"}
 
 
 @router.post("/characters/roll-attributes", response_model=RollAttributesResponse)

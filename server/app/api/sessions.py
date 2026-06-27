@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -8,7 +8,8 @@ from app.models.module import Module
 from app.schemas.event import EventRead
 from app.schemas.session import SessionCreate, SessionRead, SessionStatusUpdate
 from app.services import session_service
-from app.services.chat_service import handle_opening
+from app.services.chat_service import run_opening_generation
+from app.services.generation_manager import generation_manager, stream_from_queue
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -67,14 +68,20 @@ def update_status(
     return session
 
 
-@router.get("/{session_id}/events", response_model=list[EventRead])
+@router.get("/{session_id}/events")
 def get_events(
     session_id: str,
-    limit: int = 100,
-    offset: int = 0,
+    limit: int = 50,
+    before_seq: int | None = None,
     db: Session = Depends(get_db),
 ):
-    return session_service.get_session_events(db, session_id, limit, offset)
+    events, has_more = session_service.get_latest_events(
+        db, session_id, limit=limit, before_seq=before_seq,
+    )
+    return {
+        "events": [EventRead.model_validate(e).model_dump() for e in events],
+        "has_more": has_more,
+    }
 
 
 @router.delete("/{session_id}")
@@ -86,11 +93,35 @@ def delete_session(session_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{session_id}/opening")
 async def trigger_opening(session_id: str, db: Session = Depends(get_db)):
+    game_session = session_service.get_session(db, session_id)
+    if not game_session:
+        raise HTTPException(404, "会话不存在")
+    if generation_manager.is_generating(session_id):
+        raise HTTPException(409, "正在生成中")
+
+    q = generation_manager.start(session_id, run_opening_generation(session_id))
+
     return StreamingResponse(
-        handle_opening(db, session_id),
+        stream_from_queue(session_id, q),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/{session_id}/generating")
+async def check_generating(session_id: str):
+    return {"generating": generation_manager.is_generating(session_id)}
+
+
+@router.get("/{session_id}/stream")
+async def subscribe_stream(session_id: str):
+    if not generation_manager.is_generating(session_id):
+        return Response(status_code=204)
+
+    q = generation_manager.subscribe(session_id)
+
+    return StreamingResponse(
+        stream_from_queue(session_id, q),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

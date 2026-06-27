@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { api } from '../api/client'
 
-export interface GameSession {
+interface GameSession {
   id: string
   module_id: string
   status: string
@@ -19,6 +19,22 @@ interface ChatMessage {
   content: string
   actor_name?: string
   metadata?: Record<string, unknown>
+  sequence_num?: number
+}
+
+interface EventPayload {
+  id: string
+  sequence_num: number
+  event_type: string
+  actor_id: string | null
+  actor_name: string
+  content: string
+  metadata_: Record<string, unknown>
+}
+
+interface EventsResponse {
+  events: EventPayload[]
+  has_more: boolean
 }
 
 interface SessionStore {
@@ -26,6 +42,8 @@ interface SessionStore {
   currentSession: GameSession | null
   messages: ChatMessage[]
   loading: boolean
+  hasMoreHistory: boolean
+  loadingOlder: boolean
   streamingMsgId: string | null
   fetchSessions: () => Promise<void>
   createSession: (moduleId: string, characterId: string) => Promise<GameSession>
@@ -37,16 +55,29 @@ interface SessionStore {
   replaceLastNarration: (content: string) => void
   clearMessages: () => void
   loadHistory: (sessionId: string) => Promise<void>
-  resumeSession: (sessionId: string) => Promise<void>
+  loadOlderEvents: (sessionId: string) => Promise<void>
 }
 
 let msgCounter = 0
+
+function eventsToMessages(events: EventPayload[], playerCharId: string | null): ChatMessage[] {
+  return events.map((e) => ({
+    id: e.id,
+    type: e.event_type,
+    content: e.content,
+    actor_name: e.actor_name,
+    sequence_num: e.sequence_num,
+    metadata: { ...e.metadata_, is_player: !!(playerCharId && e.actor_id === playerCharId) },
+  }))
+}
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
   sessions: [],
   currentSession: null,
   messages: [],
   loading: false,
+  hasMoreHistory: false,
+  loadingOlder: false,
   streamingMsgId: null,
 
   fetchSessions: async () => {
@@ -104,33 +135,37 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       return { messages: msgs }
     }),
 
-  clearMessages: () => set({ messages: [], streamingMsgId: null }),
+  clearMessages: () => set({ messages: [], streamingMsgId: null, hasMoreHistory: false }),
 
   loadHistory: async (sessionId) => {
-    const events = await api.get<Array<{
-      id: string
-      event_type: string
-      actor_id: string | null
-      actor_name: string
-      content: string
-      metadata_: Record<string, unknown>
-    }>>(`/sessions/${sessionId}/events`)
-
-    const state = get()
-    const playerCharId = state.currentSession?.player_character_id
-    const messages: ChatMessage[] = events.map((e) => ({
-      id: e.id,
-      type: e.event_type,
-      content: e.content,
-      actor_name: e.actor_name,
-      metadata: { ...e.metadata_, is_player: !!(playerCharId && e.actor_id === playerCharId) },
-    }))
-    set({ messages })
+    const data = await api.get<EventsResponse>(`/sessions/${sessionId}/events`)
+    const playerCharId = get().currentSession?.player_character_id ?? null
+    set({
+      messages: eventsToMessages(data.events, playerCharId),
+      hasMoreHistory: data.has_more,
+    })
   },
 
-  resumeSession: async (sessionId) => {
-    const session = await api.get<GameSession>(`/sessions/${sessionId}`)
-    set({ currentSession: session })
-    await get().loadHistory(sessionId)
+  loadOlderEvents: async (sessionId) => {
+    const state = get()
+    if (state.loadingOlder || !state.hasMoreHistory) return
+    set({ loadingOlder: true })
+    try {
+      const firstMsg = state.messages.find((m) => m.sequence_num != null)
+      const beforeSeq = firstMsg?.sequence_num
+      const url = beforeSeq != null
+        ? `/sessions/${sessionId}/events?before_seq=${beforeSeq}`
+        : `/sessions/${sessionId}/events`
+      const data = await api.get<EventsResponse>(url)
+      const playerCharId = state.currentSession?.player_character_id ?? null
+      const older = eventsToMessages(data.events, playerCharId)
+      set((s) => ({
+        messages: [...older, ...s.messages],
+        hasMoreHistory: data.has_more,
+        loadingOlder: false,
+      }))
+    } catch {
+      set({ loadingOlder: false })
+    }
   },
 }))

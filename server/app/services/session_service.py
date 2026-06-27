@@ -77,14 +77,29 @@ def update_session_status(db: Session, session_id: str, status: str) -> GameSess
 def get_session_events(
     db: Session, session_id: str, limit: int = 100, offset: int = 0
 ) -> list[EventLog]:
-    return (
+    q = (
         db.query(EventLog)
         .filter(EventLog.session_id == session_id)
         .order_by(EventLog.sequence_num.asc())
         .offset(offset)
-        .limit(limit)
-        .all()
     )
+    if limit > 0:
+        q = q.limit(limit)
+    return q.all()
+
+
+def get_latest_events(
+    db: Session, session_id: str, limit: int = 50, before_seq: int | None = None,
+) -> tuple[list[EventLog], bool]:
+    q = db.query(EventLog).filter(EventLog.session_id == session_id)
+    if before_seq is not None:
+        q = q.filter(EventLog.sequence_num < before_seq)
+    q = q.order_by(EventLog.sequence_num.desc())
+    rows = q.limit(limit + 1).all()
+    has_more = len(rows) > limit
+    results = rows[:limit]
+    results.reverse()
+    return results, has_more
 
 
 def get_next_sequence_num(db: Session, session_id: str) -> int:
