@@ -4,8 +4,10 @@
   "scripts": {
     "dev:web": "pnpm --filter web dev",
     "dev:server": "cd server && .venv/bin/uvicorn app.main:app --reload --port 8000",
+    "dev:server:win": "cd server && .venv\\Scripts\\uvicorn app.main:app --reload --port 8000",
     "build:web": "pnpm --filter web build",
     "predev": "lsof -ti:5173,8000 | xargs kill -9 2>/dev/null; true",
-    "dev": "concurrently \"pnpm dev:web\" \"pnpm dev:server\""
+    "dev": "concurrently \"pnpm dev:web\" \"pnpm dev:server\"",
+    "dev:win": "concurrently \"pnpm dev:web\" \"pnpm dev:server:win\""
   }
 }
