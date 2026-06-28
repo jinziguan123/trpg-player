@@ -31,9 +31,9 @@ logger = logging.getLogger(__name__)
 DICE_CHECK_RE = re.compile(r"\[DICE_CHECK:([^\]]*)\]")
 # 对抗骰：两方各投同名或不同技能，比成功等级。a/b 为角色名（主角/队友/NPC）。
 OPPOSED_CHECK_RE = re.compile(r"\[OPPOSED_CHECK:([^\]]*)\]")
-SAN_CHECK_RE = re.compile(
-    r"\[SAN_CHECK:\s*success_loss=([^,\]]+),?\s*failure_loss=([^\]]+)\]"
-)
+# SAN_CHECK 升级为键值解析：success_loss/failure_loss + chars=（目睹者，缺省在场全体）
+# + source=（恐怖源标识，用于「同一角色对同一恐怖只检定一次」的去重）。各角色各自结算。
+SAN_CHECK_RE = re.compile(r"\[SAN_CHECK:([^\]]*)\]")
 HP_CHANGE_RE = re.compile(
     r"\[HP_CHANGE:\s*target=([^,\]]+),?\s*delta=([^,\]]+),?\s*reason=([^\]]*)\]"
 )
@@ -145,6 +145,31 @@ def _resolve_check_actor(
                 skills[skill_name] = DEFAULT_NPC_SKILL
             return {"base_attributes": {}, "skills": skills, "system_data": {}}, nm, True
     return cdata_of(player_char), player_char.name, False
+
+
+_ALL_TOKENS = {"在场", "全体", "全部", "所有人", "所有", "all", "everyone"}
+
+
+def _resolve_san_targets(
+    chars_ref: str | None,
+    player_char: Character,
+    teammates: list[Character] | None,
+) -> list[Character]:
+    """把 SAN_CHECK 的 chars= 解析成目睹者角色列表（玩家方角色一视同仁，无主角特权）。
+
+    空或「在场/全体/all」→ 全队；否则按名单（逗号/顿号分隔）匹配，匹配不到兜底全队。
+    """
+    party = [player_char] + list(teammates or [])
+    ref = (chars_ref or "").strip()
+    if not ref or ref.lower() in _ALL_TOKENS or ref in _ALL_TOKENS:
+        return party
+    names = [n.strip() for n in re.split(r"[,，、/]", ref) if n.strip()]
+    out: list[Character] = []
+    for n in names:
+        for c in party:
+            if c.name and (c.name == n or n in c.name or c.name in n) and c not in out:
+                out.append(c)
+    return out or party
 
 
 async def _resolve_opposed(
@@ -859,47 +884,72 @@ async def _process_commands(
 
     dice_descriptions: list[str] = []
 
+    from app.rules.coc.checks import san_check
+
+    # 同一角色对同一恐怖源只检定一次：用 world_state.san_checked 记 "source|char_id"。
+    ws = dict(game_session.world_state or {})
+    san_checked = set(ws.get("san_checked") or [])
+    san_dirty = False
+
     for match in SAN_CHECK_RE.finditer(kp_text):
-        success_loss = match.group(1).strip()
-        failure_loss = match.group(2).strip()
+        kv = _parse_tag_kv(match.group(1))
+        success_loss = (kv.get("success_loss") or "0").strip()
+        failure_loss = (kv.get("failure_loss") or "1d6").strip()
+        source = (kv.get("source") or "").strip()
+        targets = _resolve_san_targets(kv.get("chars"), player_char, teammates)
 
-        from app.rules.coc.checks import san_check
-        char_data = {
-            "base_attributes": player_char.base_attributes,
-            "skills": player_char.skills,
-            "system_data": player_char.system_data,
-        }
-        result = san_check(char_data, success_loss, failure_loss)
-        check = result["check"]
+        for tchar in targets:
+            key = f"{source}|{tchar.id}" if source else None
+            if key and key in san_checked:
+                continue  # 该角色已对此恐怖源检定过，不重复
 
-        _update_character_stat(db, player_char, "sanity.current", result["new_san"])
+            char_data = {
+                "base_attributes": tchar.base_attributes,
+                "skills": tchar.skills,
+                "system_data": tchar.system_data,
+            }
+            result = san_check(char_data, success_loss, failure_loss)
+            check = result["check"]
+            _update_character_stat(db, tchar, "sanity.current", result["new_san"])
 
-        outcome_text = "成功" if check.outcome in ("critical_success", "hard_success", "success") else "失败"
-        dice_content = (
-            f"理智检定：{check.description}\n"
-            f"SAN 损失：{result['san_loss']}（{result['old_san']} → {result['new_san']}）"
-        )
-        if result["went_insane"]:
-            dice_content += "\n⚠️ 短暂疯狂！（一次性损失 SAN ≥ 当前 SAN/5）"
+            outcome_text = "成功" if check.outcome in (
+                "critical_success", "hard_success", "success") else "失败"
+            dice_content = (
+                f"{tchar.name}｜理智检定：{check.description}\n"
+                f"SAN 损失：{result['san_loss']}（{result['old_san']} → {result['new_san']}）"
+            )
+            if result["went_insane"]:
+                dice_content += "\n⚠️ 短暂疯狂！（一次性损失 SAN ≥ 当前 SAN/5）"
 
-        dice_meta = {
-            "skill": "SAN",
-            "skill_value": result["old_san"],
-            "roll": check.roll,
-            "target": check.target,
-            "outcome": outcome_text,
-            "san_loss": result["san_loss"],
-            "new_san": result["new_san"],
-            "went_insane": result["went_insane"],
-        }
-        ev = session_service.add_event(
-            db, session_id, "dice", dice_content,
-            actor_name="系统", metadata=dice_meta,
-        )
-        yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id)
-        dice_descriptions.append(
-            f"理智检定（{outcome_text}）：损失 {result['san_loss']} SAN（{result['old_san']}→{result['new_san']}）"
-        )
+            dice_meta = {
+                "skill": "SAN",
+                "actor": tchar.name,
+                "skill_value": result["old_san"],
+                "roll": check.roll,
+                "target": check.target,
+                "outcome": outcome_text,
+                "san_loss": result["san_loss"],
+                "new_san": result["new_san"],
+                "went_insane": result["went_insane"],
+            }
+            ev = session_service.add_event(
+                db, session_id, "dice", dice_content,
+                actor_name="系统", metadata=dice_meta,
+            )
+            yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id)
+            dice_descriptions.append(
+                f"{tchar.name} 理智检定（{outcome_text}）：损失 {result['san_loss']} SAN"
+                f"（{result['old_san']}→{result['new_san']}）"
+            )
+            if key:
+                san_checked.add(key)
+                san_dirty = True
+
+    if san_dirty:
+        ws["san_checked"] = sorted(san_checked)
+        game_session.world_state = ws
+        db.add(game_session)
+        db.commit()
 
     for match in HP_CHANGE_RE.finditer(kp_text):
         target_str = match.group(1).strip()

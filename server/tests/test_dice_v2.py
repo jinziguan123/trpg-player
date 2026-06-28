@@ -196,6 +196,47 @@ def test_dice_continuation_fires_followup_san_check(db_factory, monkeypatch):
     assert len(san_dice) >= 1, "续写里的 SAN_CHECK 应被处理并落 SAN 检定事件"
 
 
+def test_san_per_character_and_once_per_source(db_factory, monkeypatch):
+    """SAN 各自结算 + 同一角色对同一恐怖源只检定一次（晚到/新恐怖才再检）。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    ally = teammates[0]
+    hero.system_data = {"sanity": {"current": 60, "max": 99}}
+    ally.system_data = {"sanity": {"current": 55, "max": 99}}
+    db.commit()
+
+    async def fake_stream(kp, messages, result, npcs=None):
+        result[0] = ""
+        result[1] = ""
+        return
+        yield
+
+    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+
+    def san_events():
+        return [e for e in session_service.get_session_events(db, session.id)
+                if e.event_type == "dice" and e.metadata_.get("skill") == "SAN"]
+
+    def run(text):
+        async def go():
+            return [c async for c in chat_service._process_commands(
+                db, session.id, text, module, hero, session, None, teammates=teammates,
+            )]
+        return asyncio.run(go())
+
+    # 主角+阿尔法同时目睹尸体 → 各自一次 SAN
+    run("[SAN_CHECK: success_loss=0, failure_loss=1d2, chars=主角/阿尔法, source=尸体]")
+    assert {e.metadata_["actor"] for e in san_events()} == {"主角", "阿尔法"}
+
+    # 再次对同一尸体（同 source）→ 两人都已检定 → 不再新增
+    run("[SAN_CHECK: success_loss=0, failure_loss=1d2, chars=主角/阿尔法, source=尸体]")
+    assert len(san_events()) == 2
+
+    # 全新恐怖源 → 主角再检定一次
+    run("[SAN_CHECK: success_loss=0, failure_loss=1d2, chars=主角, source=怪物]")
+    assert len(san_events()) == 3
+
+
 def test_opposed_check(db_factory, monkeypatch):
     db = db_factory()
     module, hero, teammates, session = _seed(db)
