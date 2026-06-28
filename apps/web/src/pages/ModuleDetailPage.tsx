@@ -4,7 +4,8 @@ import { toast } from 'sonner'
 import { api } from '../api/client'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiReturnArrow, GiScrollUnfurled } from 'react-icons/gi'
-import { Plus, Trash2, Pencil, Save, X, Eye } from 'lucide-react'
+import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText } from 'lucide-react'
+import { ModuleGraph } from '../components/module/ModuleGraph'
 
 interface Scene { id: string; name?: string; title?: string; description?: string; connections?: string[] }
 interface NPC { id: string; name?: string; description?: string; personality?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number> }
@@ -45,6 +46,7 @@ export function ModuleDetailPage() {
   const isNew = !id
   const [data, setData] = useState<ModuleData>(BLANK)
   const [edit, setEdit] = useState(isNew)
+  const [graph, setGraph] = useState(false)
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
 
@@ -101,8 +103,14 @@ export function ModuleDetailPage() {
           <GiReturnArrow /> 返回
         </button>
         <h2 className="page-title !mb-0 flex items-center gap-2"><GiScrollUnfurled />{isNew ? '新建模组' : edit ? '编辑模组' : '查看模组'}</h2>
-        <div className="ml-auto flex gap-2">
-          {!isNew && !edit && (
+        <div className="ml-auto flex gap-2 items-center">
+          {!edit && !isNew && (
+            <div className="flex rounded overflow-hidden text-sm" style={{ border: '1px solid var(--color-border)' }}>
+              <button onClick={() => setGraph(false)} className="flex items-center gap-1 px-2 py-1" style={!graph ? { background: 'var(--color-accent)', color: '#fff' } : { color: 'var(--color-text-secondary)' }}><FileText size={14} /> 详情</button>
+              <button onClick={() => setGraph(true)} className="flex items-center gap-1 px-2 py-1" style={graph ? { background: 'var(--color-accent)', color: '#fff' } : { color: 'var(--color-text-secondary)' }}><Network size={14} /> 关系图</button>
+            </div>
+          )}
+          {!isNew && !edit && !graph && (
             <button onClick={() => setEdit(true)} className="btn-secondary flex items-center gap-1 text-sm"><Pencil size={14} /> 编辑</button>
           )}
           {edit && (
@@ -116,10 +124,14 @@ export function ModuleDetailPage() {
 
       {!edit && (
         <div className="card mb-4 flex items-center gap-2 text-sm" style={{ borderColor: 'var(--color-danger)', color: 'var(--color-danger)' }}>
-          <Eye size={15} /> 剧透警告：以下含 NPC 秘密、线索与真相。若你打算亲自游玩本模组，请勿继续阅读。
+          <Eye size={15} /> 剧透警告：{graph ? '关系图含线索归属等剧情结构' : '以下含 NPC 秘密、线索与真相'}。若你打算亲自游玩本模组，请勿继续阅读。
         </div>
       )}
 
+      {graph && !edit ? (
+        <ModuleGraph scenes={data.scenes} npcs={data.npcs} clues={data.clues} />
+      ) : (
+      <>
       {/* 基本信息 */}
       <Section title="基本信息">
         <Row label="标题">{edit ? <TextInput value={data.title} onChange={(v) => setData((d) => ({ ...d, title: v }))} /> : <span className="font-semibold">{data.title}</span>}</Row>
@@ -180,6 +192,8 @@ export function ModuleDetailPage() {
         ))}
         {data.clues.length === 0 && <Empty />}
       </Section>
+      </>
+      )}
     </div>
   )
 }
