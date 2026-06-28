@@ -56,6 +56,32 @@ MAX_RULE_LOOKUPS = 2
 # 中/英文小括号内为 OOC（场外交流）：只在房间内广播，不进入 KP 上下文、不触发生成。
 OOC_RE = re.compile(r"（[^（）]*）|\([^()]*\)")
 
+# 引号内为「说出口的台词」（speak），引号外为「行动」（act）：用于把玩家的言/行分流。
+# 支持中文双引号 “”、中文方引号 「」『』、ASCII 双引号 "。
+QUOTE_RE = re.compile(r'[“"「『]([^”"」』]*)[”"」』]')
+
+
+def split_speech_action(text: str) -> list[tuple[str, str]]:
+    """按引号约定把一段玩家输入拆成有序的（类型, 文本）片段。
+
+    引号内 → ``dialogue``（说出口的台词）；引号外的非空文字 → ``action``（行动）。
+    完全不含引号时整条按 ``action``。保留原文顺序，便于 KP 与渲染按序呈现。
+    """
+    segments: list[tuple[str, str]] = []
+    last = 0
+    for m in QUOTE_RE.finditer(text or ""):
+        before = (text[last : m.start()] or "").strip(" \t\n，,。.、")
+        if before:
+            segments.append(("action", before))
+        inner = (m.group(1) or "").strip()
+        if inner:
+            segments.append(("dialogue", inner))
+        last = m.end()
+    tail = (text[last:] if text else "").strip(" \t\n，,。.、")
+    if tail:
+        segments.append(("action", tail))
+    return segments
+
 
 def split_ooc(text: str) -> tuple[str, str]:
     """拆出正式行动与 OOC 内容。

@@ -109,6 +109,20 @@ def test_npc_dialogue_still_extracted():
     assert "托马斯·金博尔" in speakers
 
 
+def test_split_speech_action_quote_convention():
+    """引号约定：引号内=台词(dialogue)，引号外=行动(action)，保序；无引号整条按行动。"""
+    f = chat_service.split_speech_action
+    assert f("我走近向导，“附近有水源吗？”") == [
+        ("action", "我走近向导"), ("dialogue", "附近有水源吗？"),
+    ]
+    assert f("「你好，金博尔先生」") == [("dialogue", "你好，金博尔先生")]
+    assert f("我仔细搜索房间") == [("action", "我仔细搜索房间")]
+    assert f('"Hello" 然后我后退一步') == [
+        ("dialogue", "Hello"), ("action", "然后我后退一步"),
+    ]
+    assert f("   ") == []
+
+
 def test_multiparagraph_narration_with_npcs_does_not_crash():
     """旁白含段落分隔 \\n\\n 且模组有 NPC 时，段落缓冲分支会遍历 npc_matchers（3 元组）。
     曾因该分支用 2 元组解包导致 ValueError，让整段生成崩溃、前端收不到开场白。"""

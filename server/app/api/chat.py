@@ -11,6 +11,7 @@ from app.services.chat_service import (
     event_to_chunk,
     run_chat_generation,
     split_ooc,
+    split_speech_action,
 )
 from app.services.generation_manager import generation_manager
 from app.services.room_hub import room_hub
@@ -78,12 +79,15 @@ async def chat(
         room_hub.broadcast(session_id, event_to_chunk(ev))
         raise HTTPException(400, "该消息为纯场外发言，请使用 OOC 通道")
 
-    # 正式行动：括号外交给 KP（广播给全房间）；括号内作为独立 OOC（不入 KP 上下文）
-    ev = session_service.add_event(
-        db, session_id, "dialogue", in_character,
-        actor_id=player_char.id, actor_name=player_char.name,
-    )
-    room_hub.broadcast(session_id, event_to_chunk(ev))
+    # 正式行动：按引号约定把言（dialogue）与行（action）分流，按原文顺序逐条落库广播。
+    # 引号内=说出口的台词，引号外=行动；不含引号则整条按行动。
+    segments = split_speech_action(in_character) or [("action", in_character)]
+    for kind, seg_text in segments:
+        ev = session_service.add_event(
+            db, session_id, kind, seg_text,
+            actor_id=player_char.id, actor_name=player_char.name,
+        )
+        room_hub.broadcast(session_id, event_to_chunk(ev))
     if ooc:
         ev_ooc = session_service.add_event(
             db, session_id, "ooc", ooc,
