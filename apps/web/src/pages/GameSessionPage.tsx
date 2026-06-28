@@ -84,6 +84,8 @@ export function GameSessionPage() {
   const shownCharId = panelCharId ?? myCharId
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  // 生成已开始但还没吐出第一段内容（推理类模型先思考、此时无 token）→ 显示"KP 思考中"
+  const [thinking, setThinking] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const openingTriggered = useRef(false)
@@ -143,10 +145,10 @@ export function GameSessionPage() {
     const t = chunk.type
     if (t === 'ready') { setLiveConnected(true); return }
     if (t === 'replay_done') return
-    if (t === 'generating') { setStreaming(true); return }
+    if (t === 'generating') { setStreaming(true); setThinking(true); return }
     if (t === 'done') {
       endStream(); liveTypeRef.current = ''
-      setStreaming(false); setRefreshTick((x) => x + 1)
+      setStreaming(false); setThinking(false); setRefreshTick((x) => x + 1)
       // 生成结束后从 DB 对齐：用持久化的最终叙述替换流式拼接的内容，
       // 同时兜住「刷新落在生成完成瞬间」时丢失的那段叙述。
       void resyncHistory()
@@ -173,6 +175,7 @@ export function GameSessionPage() {
       return
     }
     if (t === 'narration') {
+      setThinking(false)  // 第一段叙述 token 到达 → 不再是"思考中"
       if (liveTypeRef.current !== 'narration') {
         endStream(); startStreamMessage('narration', 'KP'); liveTypeRef.current = 'narration'
       }
@@ -184,6 +187,7 @@ export function GameSessionPage() {
       if (seenIds.current.has(chunk.id)) return
       seenIds.current.add(chunk.id)
     }
+    setThinking(false)  // 任何具体内容（对话/检定/系统）到达 → 不再是"思考中"
     endStream(); liveTypeRef.current = ''
     const isPlayer = !!(myCharIdRef.current && chunk.actor_id === myCharIdRef.current)
     if (t === 'dialogue' || t === 'npc_dialogue') {
@@ -428,8 +432,13 @@ export function GameSessionPage() {
             )
           })}
           {streaming && (
-            <div className="chat-loading">
+            <div className="chat-loading flex items-center gap-2">
               <span className="dot-pulse" />
+              {thinking && (
+                <span className="text-xs italic" style={{ color: 'var(--color-text-secondary)' }}>
+                  KP 正在思考……
+                </span>
+              )}
             </div>
           )}
         </div>
