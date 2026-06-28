@@ -510,7 +510,10 @@ async def _stream_narration_filtered(
 
 MAX_TEAMMATES_PER_TURN = 4
 
-TEAM_ACTION_EVENT = {"speak": "dialogue", "act": "action", "assist": "action"}
+# check：队友主动发起的技能检定（content 描述尝试、skill 给技能），先落 action 事件再掷骰。
+TEAM_ACTION_EVENT = {
+    "speak": "dialogue", "act": "action", "assist": "action", "check": "action",
+}
 
 
 def _parse_team_decision(raw) -> dict | None:
@@ -533,7 +536,11 @@ def _parse_team_decision(raw) -> dict | None:
     action = str(data.get("action") or "").strip().lower()
     if action not in TEAM_ACTION_EVENT and action != "silent":
         return None
-    return {"action": action, "content": str(data.get("content") or "").strip()}
+    return {
+        "action": action,
+        "content": str(data.get("content") or "").strip(),
+        "skill": str(data.get("skill") or "").strip(),  # 仅 action=check 时有意义
+    }
 
 
 async def _run_team_turn(
@@ -576,12 +583,33 @@ async def _run_team_turn(
             db, session_id, event_type, content,
             actor_id=teammate.id, actor_name=teammate.name,
         )
-        # speak 用 npc_dialogue 走前端气泡渲染；act/assist 走通用 action 渲染
+        # speak 用 npc_dialogue 走前端气泡渲染；act/assist/check 走通用 action 渲染
         chunk_type = "npc_dialogue" if event_type == "dialogue" else "action"
         yield _make_chunk(
             chunk_type, content, actor_name=teammate.name,
             event_id=ev.id, actor_id=teammate.id,
         )
+        # 队友主动检定：紧接着掷骰（明骰），结果落库交由 KP 收束叙述
+        if action == "check" and decision.get("skill"):
+            skill = decision["skill"]
+            engine = get_engine(module.rule_system)
+            cdata = {
+                "base_attributes": teammate.base_attributes,
+                "skills": teammate.skills,
+                "system_data": teammate.system_data,
+            }
+            result = engine.resolve_check(cdata, skill, "normal")
+            dice_content = f"{teammate.name}｜{skill} 检定（normal）：{result.description}"
+            dice_meta = {
+                "skill": skill, "skill_value": result.skill_value,
+                "roll": result.roll, "target": result.target,
+                "outcome": result.outcome, "actor": teammate.name,
+            }
+            dev = session_service.add_event(
+                db, session_id, "dice", dice_content,
+                actor_name="系统", metadata=dice_meta,
+            )
+            yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=dev.id)
 
 
 def _persist_narration(db: Session, session_id: str, result: list) -> None:
@@ -668,6 +696,86 @@ async def run_chat_generation(session_id: str) -> None:
         logger.info("生成被取消: session=%s", session_id)
     except Exception:
         logger.exception("生成失败: session=%s", session_id)
+        room_hub.broadcast(session_id, _make_chunk("system", "生成出错，请重试"))
+        room_hub.broadcast(session_id, _make_chunk("done"))
+    finally:
+        db.close()
+
+
+async def run_check_generation(
+    session_id: str, actor_id: str, skill: str, difficulty: str = "normal",
+) -> None:
+    """玩家主动发起检定：对其角色掷骰（明骰）→ 落库广播 → KP 据结果叙述后续。"""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        game_session = db.get(GameSession, session_id)
+        module = db.get(Module, game_session.module_id)
+        player_char = db.get(Character, game_session.player_character_id)
+        actor = db.get(Character, actor_id) or player_char
+        party_others = session_service.get_party_members(
+            db, session_id, exclude_id=game_session.player_character_id,
+        )
+
+        engine = get_engine(module.rule_system)
+        cdata = {
+            "base_attributes": actor.base_attributes,
+            "skills": actor.skills,
+            "system_data": actor.system_data,
+        }
+        result = engine.resolve_check(cdata, skill, difficulty)
+        dice_content = f"{actor.name}｜{skill} 检定（{difficulty}）：{result.description}"
+        dice_meta = {
+            "skill": skill, "skill_value": result.skill_value,
+            "roll": result.roll, "target": result.target,
+            "outcome": result.outcome, "actor": actor.name,
+        }
+        ev = session_service.add_event(
+            db, session_id, "dice", dice_content, actor_name="系统", metadata=dice_meta,
+        )
+        room_hub.broadcast(
+            session_id,
+            _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id),
+        )
+
+        # 交 KP 据检定结果续写（复用骰子续写范式）
+        llm = get_llm()
+        events = session_service.get_session_events(db, session_id)
+        rules_enabled = rulebook_service.has_rulebook(db, module.rule_system)
+        messages = build_kp_context(
+            game_session, module, player_char, events,
+            teammates=party_others, rules_lookup_enabled=rules_enabled,
+        )
+        messages.append({
+            "role": "user",
+            "content": KP_DICE_CONTINUATION_PROMPT.format(
+                dice_results=f"{actor.name} {skill}（{difficulty}）：{result.description}"
+            ),
+        })
+
+        kp = KPAgent(llm)
+        res = ["", "", []]
+        try:
+            async for chunk in _stream_narration_filtered(
+                kp, messages, res, npcs=_matcher_npcs(module, party_others),
+            ):
+                room_hub.broadcast(session_id, chunk)
+        except asyncio.CancelledError:
+            _persist_narration(db, session_id, res)
+            raise
+        _persist_narration(db, session_id, res)
+
+        async for chunk in _process_commands(
+            db, session_id, res[1], module, player_char, game_session, llm,
+            teammates=party_others,
+        ):
+            room_hub.broadcast(session_id, chunk)
+        room_hub.broadcast(session_id, _make_chunk("done"))
+    except asyncio.CancelledError:
+        logger.info("检定生成被取消: session=%s", session_id)
+    except Exception:
+        logger.exception("检定生成失败: session=%s", session_id)
         room_hub.broadcast(session_id, _make_chunk("system", "生成出错，请重试"))
         room_hub.broadcast(session_id, _make_chunk("done"))
     finally:

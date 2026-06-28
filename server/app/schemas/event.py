@@ -27,6 +27,14 @@ class ChatRequest(BaseModel):
     acting_character_id: str | None = None
 
 
+class CheckRequest(BaseModel):
+    """玩家主动发起技能/属性检定。"""
+
+    skill: str
+    difficulty: Literal["normal", "hard", "extreme"] = "normal"
+    acting_character_id: str | None = None
+
+
 class StreamChunk(BaseModel):
     type: Literal[
         "narration", "dialogue", "action", "dice", "system", "thinking", "done"

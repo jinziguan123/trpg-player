@@ -94,6 +94,30 @@ def test_team_turn_runs_once_per_teammate(db_factory, monkeypatch):
     assert sum('"npc_dialogue"' in c for c in chunks) == 2
 
 
+def test_team_turn_check_rolls_dice(db_factory, monkeypatch):
+    """队友 check 决策：先落 action，再紧接着掷骰（dice 事件，带技能元数据）。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+
+    async def fake_decide(self, messages):
+        return '{"action":"check","content":"我辨认铭文","skill":"考古学"}'
+
+    monkeypatch.setattr(chat_service.TeamAgent, "decide", fake_decide)
+
+    chunks = asyncio.run(_collect(
+        chat_service._run_team_turn(
+            db, session.id, session, module, hero, teammates, llm=None,
+        )
+    ))
+    events = session_service.get_session_events(db, session.id)
+    tm_ids = {t.id for t in teammates}
+    actions = [e for e in events if e.event_type == "action" and e.actor_id in tm_ids]
+    dice = [e for e in events if e.event_type == "dice"]
+    assert len(actions) == 2 and len(dice) == 2          # 每个队友 1 action + 1 dice
+    assert all(d.metadata_.get("skill") == "考古学" for d in dice)
+    assert sum('"dice"' in c for c in chunks) == 2
+
+
 def test_team_turn_holds_on_silent_and_bad_json(db_factory, monkeypatch):
     db = db_factory()
     module, hero, teammates, session = _seed(db)
@@ -125,11 +149,17 @@ def test_parse_team_decision():
     assert chat_service._parse_team_decision('{"action":"act","content":"查看"}') == {
         "action": "act",
         "content": "查看",
+        "skill": "",
     }
     assert chat_service._parse_team_decision("前缀 {\"action\":\"speak\",\"content\":\"嗨\"} 后缀") == {
         "action": "speak",
         "content": "嗨",
+        "skill": "",
     }
+    # check 行动带 skill
+    assert chat_service._parse_team_decision(
+        '{"action":"check","content":"我辨认铭文","skill":"考古学"}'
+    ) == {"action": "check", "content": "我辨认铭文", "skill": "考古学"}
     assert chat_service._parse_team_decision("坏数据") is None
     assert chat_service._parse_team_decision('{"action":"unknown","content":"x"}') is None
 

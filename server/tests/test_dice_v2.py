@@ -129,6 +129,37 @@ def test_blind_player_and_npc(db_factory, monkeypatch):
     assert "暗骰" in d["content"]
 
 
+def test_run_check_generation_rolls_for_actor(db_factory, monkeypatch):
+    """玩家主动检定：run_check_generation 对其角色掷骰并落 dice 事件，再交 KP 续写。"""
+    import app.database as database
+    from app.services.room_hub import room_hub
+
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)  # hero 有 侦查=60
+
+    monkeypatch.setattr(database, "SessionLocal", db_factory)
+    monkeypatch.setattr(chat_service, "get_llm", lambda: None)
+    monkeypatch.setattr(room_hub, "broadcast", lambda *a, **k: None)
+
+    async def fake_stream(kp, messages, result, npcs=None):
+        result[0] = ""
+        result[1] = ""
+        return
+        yield
+
+    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+
+    import asyncio as _asyncio
+    _asyncio.run(chat_service.run_check_generation(session.id, hero.id, "侦查", "normal"))
+
+    dice = [e for e in session_service.get_session_events(db_factory(), session.id)
+            if e.event_type == "dice"]
+    assert len(dice) == 1
+    assert dice[0].metadata_["actor"] == hero.name
+    assert dice[0].metadata_["skill"] == "侦查"
+    assert dice[0].metadata_["skill_value"] == 60
+
+
 def test_opposed_check(db_factory, monkeypatch):
     db = db_factory()
     module, hero, teammates, session = _seed(db)

@@ -4,12 +4,13 @@ from sqlalchemy.orm import Session
 from app.api.deps import player_token
 from app.database import get_db
 from app.models.session import GameSession
-from app.schemas.event import ChatRequest
+from app.schemas.event import ChatRequest, CheckRequest
 from app.services import session_service
 from app.services.chat_service import (
     _make_chunk,
     event_to_chunk,
     run_chat_generation,
+    run_check_generation,
     split_ooc,
     split_speech_action,
 )
@@ -97,4 +98,37 @@ async def chat(
 
     room_hub.broadcast(session_id, _make_chunk("generating"))
     generation_manager.start(session_id, run_chat_generation(session_id))
+    return {"ok": True}
+
+
+@router.post("/{session_id}/check")
+async def check(
+    session_id: str,
+    data: CheckRequest,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """玩家主动发起技能检定：校验后掷骰，结果交 KP 据此续写（fire-and-forget）。"""
+    game_session = db.get(GameSession, session_id)
+    if not game_session:
+        raise HTTPException(404, "会话不存在")
+    if game_session.status != "active":
+        raise HTTPException(400, "会话未处于活跃状态")
+    if generation_manager.is_generating(session_id):
+        raise HTTPException(409, "KP 正在叙事，请稍候")
+    if not data.skill.strip():
+        raise HTTPException(400, "未指定检定技能")
+
+    try:
+        actor = session_service.resolve_actor(
+            db, session_id, token, data.acting_character_id,
+        )
+    except ValueError as e:
+        raise HTTPException(403, str(e))
+
+    room_hub.broadcast(session_id, _make_chunk("generating"))
+    generation_manager.start(
+        session_id,
+        run_check_generation(session_id, actor.id, data.skill.strip(), data.difficulty),
+    )
     return {"ok": True}
