@@ -6,7 +6,7 @@ import { useModuleStore } from '../stores/moduleStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
-import { GiDiceSixFacesSix, GiCharacter, GiReturnArrow, GiUpCard } from 'react-icons/gi'
+import { GiDiceSixFacesSix, GiCharacter, GiReturnArrow, GiUpCard, GiPadlock } from 'react-icons/gi'
 
 interface Character {
   id: string
@@ -974,7 +974,7 @@ export function CharacterPage() {
                         <div className="flex items-center gap-2">
                           {!isImported && isOcc && <span className="text-xs" style={{ color: 'var(--color-accent)' }}>职</span>}
                           <span>{skillName}</span>
-                          {isLocked && <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>🔒</span>}
+                          {isLocked && <GiPadlock className="text-xs" style={{ color: 'var(--color-text-secondary)' }} />}
                           {!isImported && !isLocked && (
                             <span className="text-xs font-mono" style={{ color: 'var(--color-text-secondary)' }}>
                               ({base}{alloc > 0 ? `+${alloc}` : ''})

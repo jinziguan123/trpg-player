@@ -6,7 +6,7 @@ import type { SessionParticipant } from '../stores/sessionStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { SeatIcon, seatKind } from '../components/game/SeatIcon'
 import { GiReturnArrow } from 'react-icons/gi'
-import { Copy, Sparkles } from 'lucide-react'
+import { Copy, Sparkles, Check } from 'lucide-react'
 
 interface Character {
   id: string
@@ -247,7 +247,7 @@ export function RoomLobbyPage() {
           <div className="space-y-1.5">
             {seats.map((p) => {
               const readyBadge = p.role === 'human' && p.character_id
-                ? (p.ready ? '✓ 已准备' : '… 待准备')
+                ? (p.ready ? '已准备' : '待准备')
                 : (p.character_id ? '就绪' : '')
               const showDot = p.role === 'human' && p.character_id
               const canKick = amHost && p.character_id && p.role === 'human' && !p.is_primary
@@ -271,8 +271,8 @@ export function RoomLobbyPage() {
                     {p.is_host ? ' · 房主' : ''}{p.is_mine ? '（我）' : ''}
                   </button>
                   {readyBadge && (
-                    <span className="text-xs" style={{ color: p.ready || p.role !== 'human' ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>
-                      {readyBadge}
+                    <span className="text-xs inline-flex items-center gap-0.5" style={{ color: p.ready || p.role !== 'human' ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>
+                      {(p.ready || p.role !== 'human') && <Check size={12} />}{readyBadge}
                     </span>
                   )}
                   {canKick && (

@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { api } from '../api/client'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
-import { GiReturnArrow, GiScrollUnfurled } from 'react-icons/gi'
+import { GiReturnArrow, GiScrollUnfurled, GiPadlock } from 'react-icons/gi'
 import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText } from 'lucide-react'
 import { ModuleGraph } from '../components/module/ModuleGraph'
 
@@ -173,7 +173,7 @@ export function ModuleDetailPage() {
             <Row label="描述">{edit ? <TextInput value={n.description || ''} onChange={(v) => upd('npcs', i, { description: v })} multiline /> : <span className="whitespace-pre-wrap">{n.description || '—'}</span>}</Row>
             <Row label="性格">{edit ? <TextInput value={n.personality || ''} onChange={(v) => upd('npcs', i, { personality: v })} /> : <span>{n.personality || '—'}</span>}</Row>
             <Row label="初始位置">{edit ? <TextInput value={n.initial_location || ''} onChange={(v) => upd('npcs', i, { initial_location: v })} placeholder="场景 id" /> : <span className="text-xs">{n.initial_location || '—'}</span>}</Row>
-            <Row label={<span style={{ color: 'var(--color-danger)' }}>秘密🔒</span>}>{edit ? <TextInput value={(n.secrets || []).join('\n')} onChange={(v) => upd('npcs', i, { secrets: v.split('\n') })} multiline placeholder="每行一条，仅 KP 可见" /> : <span className="whitespace-pre-wrap" style={{ color: 'var(--color-danger)' }}>{(n.secrets || []).join('\n') || '—'}</span>}</Row>
+            <Row label={<span style={{ color: 'var(--color-danger)' }} className="inline-flex items-center gap-0.5"><GiPadlock />秘密</span>}>{edit ? <TextInput value={(n.secrets || []).join('\n')} onChange={(v) => upd('npcs', i, { secrets: v.split('\n') })} multiline placeholder="每行一条，仅 KP 可见" /> : <span className="whitespace-pre-wrap" style={{ color: 'var(--color-danger)' }}>{(n.secrets || []).join('\n') || '—'}</span>}</Row>
             <Row label="技能">{edit ? <TextInput value={skillsToText(n.skills)} onChange={(v) => upd('npcs', i, { skills: parseSkills(v) })} multiline placeholder="每行 技能: 数值，如 侦查: 60" /> : <span className="text-xs">{skillsToText(n.skills).replace(/\n/g, '、') || '—'}</span>}</Row>
           </ItemCard>
         ))}

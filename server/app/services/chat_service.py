@@ -919,7 +919,7 @@ async def _process_commands(
                 f"SAN 损失：{result['san_loss']}（{result['old_san']} → {result['new_san']}）"
             )
             if result["went_insane"]:
-                dice_content += "\n⚠️ 短暂疯狂！（一次性损失 SAN ≥ 当前 SAN/5）"
+                dice_content += "\n短暂疯狂！（一次性损失 SAN ≥ 当前 SAN/5）"
 
             dice_meta = {
                 "skill": "SAN",
@@ -969,15 +969,15 @@ async def _process_commands(
             _update_character_stat(db, player_char, "hitPoints.current", new_hp)
 
             if delta < 0:
-                hp_content = f"💔 {player_char.name} 受到 {abs(delta)} 点伤害（HP {old_hp} → {new_hp}）"
+                hp_content = f"{player_char.name} 受到 {abs(delta)} 点伤害（HP {old_hp} → {new_hp}）"
                 if reason:
                     hp_content += f"——{reason}"
                 if abs(delta) >= max_hp // 2:
-                    hp_content += "\n⚠️ 重伤！"
+                    hp_content += "\n重伤！"
                 if new_hp <= 0:
-                    hp_content += "\n☠️ 濒死！"
+                    hp_content += "\n濒死！"
             else:
-                hp_content = f"💚 {player_char.name} 恢复 {delta} 点生命（HP {old_hp} → {new_hp}）"
+                hp_content = f"{player_char.name} 恢复 {delta} 点生命（HP {old_hp} → {new_hp}）"
                 if reason:
                     hp_content += f"——{reason}"
 
@@ -1128,7 +1128,7 @@ async def _handle_rule_lookup(
     透明提示一条 ephemeral system（不落库）；检索不到时给降级文案让 KP 凭经验处理。
     续写产物再过一遍 _process_commands（禁再查阅），以便"查完规则随即发起检定"成立。
     """
-    yield _make_chunk("system", "📖 守秘人翻阅规则书……")
+    yield _make_chunk("system", "守秘人翻阅规则书……")
 
     hits = rulebook_service.retrieve(db, query, module.rule_system, k=3)
     if hits:
