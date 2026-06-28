@@ -235,7 +235,11 @@ export function GameSessionPage() {
           await resyncHistory()
           if (cancelled) break
           const { generating } = await api.get<{ generating: boolean }>(`/sessions/${sessionId}/generating`)
-          if (!cancelled && generating) setStreaming(true)
+          // 权威同步：每次（重）连按后端真实状态设定，避免重启/抖动后指示器卡在"生成中"不消失
+          if (!cancelled) {
+            setStreaming(generating)
+            if (!generating) setThinking(false)
+          }
           for await (const chunk of connectSSE(`/sessions/${sessionId}/live`, ac.signal)) {
             if (cancelled) break
             handleLiveChunk(chunk as ChunkPayload)

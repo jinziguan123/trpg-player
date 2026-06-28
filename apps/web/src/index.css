@@ -451,9 +451,12 @@ body {
 }
 
 .dot-pulse {
+  position: relative;
   display: inline-block;
   width: 6px;
   height: 6px;
+  margin: 0 11px;          /* 给左右两个点让位，整体三点水平居中 */
+  vertical-align: middle;
   border-radius: 50%;
   background: var(--color-text-secondary);
   animation: pulse 1.2s infinite;
@@ -461,15 +464,15 @@ body {
 .dot-pulse::before,
 .dot-pulse::after {
   content: '';
-  display: inline-block;
+  position: absolute;
+  top: 0;                  /* 与中点同一水平线，避免错位 */
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--color-text-secondary);
-  position: relative;
 }
-.dot-pulse::before { left: -10px; animation: pulse 1.2s infinite 0.2s; }
-.dot-pulse::after { left: 4px; animation: pulse 1.2s infinite 0.4s; }
+.dot-pulse::before { left: -11px; animation: pulse 1.2s infinite 0.2s; }
+.dot-pulse::after { left: 11px; animation: pulse 1.2s infinite 0.4s; }
 
 @keyframes pulse {
   0%, 100% { opacity: 0.3; }
