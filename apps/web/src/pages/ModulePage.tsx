@@ -80,6 +80,9 @@ export function ModulePage() {
           <GiReturnArrow /> 返回
         </button>
         <h2 className="page-title !mb-0">模组管理</h2>
+        <button onClick={() => navigate('/modules/new')} className="ml-auto btn-primary flex items-center gap-1 text-sm">
+          <GiUpCard /> 新建模组
+        </button>
       </div>
 
       <div className="card mb-8">
@@ -185,6 +188,22 @@ export function ModulePage() {
                 </h3>
                 <div className="flex items-center gap-2">
                   <span className="badge">{m.rule_system.toUpperCase()}</span>
+                  <ConfirmDialog
+                    title="查看 / 编辑模组（含剧透）"
+                    description={`「${m.title}」的内容包含 NPC 秘密、线索与剧情真相。若你打算亲自游玩本模组，请不要查看。确定继续吗？`}
+                    confirmLabel="继续查看"
+                    onConfirm={() => navigate(`/modules/${m.id}`)}
+                  >
+                    {(open) => (
+                      <button
+                        onClick={open}
+                        className="text-xs px-1.5 py-0.5 rounded transition-colors hover:bg-[var(--color-accent)] hover:text-white"
+                        style={{ color: 'var(--color-text-accent)', border: '1px solid var(--color-border)' }}
+                      >
+                        查看/编辑
+                      </button>
+                    )}
+                  </ConfirmDialog>
                   <ConfirmDialog
                     title="删除模组"
                     description={`确定要删除「${m.title}」吗？此操作不可恢复。`}
