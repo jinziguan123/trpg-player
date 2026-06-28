@@ -6,8 +6,25 @@ interface Scene { id: string; name?: string; title?: string; connections?: strin
 interface NPC { id: string; name?: string; initial_location?: string }
 interface Clue { id: string; name?: string; location?: string }
 
+interface Pt { x: number; y: number }
 interface GNode { id: string; x: number; y: number; w: number; h: number; name: string; npcs: string[]; clues: string[]; orphan?: boolean }
-interface GEdge { id: string; sx: number; sy: number; tx: number; ty: number }
+interface GEdge { id: string; points: Pt[] }
+
+/** 用 Catmull-Rom 把折线路点平滑成曲线（穿过 dagre 给的每个路点）。 */
+function smoothPath(pts: Pt[]): string {
+  if (pts.length < 2) return ''
+  let d = `M${pts[0].x},${pts[0].y}`
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i]
+    const p1 = pts[i]
+    const p2 = pts[i + 1]
+    const p3 = pts[i + 2] || p2
+    const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6
+    const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6
+    d += ` C${c1x},${c1y} ${c2x},${c2y} ${p2.x},${p2.y}`
+  }
+  return d
+}
 
 const NODE_W = 210
 const ACCENT = '#8b2500'
@@ -41,7 +58,8 @@ function layout(scenes: Scene[], npcs: NPC[], clues: Clue[]) {
   }
 
   const g = new dagre.graphlib.Graph()
-  g.setGraph({ rankdir: 'TB', nodesep: 40, ranksep: 70, marginx: 24, marginy: 24 })
+  // edgesep 拉开平行边、ranksep 拉大层距，配合 dagre 的折线路由避免连线/箭头重叠。
+  g.setGraph({ rankdir: 'TB', nodesep: 55, ranksep: 90, edgesep: 30, marginx: 24, marginy: 24 })
   g.setDefaultEdgeLabel(() => ({}))
   for (const n of raw) g.setNode(n.id, { width: NODE_W, height: nodeHeight(n.npcs, n.clues) })
   for (const [a, b] of conn) g.setEdge(a, b)
@@ -51,10 +69,11 @@ function layout(scenes: Scene[], npcs: NPC[], clues: Clue[]) {
     const p = g.node(n.id)
     return { ...n, x: p.x, y: p.y, w: p.width as number, h: p.height as number, orphan: n.id === '__orphan__' }
   })
-  const byId = new Map(nodes.map((n) => [n.id, n]))
+  // 用 dagre 计算出的边路点（已为平行边/回边做了避让），而非节点中心直连。
   const edges: GEdge[] = conn.flatMap(([a, b]) => {
-    const s = byId.get(a)!; const t = byId.get(b)!
-    return [{ id: `${a}->${b}`, sx: s.x, sy: s.y + s.h / 2, tx: t.x, ty: t.y - t.h / 2 }]
+    const e = g.edge(a, b) as { points?: Pt[] } | undefined
+    const points = e?.points && e.points.length >= 2 ? e.points : []
+    return points.length ? [{ id: `${a}->${b}`, points }] : []
   })
   const gr = g.graph()
   return { nodes, edges, width: (gr.width as number) || 400, height: (gr.height as number) || 300 }
@@ -102,13 +121,10 @@ export function ModuleGraph({ scenes, npcs, clues }: { scenes: Scene[]; npcs: NP
                 <path d="M0,0 L7,3 L0,6 Z" fill={ACCENT} />
               </marker>
             </defs>
-            {edges.map((e) => {
-              const my = (e.sy + e.ty) / 2
-              return (
-                <path key={e.id} d={`M${e.sx},${e.sy} C${e.sx},${my} ${e.tx},${my} ${e.tx},${e.ty}`}
-                  fill="none" stroke={ACCENT} strokeWidth={1.5} markerEnd="url(#mg-arrow)" opacity={0.8} />
-              )
-            })}
+            {edges.map((e) => (
+              <path key={e.id} d={smoothPath(e.points)}
+                fill="none" stroke={ACCENT} strokeWidth={1.5} markerEnd="url(#mg-arrow)" opacity={0.85} />
+            ))}
           </svg>
           {nodes.map((n) => (
             <div key={n.id} className="rounded-md text-xs shadow-sm absolute"
