@@ -109,6 +109,19 @@ def test_npc_dialogue_still_extracted():
     assert "托马斯·金博尔" in speakers
 
 
+def test_multiparagraph_narration_with_npcs_does_not_crash():
+    """旁白含段落分隔 \\n\\n 且模组有 NPC 时，段落缓冲分支会遍历 npc_matchers（3 元组）。
+    曾因该分支用 2 元组解包导致 ValueError，让整段生成崩溃、前端收不到开场白。"""
+    text = "第一段旁白内容。\n\n第二段旁白内容，继续描述场景。\n\n第三段，收束。"
+    npcs = [{"name": "老向导"}]
+    result = ["", "", []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    assert "第一段旁白内容" in result[0]
+    assert "第三段" in result[0]
+
+
 def _patch_runtime(monkeypatch, db_factory):
     """把 chat_service 的运行期依赖换成测试可控的桩。"""
     import app.database as database

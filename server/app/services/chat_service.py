@@ -319,7 +319,7 @@ async def _stream_narration_filtered(
                 _cs = chunk.rstrip()
                 _hold = False
                 if _cs and npc_matchers:
-                    for _, _pts in npc_matchers:
+                    for _, _pts, _ in npc_matchers:
                         for _p in _pts:
                             if any(_cs.endswith(_p + s) for s in ("：", "说道：", "说：", "说道，", "说，")):
                                 _hold = True
