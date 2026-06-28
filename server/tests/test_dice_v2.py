@@ -160,6 +160,42 @@ def test_run_check_generation_rolls_for_actor(db_factory, monkeypatch):
     assert dice[0].metadata_["skill_value"] == 60
 
 
+def test_dice_continuation_fires_followup_san_check(db_factory, monkeypatch):
+    """检定续写里 KP 追加的 [SAN_CHECK]（如读懂禁忌知识）应被处理、落 SAN 检定事件。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    hero.system_data = {"sanity": {"current": 50, "max": 99}}
+    db.commit()
+
+    calls = {"n": 0}
+
+    async def fake_stream(kp, messages, result, npcs=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # 第一段续写：揭示禁忌知识并在末尾追加 SAN 检定
+            result[0] = "你读懂了亵渎的铭文，领悟了不该知道的真相。"
+            result[1] = result[0] + "\n[SAN_CHECK: success_loss=0, failure_loss=1d4]"
+        else:
+            result[0] = "你的精神受到冲击。"
+            result[1] = result[0]
+        return
+        yield
+
+    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+
+    async def go():
+        return [c async for c in chat_service._process_commands(
+            db, session.id, "你凝视着铭文……\n[DICE_CHECK: skill=侦查]",
+            module, hero, session, None, teammates=teammates,
+        )]
+
+    asyncio.run(go())
+
+    events = session_service.get_session_events(db, session.id)
+    san_dice = [e for e in events if e.event_type == "dice" and e.metadata_.get("skill") == "SAN"]
+    assert len(san_dice) >= 1, "续写里的 SAN_CHECK 应被处理并落 SAN 检定事件"
+
+
 def test_opposed_check(db_factory, monkeypatch):
     db = db_factory()
     module, hero, teammates, session = _seed(db)

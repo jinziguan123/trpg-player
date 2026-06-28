@@ -54,6 +54,9 @@ CMD_TAG_PREFIXES = (
 
 # 单次生成内最多连续查阅规则书的次数（防止 KP 反复查导致长链/慢）
 MAX_RULE_LOOKUPS = 2
+# 骰子续写里 KP 可能再发指令（如读懂禁忌知识后追加 SAN_CHECK）→ 允许继续处理，
+# 但限制连锁深度防止无限掷骰链（检定→续写→再检定→…）。
+MAX_DICE_CONTINUATIONS = 3
 
 # 中/英文小括号内为 OOC（场外交流）：只在房间内广播，不进入 KP 上下文、不触发生成。
 OOC_RE = re.compile(r"（[^（）]*）|\([^()]*\)")
@@ -841,6 +844,7 @@ async def _process_commands(
     teammates: list[Character] | None = None,
     allow_rule_lookup: bool = True,
     lookup_depth: int = 0,
+    dice_depth: int = 0,
 ) -> AsyncIterator[str]:
     # 规则书查阅是终止性指令（独占一次回复的最后一行）：命中即查阅+续写，不再处理本段其余
     if allow_rule_lookup and lookup_depth < MAX_RULE_LOOKUPS:
@@ -1014,6 +1018,14 @@ async def _process_commands(
                 session_service.add_event(
                     db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
                 )
+        # 续写里 KP 可能再发指令（如读懂禁忌知识后追加 [SAN_CHECK]、或场景切换）——
+        # 继续处理，但限深度防无限掷骰链。
+        if dice_depth + 1 < MAX_DICE_CONTINUATIONS:
+            async for chunk in _process_commands(
+                db, session_id, cont_result[1], module, player_char, game_session, llm,
+                teammates=teammates, allow_rule_lookup=False, dice_depth=dice_depth + 1,
+            ):
+                yield chunk
 
     for match in SCENE_CHANGE_RE.finditer(kp_text):
         new_scene_id = match.group(1).strip()
