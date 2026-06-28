@@ -1,5 +1,20 @@
+import { useState } from 'react'
 import { RadarChart } from './RadarChart'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+
+/** 模糊匹配：先看子串，再退化为「按顺序出现的子序列」（如「图使」命中「图书馆使用」）。 */
+function fuzzyMatch(query: string, target: string): boolean {
+  const q = query.toLowerCase()
+  const t = target.toLowerCase()
+  if (!q) return true
+  if (t.includes(q)) return true
+  let i = 0
+  for (const ch of t) {
+    if (ch === q[i]) i++
+    if (i >= q.length) return true
+  }
+  return false
+}
 
 interface CharacterData {
   id: string
@@ -168,23 +183,38 @@ function BasicInfoTab({ character }: { character: CharacterData }) {
 
 function SkillsTab({ character }: { character: CharacterData }) {
   const skills = character.skills || {}
+  const [query, setQuery] = useState('')
   const sorted = Object.entries(skills).sort((a, b) => b[1] - a[1])
+  const filtered = query.trim()
+    ? sorted.filter(([name]) => fuzzyMatch(query.trim(), name))
+    : sorted
 
   return (
-    <div className="space-y-0.5">
-      {sorted.map(([name, value]) => (
-        <div key={name} className="flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-bg-tertiary)]">
-          <span>{name}</span>
-          <span className="font-mono font-bold" style={{
-            color: value >= 50 ? 'var(--color-success)' : value >= 25 ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-          }}>
-            {value}
-          </span>
-        </div>
-      ))}
-      {sorted.length === 0 && (
-        <p className="text-xs text-center py-4" style={{ color: 'var(--color-text-secondary)' }}>暂无技能数据</p>
-      )}
+    <div className="space-y-1">
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="搜索技能…"
+        className="w-full px-2 py-1 rounded text-xs"
+        style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}
+      />
+      <div className="space-y-0.5">
+        {filtered.map(([name, value]) => (
+          <div key={name} className="flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-bg-tertiary)]">
+            <span>{name}</span>
+            <span className="font-mono font-bold" style={{
+              color: value >= 50 ? 'var(--color-success)' : value >= 25 ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+            }}>
+              {value}
+            </span>
+          </div>
+        ))}
+        {filtered.length === 0 && (
+          <p className="text-xs text-center py-4" style={{ color: 'var(--color-text-secondary)' }}>
+            {sorted.length === 0 ? '暂无技能数据' : '无匹配技能'}
+          </p>
+        )}
+      </div>
     </div>
   )
 }

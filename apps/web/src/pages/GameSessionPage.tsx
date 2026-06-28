@@ -483,7 +483,7 @@ export function GameSessionPage() {
                 sendMessage()
               }
             }}
-            placeholder="输入你的行动或对话..."
+            placeholder={'输入行动；用「」或""括住要说出口的台词，（圆括号）内为场外'}
             disabled={streaming}
             className="input flex-1"
             rows={1}
