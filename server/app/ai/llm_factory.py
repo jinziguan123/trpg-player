@@ -31,15 +31,18 @@ class OpenAICompatProvider(LLMProvider):
         self,
         messages: list[dict],
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
         response_format: dict | None = None,
     ) -> str:
         payload: dict = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
         }
+        # 不主动施加输出上限：max_tokens 为 None 时不下发，交由服务端默认/上限。
+        # 推理类模型的 reasoning 会占用输出预算，硬上限会让长局/复杂裁定后续无内容可生成。
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if response_format:
             payload["response_format"] = response_format
 
@@ -54,15 +57,16 @@ class OpenAICompatProvider(LLMProvider):
         self,
         messages: list[dict],
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
-        payload = {
+        payload: dict = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
             "stream": True,
         }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
 
         async with self._client.stream(
             "POST", self._api_url, headers=self._headers(), json=payload,

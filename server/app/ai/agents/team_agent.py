@@ -16,9 +16,10 @@ class TeamAgent(BaseAgent):
         self.character_id = character_id
 
     async def decide(self, messages: list[dict]) -> str:
+        # 不限制输出长度：推理类模型会先吐 reasoning，512 的硬上限会把 JSON 决策吃空，
+        # 导致队友长期静默。决策本身很短，不设上限也不会浪费。
         return await self.llm.complete(
             messages,
             temperature=self.temperature,
-            max_tokens=512,
             response_format={"type": "json_object"},
         )

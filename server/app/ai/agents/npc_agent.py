@@ -10,4 +10,5 @@ class NPCAgent(BaseAgent):
         self.npc_id = npc_id
 
     async def respond(self, messages: list[dict]) -> str:
-        return await self.generate(messages, max_tokens=1024)
+        # 不限制输出长度：推理类模型的 reasoning 会占预算，硬上限会让 NPC 回话被吃空。
+        return await self.generate(messages)

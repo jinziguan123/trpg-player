@@ -10,7 +10,7 @@ class LLMProvider(ABC):
         self,
         messages: list[dict],
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
         response_format: dict | None = None,
     ) -> str: ...
 
@@ -19,5 +19,5 @@ class LLMProvider(ABC):
         self,
         messages: list[dict],
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[str]: ...

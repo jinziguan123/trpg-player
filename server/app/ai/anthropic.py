@@ -52,7 +52,7 @@ class AnthropicProvider(LLMProvider):
         self,
         messages: list[dict],
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
         response_format: dict | None = None,
     ) -> str:
         system_text, user_messages = self._split_system(messages)
@@ -60,7 +60,9 @@ class AnthropicProvider(LLMProvider):
             "model": self.model,
             "messages": user_messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            # Anthropic 强制要求 max_tokens，无法省略；未指定时给一个宽松上限（仅为
+            # 输出天花板，不按上限计费），避免对正常生成造成限制。
+            "max_tokens": max_tokens if max_tokens is not None else 8192,
         }
         if system_text:
             payload["system"] = system_text
@@ -77,14 +79,14 @@ class AnthropicProvider(LLMProvider):
         self,
         messages: list[dict],
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         system_text, user_messages = self._split_system(messages)
         payload: dict = {
             "model": self.model,
             "messages": user_messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens if max_tokens is not None else 8192,
             "stream": True,
         }
         if system_text:
