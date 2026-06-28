@@ -26,9 +26,11 @@ from app.services.room_hub import room_hub
 
 logger = logging.getLogger(__name__)
 
-DICE_CHECK_RE = re.compile(
-    r"\[DICE_CHECK:\s*skill=([^,\]]+),?\s*difficulty=(\w+)\]"
-)
+# DICE_CHECK 升级为键值解析（参数顺序无关）：skill=必填；difficulty/char/visibility 选填。
+# char=对谁投（空/主角=主角，队友名，NPC 名）；visibility=open|blind（blind=暗投/暗骰，结果只给 KP）。
+DICE_CHECK_RE = re.compile(r"\[DICE_CHECK:([^\]]*)\]")
+# 对抗骰：两方各投同名或不同技能，比成功等级。a/b 为角色名（主角/队友/NPC）。
+OPPOSED_CHECK_RE = re.compile(r"\[OPPOSED_CHECK:([^\]]*)\]")
 SAN_CHECK_RE = re.compile(
     r"\[SAN_CHECK:\s*success_loss=([^,\]]+),?\s*failure_loss=([^\]]+)\]"
 )
@@ -46,8 +48,8 @@ RULE_LOOKUP_RE = re.compile(
 )
 
 CMD_TAG_PREFIXES = (
-    "DICE_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:", "SCENE_CHANGE:",
-    "RULE_LOOKUP:",
+    "DICE_CHECK:", "OPPOSED_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:",
+    "SCENE_CHANGE:", "RULE_LOOKUP:",
 )
 
 # 单次生成内最多连续查阅规则书的次数（防止 KP 反复查导致长链/慢）
@@ -81,6 +83,115 @@ def split_speech_action(text: str) -> list[tuple[str, str]]:
     if tail:
         segments.append(("action", tail))
     return segments
+
+
+# 模组未给某 NPC 某技能数值时的兜底基线（普通人水平），保证 NPC 检定可解析。
+DEFAULT_NPC_SKILL = 45
+
+# 成功等级排序（对抗骰比较用）：大成功 > 困难/极难成功 > 普通成功 > 失败 > 大失败。
+_OUTCOME_RANK = {
+    "critical_success": 4,
+    "hard_success": 3,
+    "success": 2,
+    "failure": 1,
+    "fumble": 0,
+}
+
+
+def _parse_tag_kv(inner: str) -> dict[str, str]:
+    """把 ``a=x, b=y`` 形式的指令参数解析成 dict（顺序无关，容空格）。"""
+    out: dict[str, str] = {}
+    for part in (inner or "").split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def _resolve_check_actor(
+    char_ref: str,
+    skill_name: str,
+    player_char: Character,
+    teammates: list[Character] | None,
+    module: Module,
+) -> tuple[dict, str, bool]:
+    """把 char= 解析成 (character_data, 显示名, is_npc)。
+
+    空/主角→主角；队友名→对应队友；NPC 名→用模组 NPC 数值卡（缺该技能用 DEFAULT_NPC_SKILL
+    兜底）。匹配不到时兜底当作主角，避免检定无法进行。
+    """
+    name = (char_ref or "").strip()
+
+    def cdata_of(c: Character) -> dict:
+        return {
+            "base_attributes": c.base_attributes,
+            "skills": c.skills,
+            "system_data": c.system_data,
+        }
+
+    if not name or name in ("主角", "玩家", player_char.name):
+        return cdata_of(player_char), player_char.name, False
+    for t in (teammates or []):
+        if t.name and (t.name == name or name in t.name or t.name in name):
+            return cdata_of(t), t.name, False
+    for npc in (module.npcs or []):
+        nm = npc.get("name", "")
+        if nm and (nm == name or name in nm or nm in name):
+            skills = dict(npc.get("skills") or {})
+            if skill_name and skill_name not in skills:
+                skills[skill_name] = DEFAULT_NPC_SKILL
+            return {"base_attributes": {}, "skills": skills, "system_data": {}}, nm, True
+    return cdata_of(player_char), player_char.name, False
+
+
+async def _resolve_opposed(
+    db, session_id, kv, engine, module, player_char, teammates, dice_descriptions,
+):
+    """对抗骰：两方各投一次，比成功等级；同级比技能值高者胜，再平则平局。
+
+    参数：a/b（或 actor/target）= 角色名；a_skill/b_skill（缺省取 skill）= 各自技能。
+    """
+    a_ref = (kv.get("a") or kv.get("actor") or "").strip()
+    b_ref = (kv.get("b") or kv.get("target") or "").strip()
+    a_skill = (kv.get("a_skill") or kv.get("skill") or "").strip()
+    b_skill = (kv.get("b_skill") or a_skill).strip()
+    if not a_skill or not b_skill:
+        return
+
+    a_data, a_name, _ = _resolve_check_actor(a_ref, a_skill, player_char, teammates, module)
+    b_data, b_name, _ = _resolve_check_actor(b_ref, b_skill, player_char, teammates, module)
+    a_res = engine.resolve_check(a_data, a_skill, "normal")
+    b_res = engine.resolve_check(b_data, b_skill, "normal")
+
+    ar, br = _OUTCOME_RANK.get(a_res.outcome, 1), _OUTCOME_RANK.get(b_res.outcome, 1)
+    if ar != br:
+        winner = a_name if ar > br else b_name
+    elif a_res.skill_value != b_res.skill_value:
+        winner = a_name if a_res.skill_value > b_res.skill_value else b_name
+    else:
+        winner = "平局"
+
+    verdict = f"{winner} 胜" if winner != "平局" else "平局"
+    dice_content = (
+        f"对抗骰　{a_name}（{a_skill}）{a_res.description}　vs　"
+        f"{b_name}（{b_skill}）{b_res.description}　→　{verdict}"
+    )
+    dice_meta = {
+        "opposed": True,
+        "a": {"actor": a_name, "skill": a_skill, "roll": a_res.roll,
+              "target": a_res.target, "outcome": a_res.outcome},
+        "b": {"actor": b_name, "skill": b_skill, "roll": b_res.roll,
+              "target": b_res.target, "outcome": b_res.outcome},
+        "winner": winner,
+    }
+    ev = session_service.add_event(
+        db, session_id, "dice", dice_content, actor_name="系统", metadata=dice_meta,
+    )
+    yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id)
+    dice_descriptions.append(
+        f"对抗骰：{a_name}({a_skill}) {a_res.description} vs "
+        f"{b_name}({b_skill}) {b_res.description} → {verdict}"
+    )
 
 
 def split_ooc(text: str) -> tuple[str, str]:
@@ -714,37 +825,59 @@ async def _process_commands(
             )
             yield _make_chunk("system", hp_content, event_id=ev.id)
 
-    for match in DICE_CHECK_RE.finditer(kp_text):
-        skill_name = match.group(1).strip()
-        difficulty = match.group(2).strip()
+    engine = get_engine(module.rule_system)
 
-        engine = get_engine(module.rule_system)
-        char_data = {
-            "base_attributes": player_char.base_attributes,
-            "skills": player_char.skills,
-            "system_data": player_char.system_data,
-        }
+    for match in DICE_CHECK_RE.finditer(kp_text):
+        kv = _parse_tag_kv(match.group(1))
+        skill_name = (kv.get("skill") or "").strip()
+        if not skill_name:
+            continue
+        difficulty = (kv.get("difficulty") or "normal").strip() or "normal"
+        char_ref = (kv.get("char") or "").strip()
+        blind = (kv.get("visibility") or "open").strip().lower() == "blind"
+
+        char_data, disp_name, is_npc = _resolve_check_actor(
+            char_ref, skill_name, player_char, teammates, module,
+        )
         result = engine.resolve_check(char_data, skill_name, difficulty)
 
-        dice_content = (
-            f"{skill_name} 检定（{difficulty}）：{result.description}"
-        )
-        dice_meta = {
-            "skill": skill_name,
-            "skill_value": result.skill_value,
-            "roll": result.roll,
-            "target": result.target,
-            "outcome": result.outcome,
-        }
+        if blind:
+            # 暗投（玩家/队友）/暗骰（NPC）：聊天只显示"做了一次隐藏检定"，成败仅回灌 KP。
+            kind_word = "暗骰" if is_npc else "暗投"
+            dice_content = f"{disp_name} 进行了一次{kind_word}·{skill_name}（结果仅 KP 可见）"
+            dice_meta = {"skill": skill_name, "actor": disp_name, "blind": True}
+            dice_descriptions.append(
+                f"【{kind_word}·{disp_name}·{skill_name}（{difficulty}），结果仅你（KP）可见，"
+                f"绝不可直接把成败告诉玩家】：{result.description}"
+            )
+        else:
+            dice_content = (
+                f"{disp_name}｜{skill_name} 检定（{difficulty}）：{result.description}"
+            )
+            dice_meta = {
+                "skill": skill_name,
+                "skill_value": result.skill_value,
+                "roll": result.roll,
+                "target": result.target,
+                "outcome": result.outcome,
+                "actor": disp_name,
+            }
+            dice_descriptions.append(
+                f"{disp_name} {skill_name}（{difficulty}）：{result.description}"
+            )
 
         ev = session_service.add_event(
             db, session_id, "dice", dice_content,
             actor_name="系统", metadata=dice_meta,
         )
         yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id)
-        dice_descriptions.append(
-            f"{skill_name}（{difficulty}）：{result.description}"
-        )
+
+    for match in OPPOSED_CHECK_RE.finditer(kp_text):
+        async for chunk in _resolve_opposed(
+            db, session_id, _parse_tag_kv(match.group(1)),
+            engine, module, player_char, teammates, dice_descriptions,
+        ):
+            yield chunk
 
     if dice_descriptions:
         continuation_prompt = KP_DICE_CONTINUATION_PROMPT.format(

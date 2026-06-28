@@ -378,7 +378,11 @@ export function GameSessionPage() {
               )
             }
             if (msg.type === 'dice') {
-              const accent = diceAccent(String(msg.metadata?.outcome ?? ''))
+              // 暗投/暗骰：结果对玩家隐藏 → 用中性灰、不按成败着色
+              const blind = !!msg.metadata?.blind
+              const accent = blind
+                ? 'var(--color-text-secondary)'
+                : diceAccent(String(msg.metadata?.outcome ?? ''))
               // 去掉历史数据里可能残留的旧 🎲 前缀，统一用矢量骰子图标
               const diceText = msg.content.replace(/^🎲\s*/, '')
               return (

@@ -40,7 +40,8 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       "description": "外貌和身份描述",
       "personality": "性格特点和行为方式",
       "secrets": ["只有KP知道的秘密"],
-      "initial_location": "scene_1"
+      "initial_location": "scene_1",
+      "skills": {{"战斗": 55, "闪避": 40, "侦查": 60, "潜行": 50, "心理学": 45}}
     }}
   ],
   "clues": [
@@ -61,7 +62,10 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
 4. 场景的 connections 标明可以从该场景前往的其他场景
 5. description 必须简短，绝对不要包含剧情细节
 6. player_brief 与 secrets/clues 严格分离：凡是玩家要靠调查/检定才能知道的，一律放进 secrets/clues，绝不写进 player_brief
-6. difficulty 根据模组战斗频率、解谜难度、角色死亡风险综合判断
+7. 每个 NPC 给出 skills：与其身份相符的关键技能数值（0-90 整数）。优先采用模组原文给的数值；
+   原文没有就按角色定位合理估计（如守卫战斗高、学者知识高、普通人多在 40-50）。至少覆盖可能用到的
+   对抗/侦查/social 类技能（战斗、闪避、侦查、潜行、聆听、话术、心理学等），供 KP 暗骰与对抗骰使用
+8. difficulty 根据模组战斗频率、解谜难度、角色死亡风险综合判断
 
 模组文本：
 {content}"""
