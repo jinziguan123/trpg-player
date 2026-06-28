@@ -28,7 +28,15 @@ interface CharacterData {
 
 interface CharacterPanelProps {
   character: CharacterData
+  /** 提供时（在场、查看自己的卡）技能可点击发起检定 */
+  onSkillCheck?: (skill: string, difficulty: string) => void
 }
+
+const DIFFICULTIES: { key: string; label: string }[] = [
+  { key: 'normal', label: '普通' },
+  { key: 'hard', label: '困难' },
+  { key: 'extreme', label: '极难' },
+]
 
 const ATTR_LABELS: Record<string, string> = {
   STR: '力量', CON: '体质', SIZ: '体型', DEX: '敏捷',
@@ -181,9 +189,12 @@ function BasicInfoTab({ character }: { character: CharacterData }) {
   )
 }
 
-function SkillsTab({ character }: { character: CharacterData }) {
+function SkillsTab({
+  character, onSkillCheck,
+}: { character: CharacterData; onSkillCheck?: (skill: string, difficulty: string) => void }) {
   const skills = character.skills || {}
   const [query, setQuery] = useState('')
+  const [difficulty, setDifficulty] = useState('normal')
   const sorted = Object.entries(skills).sort((a, b) => b[1] - a[1])
   const filtered = query.trim()
     ? sorted.filter(([name]) => fuzzyMatch(query.trim(), name))
@@ -198,17 +209,51 @@ function SkillsTab({ character }: { character: CharacterData }) {
         className="w-full px-2 py-1 rounded text-xs"
         style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}
       />
+      {onSkillCheck && (
+        <div className="flex items-center gap-1.5 py-1">
+          <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>难度</span>
+          {DIFFICULTIES.map((d) => (
+            <button
+              key={d.key}
+              onClick={() => setDifficulty(d.key)}
+              className="text-xs px-1.5 py-0.5 rounded transition-colors"
+              style={difficulty === d.key
+                ? { background: 'var(--color-accent)', color: '#fff' }
+                : { background: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}
+            >
+              {d.label}
+            </button>
+          ))}
+          <span className="text-xs ml-auto" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>点击技能掷骰</span>
+        </div>
+      )}
       <div className="space-y-0.5">
-        {filtered.map(([name, value]) => (
-          <div key={name} className="flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-bg-tertiary)]">
-            <span>{name}</span>
-            <span className="font-mono font-bold" style={{
-              color: value >= 50 ? 'var(--color-success)' : value >= 25 ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-            }}>
-              {value}
-            </span>
-          </div>
-        ))}
+        {filtered.map(([name, value]) => {
+          const row = (
+            <>
+              <span>{name}</span>
+              <span className="font-mono font-bold" style={{
+                color: value >= 50 ? 'var(--color-success)' : value >= 25 ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+              }}>
+                {value}
+              </span>
+            </>
+          )
+          return onSkillCheck ? (
+            <button
+              key={name}
+              onClick={() => onSkillCheck(name, difficulty)}
+              title={`发起 ${name} 检定`}
+              className="w-full flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-accent)] hover:bg-opacity-10 cursor-pointer transition-colors"
+            >
+              {row}
+            </button>
+          ) : (
+            <div key={name} className="flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-bg-tertiary)]">
+              {row}
+            </div>
+          )
+        })}
         {filtered.length === 0 && (
           <p className="text-xs text-center py-4" style={{ color: 'var(--color-text-secondary)' }}>
             {sorted.length === 0 ? '暂无技能数据' : '无匹配技能'}
@@ -290,7 +335,7 @@ function InventoryTab({ character }: { character: CharacterData }) {
   )
 }
 
-export function CharacterPanel({ character }: CharacterPanelProps) {
+export function CharacterPanel({ character, onSkillCheck }: CharacterPanelProps) {
   return (
     <Tabs defaultValue="基本信息" className="flex flex-col h-full">
       <TabsList>
@@ -302,7 +347,7 @@ export function CharacterPanel({ character }: CharacterPanelProps) {
         <BasicInfoTab character={character} />
       </TabsContent>
       <TabsContent value="技能">
-        <SkillsTab character={character} />
+        <SkillsTab character={character} onSkillCheck={onSkillCheck} />
       </TabsContent>
       <TabsContent value="道具">
         <InventoryTab character={character} />

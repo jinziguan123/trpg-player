@@ -288,6 +288,22 @@ export function GameSessionPage() {
     return () => el.removeEventListener('scroll', handleScroll)
   }, [handleScroll])
 
+  const rollCheck = async (skill: string, difficulty: string) => {
+    if (!currentSession || streaming) {
+      if (streaming) toast.error('KP 正在叙事，请稍候')
+      return
+    }
+    try {
+      setStreaming(true)
+      await api.post(`/sessions/${currentSession.id}/check`, {
+        skill, difficulty, acting_character_id: myCharId,
+      })
+    } catch (e: unknown) {
+      setStreaming(false)
+      toast.error(e instanceof Error ? e.message : '检定失败')
+    }
+  }
+
   const sendMessage = async () => {
     if (!input.trim() || !currentSession || streaming) return
     const text = input.trim()
@@ -518,7 +534,10 @@ export function GameSessionPage() {
               </button>
             </div>
           )}
-          <CharacterPanel character={panelChar} />
+          <CharacterPanel
+            character={panelChar}
+            onSkillCheck={shownCharId === myCharId ? rollCheck : undefined}
+          />
         </aside>
       )}
     </div>
