@@ -219,6 +219,54 @@ body {
 .sidebar-link svg {
   font-size: 1.1rem;
   opacity: 0.8;
+  flex-shrink: 0;
+}
+
+.sidebar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.25rem 0.5rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.sidebar-toggle:hover {
+  color: var(--color-text-primary);
+  background: rgba(139, 37, 0, 0.05);
+}
+
+.sidebar-footer {
+  padding: 0.75rem;
+  text-align: center;
+  font-size: 0.75rem;
+  border-top: 1px solid var(--color-border);
+}
+
+/* ===== 收起态：仅图标 ===== */
+.sidebar.collapsed {
+  width: 3.5rem;
+}
+.sidebar.collapsed .sidebar-logo {
+  padding: 1.25rem 0;
+  text-align: center;
+  letter-spacing: 0;
+}
+.sidebar.collapsed .sidebar-link {
+  justify-content: center;
+  padding: 0.5rem;
+}
+.sidebar.collapsed .sidebar-link span,
+.sidebar.collapsed .sidebar-toggle span {
+  display: none;
+}
+.sidebar.collapsed .sidebar-toggle {
+  justify-content: center;
+  padding: 0.4rem;
 }
 
 /* ===== Chat ===== */

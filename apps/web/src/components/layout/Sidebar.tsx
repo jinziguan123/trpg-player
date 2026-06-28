@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { GiScrollUnfurled, GiCharacter, GiDiceTwentyFacesTwenty, GiArchiveResearch, GiGears, GiBookCover } from 'react-icons/gi'
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 
 const NAV_ITEMS = [
   { to: '/', label: '卷宗', icon: GiArchiveResearch },
@@ -11,10 +13,21 @@ const NAV_ITEMS = [
 ]
 
 export function Sidebar() {
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem('trpg_sidebar_collapsed') === '1',
+  )
+  const toggle = () => {
+    setCollapsed((c) => {
+      const next = !c
+      localStorage.setItem('trpg_sidebar_collapsed', next ? '1' : '0')
+      return next
+    })
+  }
+
   return (
-    <aside className="sidebar">
-      <div className="sidebar-logo">
-        TRPG Player
+    <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
+      <div className="sidebar-logo" title="TRPG Player">
+        {collapsed ? 'T' : 'TRPG Player'}
       </div>
       <nav className="sidebar-nav">
         {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
@@ -22,6 +35,7 @@ export function Sidebar() {
             key={to}
             to={to}
             end={to === '/'}
+            title={label}
             className={({ isActive }) =>
               `sidebar-link ${isActive ? 'active' : ''}`
             }
@@ -31,11 +45,19 @@ export function Sidebar() {
           </NavLink>
         ))}
       </nav>
+      <button
+        className="sidebar-toggle"
+        onClick={toggle}
+        title={collapsed ? '展开菜单' : '收起菜单'}
+      >
+        {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+        <span>收起</span>
+      </button>
       <div
-        className="p-3 text-center text-xs border-t"
+        className="sidebar-footer"
         style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
       >
-        v0.1.0
+        {collapsed ? 'v0' : 'v0.1.0'}
       </div>
     </aside>
   )
