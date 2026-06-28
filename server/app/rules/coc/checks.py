@@ -4,6 +4,15 @@ from app.rules.base import CheckResult
 from app.rules.dice import roll_percentile
 
 
+# 属性骰别名：base_attributes 用英文键存（INT/EDU…），但 KP/规则常用中文属性名或
+# 「灵感(Idea)=智力」「知识(Know)=教育」这类基于属性的检定。统一映射到英文键。
+_CHARACTERISTIC_ALIAS = {
+    "力量": "STR", "体质": "CON", "体型": "SIZ", "敏捷": "DEX",
+    "外貌": "APP", "智力": "INT", "意志": "POW", "教育": "EDU",
+    "灵感": "INT", "知识": "EDU",  # CoC 7e：灵感=INT 直接判定，知识=EDU
+}
+
+
 def resolve_skill_check(
     character_data: dict,
     skill_name: str,
@@ -20,6 +29,9 @@ def resolve_skill_check(
     attrs = character_data.get("base_attributes", {})
 
     skill_value = skills.get(skill_name) or attrs.get(skill_name, 0)
+    # 技能表/同名属性都没命中时，按属性骰别名回落到英文属性键（如 灵感→INT、智力→INT）
+    if not skill_value and skill_name in _CHARACTERISTIC_ALIAS:
+        skill_value = attrs.get(_CHARACTERISTIC_ALIAS[skill_name], 0)
 
     if difficulty == "hard":
         target = skill_value // 2

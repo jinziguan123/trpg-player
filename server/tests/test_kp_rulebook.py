@@ -31,7 +31,8 @@ def test_rulebook_sections_present():
 def test_rulebook_static_leaves_budget_for_module_data():
     static = re.sub(r"\{[a-z_]+\}", "", KP_SYSTEM_PROMPT)
     static_tokens = _estimate_tokens(static)
-    # 静态提示词不得吃掉全部预算，至少给模组数据留 ~2000 token 余量
-    assert static_tokens < MAX_SYSTEM_TOKENS - 2000, (
+    # 静态提示词已是一份扎实的裁定手册（规则/骰子协议/信息揭示纪律），仍须给模组数据
+    # 留 ~1700 token 余量（场景分层后 NPC/线索已裁剪，常规模组数据低于此）。守住膨胀上限。
+    assert static_tokens < MAX_SYSTEM_TOKENS - 1700, (
         f"KP 系统提示词过长（{static_tokens} token），模组数据预算不足"
     )

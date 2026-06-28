@@ -212,3 +212,15 @@ class TestCoCDamage:
         }
         result = engine.apply_damage(target, 7)
         assert result.status_change == "major_wound"
+
+
+class TestCharacteristicRolls:
+    """灵感/知识等属性骰：base_attributes 用英文键，需经别名回落。"""
+
+    def test_idea_roll_uses_int(self):
+        cd = {"skills": {"侦查": 60}, "base_attributes": {"INT": 70, "EDU": 65}}
+        assert resolve_skill_check(cd, "灵感").skill_value == 70   # 灵感=INT
+        assert resolve_skill_check(cd, "知识").skill_value == 65   # 知识=EDU
+        assert resolve_skill_check(cd, "智力").skill_value == 70   # 中文属性名亦可
+        # 普通技能不受别名影响
+        assert resolve_skill_check(cd, "侦查").skill_value == 60
