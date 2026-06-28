@@ -627,7 +627,7 @@ async def _process_commands(
 
         outcome_text = "成功" if check.outcome in ("critical_success", "hard_success", "success") else "失败"
         dice_content = (
-            f"🎲 理智检定：{check.description}\n"
+            f"理智检定：{check.description}\n"
             f"SAN 损失：{result['san_loss']}（{result['old_san']} → {result['new_san']}）"
         )
         if result["went_insane"]:
@@ -701,7 +701,7 @@ async def _process_commands(
         result = engine.resolve_check(char_data, skill_name, difficulty)
 
         dice_content = (
-            f"🎲 {skill_name} 检定（{difficulty}）：{result.description}"
+            f"{skill_name} 检定（{difficulty}）：{result.description}"
         )
         dice_meta = {
             "skill": skill_name,

@@ -8,7 +8,7 @@ import { useSessionStore } from '../stores/sessionStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { PartyRoster } from '../components/game/PartyRoster'
 import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
-import { GiReturnArrow } from 'react-icons/gi'
+import { GiReturnArrow, GiRollingDices } from 'react-icons/gi'
 import { Copy, Bot } from 'lucide-react'
 
 const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE):[^\]]*\]/g
@@ -379,11 +379,14 @@ export function GameSessionPage() {
             }
             if (msg.type === 'dice') {
               const accent = diceAccent(String(msg.metadata?.outcome ?? ''))
+              // 去掉历史数据里可能残留的旧 🎲 前缀，统一用矢量骰子图标
+              const diceText = msg.content.replace(/^🎲\s*/, '')
               return (
                 <div key={msg.id} className="chat-msg py-1">
                   <div className="rounded-md px-3 py-2 text-sm flex items-start gap-2"
                     style={{ background: 'var(--color-bg-tertiary)', borderLeft: `3px solid ${accent}` }}>
-                    <span className="whitespace-pre-wrap flex-1">{msg.content}</span>
+                    <GiRollingDices style={{ color: accent, fontSize: '1.1rem', flexShrink: 0, marginTop: '0.1rem' }} />
+                    <span className="whitespace-pre-wrap flex-1">{diceText}</span>
                     {fmtTime(msg.ts) && <span style={{ fontSize: '0.6rem', opacity: 0.5, flexShrink: 0 }}>{fmtTime(msg.ts)}</span>}
                   </div>
                 </div>
