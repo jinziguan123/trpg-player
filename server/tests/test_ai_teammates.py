@@ -178,12 +178,14 @@ def test_kp_context_includes_party(db_factory):
 
     messages = ctx.build_kp_context(session, module, hero, events, teammates=teammates)
     system = messages[0]["content"]
-    assert "同场的其他玩家角色" in system
-    assert "阿尔法" in system and "贝塔" in system
+    # 统一的队伍名册（一视同仁，无主角特权）：房主角色与队友都在册
+    assert "地位完全平等" in system
+    assert "阿尔法" in system and "贝塔" in system and hero.name in system
 
-    # 队友发言进入 user 侧、带「队友·」前缀，不会被误判成 KP 的 assistant 输出
+    # 所有玩家角色发言统一以「[名字]」进入 user 侧（无主角裸渲染、无"队友·"特权区分）
     joined_user = "\n".join(m["content"] for m in messages if m["role"] == "user")
-    assert "[队友·阿尔法]" in joined_user
+    assert "[阿尔法]" in joined_user and f"[{hero.name}]" in joined_user
+    assert "队友·" not in joined_user
 
 
 def test_opening_context_hides_discoverables(db_factory):

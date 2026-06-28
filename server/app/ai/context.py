@@ -182,9 +182,9 @@ def _events_to_messages(
 ) -> list[dict]:
     """把事件流转成对话消息。
 
-    ``party_char_ids`` 是玩家方（主角 + AI 队友）的角色 id 集合：他们的发言/行动
-    都算 user 侧输入，**不会被误判成 KP 自己的 assistant 输出**。非主角的队友消息
-    带上「队友·名字」前缀，让 KP 能区分谁在场、谁做了什么。
+    ``party_char_ids`` 是玩家方全部角色（含房主角色与 AI 队友）的 id 集合：他们的发言/
+    行动都算 user 侧输入，**不会被误判成 KP 自己的 assistant 输出**。所有玩家角色**一视同仁**，
+    统一以「[名字]」标注是谁在说/做，无主角特权。``primary_char_id`` 仅用于并入 party。
     """
     party = set(party_char_ids or ())
     if primary_char_id:
@@ -198,20 +198,16 @@ def _events_to_messages(
             raw.append({"role": "assistant", "content": ev.content})
         elif ev.event_type == "dialogue":
             if ev.actor_id and ev.actor_id in party:
-                if ev.actor_id == primary_char_id:
-                    raw.append({"role": "user", "content": ev.content})
-                else:
-                    raw.append({
-                        "role": "user",
-                        "content": f"[队友·{ev.actor_name}] “{ev.content}”",
-                    })
+                name = ev.actor_name or "队员"
+                raw.append({"role": "user", "content": f"[{name}] “{ev.content}”"})
             elif ev.actor_name:
                 raw.append({"role": "assistant", "content": ev.actor_name + "：“" + ev.content + "”"})
             else:
                 raw.append({"role": "user", "content": ev.content})
         elif ev.event_type == "action":
-            if ev.actor_id and ev.actor_id in party and ev.actor_id != primary_char_id:
-                raw.append({"role": "user", "content": f"[队友·{ev.actor_name} 行动] " + ev.content})
+            if ev.actor_id and ev.actor_id in party:
+                name = ev.actor_name or "队员"
+                raw.append({"role": "user", "content": f"[{name} 行动] " + ev.content})
             else:
                 raw.append({"role": "user", "content": "[行动] " + ev.content})
     merged: list[dict] = []
@@ -226,12 +222,21 @@ def _events_to_messages(
     return merged
 
 
-def _format_teammate_brief(char: Character) -> str:
-    """队友的精简画像：姓名 + 职业 + 关键技能 + 一句背景。"""
+def _format_party_member(char: Character) -> str:
+    """玩家角色的统一精简画像（所有玩家角色一视同仁）：姓名 + 职业 + 状态 + 关键技能 + 一句背景。"""
     sd = char.system_data or {}
     parts = [f"- {char.name}"]
     if sd.get("occupation"):
         parts.append(f"（{sd['occupation']}）")
+    hp = sd.get("hitPoints", {})
+    san = sd.get("sanity", {})
+    cond = []
+    if hp:
+        cond.append(f"HP{hp.get('current', '?')}/{hp.get('max', '?')}")
+    if san:
+        cond.append(f"SAN{san.get('current', '?')}/{san.get('max', '?')}")
+    if cond:
+        parts.append("｜" + " ".join(cond))
     top_skills = sorted(
         ((k, v) for k, v in (char.skills or {}).items() if v >= 50),
         key=lambda kv: kv[1],
@@ -241,7 +246,7 @@ def _format_teammate_brief(char: Character) -> str:
         parts.append("，擅长：" + "、".join(f"{k}{v}" for k, v in top_skills))
     line = "".join(parts)
     if char.backstory:
-        line += f"。背景：{char.backstory[:80]}"
+        line += f"。背景：{char.backstory[:70]}"
     return line
 
 
@@ -256,22 +261,25 @@ def build_kp_context(
     current_scene = _find_scene(module, session.current_scene_id)
 
     teammates = teammates or []
-    player_info = _format_player_info(player_char)
     if teammates:
-        team_lines = "\n".join(_format_teammate_brief(t) for t in teammates)
-        player_info += (
-            f"\n\n## 同场的其他玩家角色（共 {len(teammates)} 名，与上面这位**地位完全平等**）\n"
-            "本场是多人同桌：以下每个都是独立的玩家方角色（由真人或各自的 AI 扮演），"
-            "他们会自行说话和行动，发言作为独立消息出现（形如「[队友·名字] …」）。\n"
-            + team_lines
+        # 多人同桌：全部玩家角色一视同仁地平铺成队伍名册，无主角特权。
+        party = [player_char] + teammates
+        roster = "\n".join(_format_party_member(m) for m in party)
+        player_info = (
+            f"本场是多人同桌，共 {len(party)} 名玩家角色，**地位完全平等**（由真人或各自的 AI 扮演）。"
+            "他们各自说话和行动，发言作为独立消息出现（形如「[名字] …」）。队伍名册：\n"
+            + roster
             + "\n\n**多人叙事铁律（违反即严重错误）**：\n"
-            "1. **平等对待所有玩家角色**——开场白和叙事绝不要只围绕某一个人（尤其别独宠主角），"
-            "要让每位在场角色都有存在感、各自登场；点名、给戏份要照顾到所有人。\n"
-            "2. **绝不替任何玩家角色行动或说话**——包括上面这位主角和这些同伴："
-            "不写他们的台词、不描述他们的主动行动/姿态/心理活动、不替他们做决定。"
-            "他们做什么、说什么，全部由他们自己产出，不归你管。\n"
-            "你只负责：描述环境与场景、扮演模组 NPC、裁定检定、对全队已经做出的行动给出世界的回应。"
+            "1. **平等对待所有玩家角色**——开场白和叙事绝不要只围绕某一个人（没有"
+            "「主角」一说，名册第一位只是房主、并不更重要），要让每位角色都有存在感、各自登场；"
+            "点名、给戏份要照顾到所有人。\n"
+            "2. **绝不替任何玩家角色行动或说话**——不写他们的台词、不描述他们的主动行动/姿态/"
+            "心理活动、不替他们做决定。他们做什么、说什么全部由他们自己产出，不归你管。\n"
+            "你只负责：描述环境与场景、扮演模组 NPC、裁定检定、对全队已做出的行动给出世界的回应。"
         )
+    else:
+        # 单人单角色：直接给完整角色卡（只有一名玩家角色，无平等性问题）。
+        player_info = _format_player_info(player_char)
 
     # 开场隔离：开场（无历史事件）时只给起始场景的 NPC、剥掉 secrets，线索完全不给——
     # 防止 KP 拿"待发现"的尸体/笔记/线索现编进开场白。游戏开始后恢复完整资料。
@@ -326,8 +334,8 @@ def build_kp_context(
             )
         if teammates:
             opening += (
-                f"\n\n【多人开场】在场共 {len(teammates) + 1} 名玩家角色，地位平等。"
-                "开场白要让每一位都自然登场、各有存在感，不要只对某一个人说话、也不要把镜头只对准主角。"
+                f"\n\n【多人开场】在场共 {len(teammates) + 1} 名玩家角色，地位平等，没有「主角」。"
+                "开场白要让每一位都自然登场、各有存在感，不要只对某一个人说话、也不要把镜头只对准某一人。"
                 "只铺好场景、氛围与全队共同面对的处境即可；"
                 "绝不要替任何玩家描写其动作、姿态或台词——把第一步行动权完整留给玩家们。"
             )
@@ -429,15 +437,11 @@ def build_team_context(
     """构建单个 AI 队友的决策上下文：场景 + 队伍 + 最近事件。"""
     current_scene = _find_scene(module, session.current_scene_id)
 
+    # 队伍其他成员（一视同仁，无主角；房主角色也只是其中一名队友）
     party_members = [player_char] + [
         t for t in (all_teammates or []) if t.id != teammate.id
     ]
-    party_info = "\n".join(
-        f"- 主角：{player_char.name}"
-        if m.id == player_char.id
-        else f"- 队友：{m.name}"
-        for m in party_members
-    ) or "无"
+    party_info = "\n".join(f"- 队友：{m.name}" for m in party_members) or "无"
 
     system_content = TEAM_SYSTEM_PROMPT.format(
         rule_system=module.rule_system.upper(),
@@ -448,7 +452,7 @@ def build_team_context(
     )
 
     digest = _format_recent_events_digest(
-        events[-20:], primary_char_id=player_char.id, self_char_id=teammate.id,
+        events[-20:], self_char_id=teammate.id,
     )
 
     messages = [
@@ -458,7 +462,7 @@ def build_team_context(
             "content": (
                 "## 最近发生的事（最新在最后）\n"
                 + digest
-                + "\n\n轮到你了。请根据主角刚才的行动和当前局面，"
+                + "\n\n轮到你了。请根据队伍刚才的行动和当前局面，"
                 "决定你这一回合做什么，并按 JSON 格式输出。"
             ),
         },
@@ -468,10 +472,9 @@ def build_team_context(
 
 def _format_recent_events_digest(
     events: list[EventLog],
-    primary_char_id: str | None = None,
     self_char_id: str | None = None,
 ) -> str:
-    """把最近事件渲染成给 AI 队友看的纯文本摘要（不做角色身份映射）。"""
+    """把最近事件渲染成给 AI 队友看的纯文本摘要（玩家角色一视同仁，只区分"你"与他人）。"""
     lines: list[str] = []
     for ev in events:
         content = (ev.content or "").strip()
@@ -486,8 +489,6 @@ def _format_recent_events_digest(
         elif ev.event_type in ("dialogue", "action"):
             if ev.actor_id == self_char_id:
                 who = "你"
-            elif ev.actor_id == primary_char_id:
-                who = f"主角{('·' + ev.actor_name) if ev.actor_name else ''}"
             else:
                 who = ev.actor_name or "某人"
             verb = "说" if ev.event_type == "dialogue" else "行动"

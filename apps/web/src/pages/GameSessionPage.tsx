@@ -520,17 +520,17 @@ export function GameSessionPage() {
           className="w-64 flex-shrink-0 border-l overflow-y-auto"
           style={{ borderColor: 'var(--color-border)', background: 'var(--color-bg-card)' }}
         >
-          {shownCharId !== primaryId && (
+          {shownCharId !== myCharId && (
             <div
               className="flex items-center justify-between px-3 py-1.5 text-xs border-b"
               style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
             >
-              <span className="inline-flex items-center gap-1"><Bot size={12} /> 队友角色卡</span>
+              <span className="inline-flex items-center gap-1"><Bot size={12} /> 其他角色卡</span>
               <button
                 onClick={() => setPanelCharId(null)}
                 className="btn-secondary !px-2 !py-0.5"
               >
-                看主角
+                看我的角色
               </button>
             </div>
           )}

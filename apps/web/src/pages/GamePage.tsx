@@ -124,7 +124,7 @@ export function GamePage() {
       if (isPlayer) setHeroes((h) => [created, ...h])
       else setAllies((a) => [created, ...a])
       assignSeat(i, created.id)
-      toast.success(`AI 生成「${created.name}」并填入${i === 0 ? '主角' : `队友${i}`}席位`)
+      toast.success(`AI 生成「${created.name}」并填入${i === 0 ? '房主' : `队友${i}`}席位`)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'AI 生成角色失败')
     } finally {
