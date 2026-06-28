@@ -333,7 +333,7 @@ export function GameSessionPage() {
   }
 
   return (
-    <div className="flex h-full gap-0">
+    <div className="flex h-full gap-4">
       <div className="flex flex-col flex-1 min-w-0">
         <div className="flex items-center gap-3 pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
           <button
@@ -408,10 +408,10 @@ export function GameSessionPage() {
               return (
                 <div key={msg.id} className="chat-msg py-1">
                   <div className="rounded-md px-3 py-2 text-sm flex items-start gap-2"
-                    style={{ background: 'var(--color-bg-tertiary)', borderLeft: `3px solid ${accent}` }}>
+                    style={{ background: 'var(--color-bg-tertiary)', borderLeft: `3px solid ${accent}`, width: 'fit-content', maxWidth: '100%' }}>
                     <GiRollingDices style={{ color: accent, fontSize: '1.1rem', flexShrink: 0, marginTop: '0.1rem' }} />
-                    <span className="whitespace-pre-wrap flex-1">{diceText}</span>
-                    {fmtTime(msg.ts) && <span style={{ fontSize: '0.6rem', opacity: 0.5, flexShrink: 0 }}>{fmtTime(msg.ts)}</span>}
+                    <span className="whitespace-pre-wrap">{diceText}</span>
+                    {fmtTime(msg.ts) && <span className="self-end" style={{ fontSize: '0.6rem', opacity: 0.5, flexShrink: 0 }}>{fmtTime(msg.ts)}</span>}
                   </div>
                 </div>
               )

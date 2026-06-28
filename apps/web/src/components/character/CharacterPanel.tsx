@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { RadarChart } from './RadarChart'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { ConfirmDialog } from '../ui/confirm-dialog'
 
 /** 模糊匹配：先看子串，再退化为「按顺序出现的子序列」（如「图使」命中「图书馆使用」）。 */
 function fuzzyMatch(query: string, target: string): boolean {
@@ -210,21 +211,23 @@ function SkillsTab({
         style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}
       />
       {onSkillCheck && (
-        <div className="flex items-center gap-1.5 py-1">
-          <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>难度</span>
-          {DIFFICULTIES.map((d) => (
-            <button
-              key={d.key}
-              onClick={() => setDifficulty(d.key)}
-              className="text-xs px-1.5 py-0.5 rounded transition-colors"
-              style={difficulty === d.key
-                ? { background: 'var(--color-accent)', color: '#fff' }
-                : { background: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}
-            >
-              {d.label}
-            </button>
-          ))}
-          <span className="text-xs ml-auto" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>点击技能掷骰</span>
+        <div className="py-1">
+          <div className="flex items-center gap-1.5 flex-nowrap">
+            <span className="text-xs flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }}>难度</span>
+            {DIFFICULTIES.map((d) => (
+              <button
+                key={d.key}
+                onClick={() => setDifficulty(d.key)}
+                className="text-xs px-1.5 py-0.5 rounded transition-colors flex-shrink-0"
+                style={difficulty === d.key
+                  ? { background: 'var(--color-accent)', color: '#fff' }
+                  : { background: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>点击技能发起检定（需确认）</p>
         </div>
       )}
       <div className="space-y-0.5">
@@ -239,19 +242,32 @@ function SkillsTab({
               </span>
             </>
           )
-          return onSkillCheck ? (
-            <button
+          if (!onSkillCheck) {
+            return (
+              <div key={name} className="flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-bg-tertiary)]">
+                {row}
+              </div>
+            )
+          }
+          const diffLabel = DIFFICULTIES.find((d) => d.key === difficulty)?.label ?? '普通'
+          return (
+            <ConfirmDialog
               key={name}
-              onClick={() => onSkillCheck(name, difficulty)}
-              title={`发起 ${name} 检定`}
-              className="w-full flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-accent)] hover:bg-opacity-10 cursor-pointer transition-colors"
+              title="发起检定"
+              description={`对「${name}」（当前值 ${value}）发起${diffLabel}检定并掷骰？`}
+              confirmLabel="掷骰"
+              onConfirm={() => onSkillCheck(name, difficulty)}
             >
-              {row}
-            </button>
-          ) : (
-            <div key={name} className="flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-bg-tertiary)]">
-              {row}
-            </div>
+              {(open) => (
+                <button
+                  onClick={open}
+                  title={`发起 ${name} 检定`}
+                  className="w-full flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-accent)] hover:bg-opacity-10 cursor-pointer transition-colors"
+                >
+                  {row}
+                </button>
+              )}
+            </ConfirmDialog>
           )
         })}
         {filtered.length === 0 && (

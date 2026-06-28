@@ -19,6 +19,8 @@ export function RadarChart({ labels, values, maxValue = 100, size = 200 }: Radar
   })
 
   const gridLevels = [0.25, 0.5, 0.75, 1]
+  // 标签画在 r+18 处，会超出 size 边界被裁切 → viewBox 四周留白，整体缩放以容下标签
+  const pad = 22
 
   const dataPoints = values.map((v, i) => {
     const ratio = Math.min(v / maxValue, 1)
@@ -28,7 +30,7 @@ export function RadarChart({ labels, values, maxValue = 100, size = 200 }: Radar
   const dataPath = dataPoints.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ') + ' Z'
 
   return (
-    <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size}>
+    <svg viewBox={`${-pad} ${-pad} ${size + pad * 2} ${size + pad * 2}`} width={size} height={size}>
       {gridLevels.map((level) => {
         const points = Array.from({ length: n }, (_, i) => getPoint(i, r * level))
         const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ') + ' Z'
