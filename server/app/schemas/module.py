@@ -27,6 +27,18 @@ class ModuleRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ModuleWrite(BaseModel):
+    """手动新建/编辑模组的结构化内容。"""
+
+    title: str
+    rule_system: str = "coc"
+    description: str = ""
+    world_setting: dict = {}
+    scenes: list = []
+    npcs: list = []
+    clues: list = []
+
+
 class ModuleUploadResponse(BaseModel):
     id: str
     title: str

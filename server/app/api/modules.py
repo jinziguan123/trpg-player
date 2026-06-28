@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.schemas.module import ModuleRead, ModuleUploadResponse
+from app.schemas.module import ModuleRead, ModuleUploadResponse, ModuleWrite
 from app.services import module_service
 
 router = APIRouter(prefix="/api/modules", tags=["modules"])
@@ -70,6 +70,25 @@ async def upload_module(
 @router.get("", response_model=list[ModuleRead])
 def list_modules(db: Session = Depends(get_db)):
     return module_service.list_modules(db)
+
+
+@router.post("", response_model=ModuleRead)
+def create_module(data: ModuleWrite, db: Session = Depends(get_db)):
+    """手动新建模组（结构化内容，非 PDF 解析）。"""
+    if not data.title.strip():
+        raise HTTPException(400, "模组标题不能为空")
+    return module_service.create_module(db, data.model_dump())
+
+
+@router.put("/{module_id}", response_model=ModuleRead)
+def update_module(module_id: str, data: ModuleWrite, db: Session = Depends(get_db)):
+    """整体编辑模组结构化内容。"""
+    if not data.title.strip():
+        raise HTTPException(400, "模组标题不能为空")
+    module = module_service.update_module(db, module_id, data.model_dump())
+    if not module:
+        raise HTTPException(404, "模组不存在")
+    return module
 
 
 @router.get("/{module_id}", response_model=ModuleRead)

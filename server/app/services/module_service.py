@@ -110,6 +110,30 @@ def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
     return module
 
 
+def update_module(db: Session, module_id: str, data: dict) -> Module | None:
+    """整体更新模组的结构化内容（手动编辑）。world_setting/scenes/npcs/clues 直接替换。"""
+    module = db.get(Module, module_id)
+    if not module:
+        return None
+    if "title" in data:
+        module.title = data["title"] or module.title
+    if "rule_system" in data and data["rule_system"]:
+        module.rule_system = data["rule_system"]
+    if "description" in data:
+        module.description = data["description"]
+    if "world_setting" in data and data["world_setting"] is not None:
+        module.world_setting = data["world_setting"]
+    if "scenes" in data and data["scenes"] is not None:
+        module.scenes = data["scenes"]
+    if "npcs" in data and data["npcs"] is not None:
+        module.npcs = data["npcs"]
+    if "clues" in data and data["clues"] is not None:
+        module.clues = data["clues"]
+    db.commit()
+    db.refresh(module)
+    return module
+
+
 def get_module(db: Session, module_id: str) -> Module | None:
     return db.get(Module, module_id)
 
