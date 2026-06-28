@@ -417,6 +417,10 @@ export function GameSessionPage() {
                   <div>
                     <span className="chat-bubble-npc">{msg.content}</span>
                   </div>
+                ) : msg.type === 'action' ? (
+                  <div className={isPlayer ? 'chat-player' : ''}>
+                    <span className="chat-bubble-action">{msg.content}</span>
+                  </div>
                 ) : msg.type === 'narration' ? (
                   <div className="chat-content markdown-body">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>

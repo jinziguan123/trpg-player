@@ -374,6 +374,19 @@ body {
   box-shadow: 1px 1px 3px rgba(90, 60, 20, 0.06);
 }
 
+/* 行动/协助（emote）：与对话气泡区分——斜体、虚线框、低饱和，表示"做了某事"而非说话 */
+.chat-bubble-action {
+  display: inline-block;
+  max-width: 80%;
+  padding: 0.4rem 0.8rem;
+  background: rgba(139, 37, 0, 0.045);
+  border: 1px dashed var(--color-border);
+  border-radius: 4px;
+  line-height: 1.6;
+  font-style: italic;
+  color: var(--color-text-secondary);
+}
+
 .chat-loading {
   padding: 0.5rem 0;
   color: var(--color-text-secondary);

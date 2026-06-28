@@ -83,6 +83,16 @@ interface SessionStore {
 
 let msgCounter = 0
 
+/** 后端 created_at 是 naive UTC（SQLite CURRENT_TIMESTAMP / func.now()，无时区后缀）。
+ *  若不含时区信息，按 UTC 解析，否则会被 JS 当成本地时间、少算时区偏移（如东八区差 8 小时）。*/
+function parseServerTime(s?: string): number | undefined {
+  if (!s) return undefined
+  let v = s.includes('T') ? s : s.replace(' ', 'T')
+  if (!/[zZ]|[+-]\d\d:?\d\d$/.test(v)) v += 'Z'
+  const t = new Date(v).getTime()
+  return Number.isNaN(t) ? undefined : t
+}
+
 function eventsToMessages(events: EventPayload[], playerCharId: string | null): ChatMessage[] {
   return events.map((e) => ({
     id: e.id,
@@ -90,7 +100,7 @@ function eventsToMessages(events: EventPayload[], playerCharId: string | null): 
     content: e.content,
     actor_name: e.actor_name,
     sequence_num: e.sequence_num,
-    ts: e.created_at ? new Date(e.created_at).getTime() : undefined,
+    ts: parseServerTime(e.created_at),
     metadata: { ...e.metadata_, is_player: !!(playerCharId && e.actor_id === playerCharId) },
   }))
 }
