@@ -70,6 +70,55 @@ def _find_scene(module: Module, scene_id: str | None) -> dict | None:
     return None
 
 
+def _active_flags(session: GameSession) -> set[str]:
+    """当前已激活的剧情标志集合（world_state.flags 容忍 dict / list 两种形态）。"""
+    raw = (session.world_state or {}).get("flags")
+    if isinstance(raw, dict):
+        return {k for k, v in raw.items() if v}
+    if isinstance(raw, (list, set, tuple)):
+        return set(raw)
+    return set()
+
+
+def _resolve_state(entity: dict, flags: set[str]) -> dict:
+    """按已激活 flags 把 entity.states 里命中的变体依次覆盖到基础字段上（后命中者优先）。
+
+    变体形如 ``{"when": ["flag_a", ...], <要覆盖的字段>}``：when 内的 flag 全部已激活才生效，
+    缺省/空 when 视为恒命中。无 states 或无任何命中时返回基础字段本身（向后兼容）。
+    """
+    states = entity.get("states")
+    if not states:
+        return entity
+    base = {k: v for k, v in entity.items() if k != "states"}
+    for st in states:
+        when = st.get("when") or []
+        if isinstance(when, str):
+            when = [when]
+        if all(w in flags for w in when):
+            base.update({k: v for k, v in st.items() if k != "when"})
+    return base
+
+
+def _resolve_scene(scenes: list[dict] | None, scene_id: str | None, flags: set[str]) -> dict | None:
+    """在已按 flags 解析过状态的场景列表里查当前场景。"""
+    scenes = scenes or []
+    if not scene_id:
+        return scenes[0] if scenes else None
+    for s in scenes:
+        if s.get("id") == scene_id:
+            return s
+    return None
+
+
+def _format_plot_state(flags: set[str]) -> str:
+    if not flags:
+        return "（暂无特殊剧情标志，各场景/NPC 按其默认状态叙述）"
+    return (
+        "已激活标志：" + "、".join(sorted(flags))
+        + "。场景与 NPC 的当前样貌已据此切换——叙述务必贴合当前状态，不要退回到旧样貌。"
+    )
+
+
 def _compact_scenes(scenes: list[dict] | None, current_scene_id: str | None) -> str:
     """只保留当前和相邻场景的完整信息，其余只保留 id + name"""
     if not scenes:
@@ -113,6 +162,8 @@ def _compact_npcs(
             "description": (n.get("description") or "")[:100],
             "personality": (n.get("personality") or "")[:60],
         }
+        if n.get("alive") is False:  # 剧情变体可将 NPC 标记为已死亡
+            item["status"] = "已死亡（不可再开口或行动）"
         if not hide_secrets:
             item["secrets"] = (n.get("secrets") or "")[:100]
         result.append(item)
@@ -258,7 +309,11 @@ def build_kp_context(
     teammates: list[Character] | None = None,
     rules_lookup_enabled: bool = False,
 ) -> list[dict]:
-    current_scene = _find_scene(module, session.current_scene_id)
+    # 剧情状态：按已激活 flags 把场景/NPC 解析到「当前样貌」，再喂给 KP（向后兼容：无 states 即原样）。
+    flags = _active_flags(session)
+    scenes = [_resolve_state(s, flags) for s in (module.scenes or [])]
+    npcs = [_resolve_state(n, flags) for n in (module.npcs or [])]
+    current_scene = _resolve_scene(scenes, session.current_scene_id, flags)
 
     teammates = teammates or []
     if teammates:
@@ -286,7 +341,7 @@ def build_kp_context(
     is_opening = not events
     if is_opening:
         npcs_info = _compact_npcs(
-            module.npcs, only_scene_id=session.current_scene_id, hide_secrets=True,
+            npcs, only_scene_id=session.current_scene_id, hide_secrets=True,
         )
         clues_info = "（线索是 KP 专属资料，开场绝不涉及；只能在玩家实际调查发现时才出现）"
     else:
@@ -295,7 +350,7 @@ def build_kp_context(
         visible_scene_ids = set((session.world_state or {}).get("visited_scenes") or [])
         if session.current_scene_id:
             visible_scene_ids.add(session.current_scene_id)
-        npcs_info = _compact_npcs(module.npcs, visible_scene_ids=visible_scene_ids)
+        npcs_info = _compact_npcs(npcs, visible_scene_ids=visible_scene_ids)
         clues_info = _compact_clues(module.clues, visible_scene_ids=visible_scene_ids)
 
     system_content = KP_SYSTEM_PROMPT.format(
@@ -303,8 +358,9 @@ def build_kp_context(
         module_title=module.title,
         module_description=module.description,
         world_setting=_format_json_compact(module.world_setting),
-        scenes_info=_compact_scenes(module.scenes, session.current_scene_id),
+        scenes_info=_compact_scenes(scenes, session.current_scene_id),
         current_scene=_format_json(current_scene) if current_scene else "初始场景",
+        plot_state=_format_plot_state(flags),
         npcs_info=npcs_info,
         clues_info=clues_info,
         player_info=player_info,
@@ -457,7 +513,9 @@ def build_team_context(
     all_teammates: list[Character] | None = None,
 ) -> list[dict]:
     """构建单个 AI 队友的决策上下文：场景 + 队伍 + 最近事件。"""
-    current_scene = _find_scene(module, session.current_scene_id)
+    flags = _active_flags(session)
+    scenes = [_resolve_state(s, flags) for s in (module.scenes or [])]
+    current_scene = _resolve_scene(scenes, session.current_scene_id, flags)
 
     # 队伍其他成员（一视同仁，无主角；房主角色也只是其中一名队友）
     party_members = [player_char] + [

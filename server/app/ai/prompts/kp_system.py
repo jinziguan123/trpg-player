@@ -19,6 +19,9 @@ KP_SYSTEM_PROMPT = """\
 ### 当前场景
 {current_scene}
 
+### 剧情状态（场景/NPC 会随剧情推进而改变，叙述须与当前状态一致）
+{plot_state}
+
 ### NPC 列表
 {npcs_info}
 

@@ -141,3 +141,85 @@ def test_create_module_persists_intro(db_factory):
     })
     assert module.world_setting["intro"] == "一段世界观铺陈"
     assert module.world_setting["player_brief"] == "你受托前来"
+
+
+# ---------- 剧情状态机（方案 A）：flags + 场景/NPC 状态变体 ----------
+
+def _seed_stateful(db, *, scenes, npcs, flags=None):
+    module = Module(title="状态测试", rule_system="coc", scenes=scenes, npcs=npcs, clues=[])
+    hero = Character(name="调查员", rule_system="coc", is_player=True)
+    db.add_all([module, hero])
+    db.commit()
+    session = GameSession(
+        module_id=module.id, player_character_id=hero.id,
+        status="active", current_scene_id=scenes[0]["id"],
+        world_state={"flags": flags or {}, "visited_scenes": [scenes[0]["id"]]},
+    )
+    db.add(session)
+    db.commit()
+    return module, hero, session
+
+
+def test_scene_variant_overrides_when_flag_active(db_factory):
+    """flag 激活后，当前场景采用命中变体的 danger/atmosphere。"""
+    db = db_factory()
+    scene = {
+        "id": "basement", "name": "地下室", "description": "干燥的地下室",
+        "danger": "calm", "atmosphere": "霉味",
+        "states": [{"when": ["basement_flooded"], "danger": "deadly",
+                    "atmosphere": "齐腰黑水、电线垂落", "description": "灌满黑水的地下室"}],
+    }
+    module, hero, session = _seed_stateful(
+        db, scenes=[scene], npcs=[], flags={"basement_flooded": True},
+    )
+    # 已有事件 -> 走运行时分支（当前场景整块进提示）
+    ev = EventLog(session_id=session.id, sequence_num=1, event_type="narration",
+                  content="进行中", actor_name="KP")
+    sys = ctx.build_kp_context(session, module, hero, [ev])[0]["content"]
+    assert "deadly" in sys and "齐腰黑水" in sys
+    assert "灌满黑水的地下室" in sys
+
+
+def test_scene_default_when_flag_inactive(db_factory):
+    """flag 未激活时，场景回到默认状态（向后兼容）。"""
+    db = db_factory()
+    scene = {
+        "id": "basement", "name": "地下室", "description": "干燥的地下室",
+        "danger": "calm", "atmosphere": "霉味",
+        "states": [{"when": ["basement_flooded"], "danger": "deadly", "atmosphere": "齐腰黑水"}],
+    }
+    module, hero, session = _seed_stateful(db, scenes=[scene], npcs=[], flags={})
+    ev = EventLog(session_id=session.id, sequence_num=1, event_type="narration",
+                  content="进行中", actor_name="KP")
+    sys = ctx.build_kp_context(session, module, hero, [ev])[0]["content"]
+    assert "霉味" in sys
+    assert "齐腰黑水" not in sys
+
+
+def test_npc_variant_and_plot_state_block(db_factory):
+    """NPC 死亡变体被标注；剧情状态区列出已激活标志。"""
+    db = db_factory()
+    npc = {
+        "id": "butler", "name": "管家", "description": "恭顺的老管家",
+        "personality": "谦卑", "initial_location": "basement",
+        "states": [{"when": ["butler_dead"], "alive": False}],
+    }
+    scene = {"id": "basement", "name": "地下室", "description": "地下室"}
+    module, hero, session = _seed_stateful(
+        db, scenes=[scene], npcs=[npc], flags={"butler_dead": True},
+    )
+    ev = EventLog(session_id=session.id, sequence_num=1, event_type="narration",
+                  content="进行中", actor_name="KP")
+    sys = ctx.build_kp_context(session, module, hero, [ev])[0]["content"]
+    assert "已死亡" in sys              # NPC 变体生效
+    assert "butler_dead" in sys         # 剧情状态区列出激活标志
+
+
+def test_no_flags_plot_state_is_neutral(db_factory):
+    """无任何 flag 时剧情状态区给中性占位，不污染叙事。"""
+    db = db_factory()
+    module, hero, session = _seed_stateful(
+        db, scenes=[{"id": "room", "name": "房间", "description": "房间"}], npcs=[], flags={},
+    )
+    sys = ctx.build_kp_context(session, module, hero, [])[0]["content"]
+    assert "暂无特殊剧情标志" in sys
