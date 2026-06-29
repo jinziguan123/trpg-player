@@ -4,13 +4,14 @@ import { toast } from 'sonner'
 import { api } from '../api/client'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiReturnArrow, GiScrollUnfurled, GiPadlock } from 'react-icons/gi'
-import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch } from 'lucide-react'
+import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch, Map as MapIcon, Loader2 } from 'lucide-react'
 import { ModuleGraph } from '../components/module/ModuleGraph'
 import { ModuleTimeline } from '../components/module/ModuleTimeline'
+import { MapView, type TileMap } from '../components/module/MapView'
 
 interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string }
 interface NpcState { when?: string[]; personality?: string; initial_location?: string; alive?: boolean }
-interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[]; states?: SceneState[] }
+interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[]; states?: SceneState[]; map?: TileMap }
 interface NPC { id: string; name?: string; description?: string; personality?: string; background?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number>; attributes?: Record<string, number>; states?: NpcState[] }
 interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string }
 interface Trigger { id: string; when?: string; set_flags?: string[]; clear_flags?: string[]; description?: string }
@@ -63,7 +64,9 @@ export function ModuleDetailPage() {
   const isNew = !id
   const [data, setData] = useState<ModuleData>(BLANK)
   const [edit, setEdit] = useState(isNew)
-  const [view, setView] = useState<'detail' | 'graph' | 'timeline'>('detail')
+  const [view, setView] = useState<'detail' | 'graph' | 'timeline' | 'map'>('detail')
+  const [mapSceneId, setMapSceneId] = useState('')
+  const [genMaps, setGenMaps] = useState(false)
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
 
@@ -123,6 +126,18 @@ export function ModuleDetailPage() {
     } finally { setSaving(false) }
   }
 
+  const generateMaps = async (force: boolean) => {
+    if (isNew || !id) return
+    setGenMaps(true)
+    try {
+      const m = await api.post<ModuleData>(`/modules/${id}/maps${force ? '?force=true' : ''}`)
+      setData({ ...BLANK, ...m, world_setting: { ...BLANK.world_setting, ...(m.world_setting || {}) } })
+      toast.success('地图已生成')
+    } catch (e) {
+      toast.error(`地图生成失败：${e instanceof Error ? e.message : '未知错误'}`)
+    } finally { setGenMaps(false) }
+  }
+
   if (loading) return <p className="p-4" style={{ color: 'var(--color-text-secondary)' }}>加载中…</p>
 
   const tagsText = Array.isArray(data.world_setting.tags) ? (data.world_setting.tags as string[]).join('、') : wsStr(data.world_setting, 'tags')
@@ -145,6 +160,7 @@ export function ModuleDetailPage() {
               {tabBtn('detail', <FileText size={14} />, '详情')}
               {tabBtn('graph', <Network size={14} />, '关系图')}
               {tabBtn('timeline', <GitBranch size={14} />, '时间线')}
+              {tabBtn('map', <MapIcon size={14} />, '地图')}
             </div>
           )}
           {!isNew && !edit && view === 'detail' && (
@@ -161,7 +177,7 @@ export function ModuleDetailPage() {
 
       {!edit && (
         <div className="card mb-4 flex items-center gap-2 text-sm" style={{ borderColor: 'var(--color-danger)', color: 'var(--color-danger)' }}>
-          <Eye size={15} /> 剧透警告：{view === 'graph' ? '关系图含线索归属等剧情结构' : view === 'timeline' ? '时间线含剧情推进与 NPC 生死等结构' : '以下含 NPC 秘密、线索与真相'}。若你打算亲自游玩本模组，请勿继续阅读。
+          <Eye size={15} /> 剧透警告：{view === 'graph' ? '关系图含线索归属等剧情结构' : view === 'timeline' ? '时间线含剧情推进与 NPC 生死等结构' : view === 'map' ? '地图含场景布局与物体/NPC 位置' : '以下含 NPC 秘密、线索与真相'}。若你打算亲自游玩本模组，请勿继续阅读。
         </div>
       )}
 
@@ -169,6 +185,14 @@ export function ModuleDetailPage() {
         <ModuleGraph scenes={data.scenes} npcs={data.npcs} clues={data.clues} />
       ) : view === 'timeline' && !edit ? (
         <ModuleTimeline scenes={data.scenes} npcs={data.npcs} triggers={data.triggers} />
+      ) : view === 'map' && !edit ? (
+        <MapPanel
+          scenes={data.scenes}
+          sceneId={mapSceneId || (data.scenes[0]?.id ?? '')}
+          onPick={setMapSceneId}
+          generating={genMaps}
+          onGenerate={generateMaps}
+        />
       ) : (
       <>
       {/* 基本信息 */}
@@ -335,6 +359,50 @@ function AttrGrid({ attrs, edit, onChange }: { attrs?: Record<string, number>; e
             className="w-full px-1 py-0.5 rounded" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)' }} />
         </label>
       ))}
+    </div>
+  )
+}
+
+/** 地图视图：选场景 → 看其像素地图；可一键生成/重生成全部场景地图。 */
+function MapPanel({ scenes, sceneId, onPick, generating, onGenerate }: {
+  scenes: Scene[]
+  sceneId: string
+  onPick: (id: string) => void
+  generating: boolean
+  onGenerate: (force: boolean) => void
+}) {
+  const scene = scenes.find((s) => s.id === sceneId) || scenes[0]
+  const hasAnyMap = scenes.some((s) => s.map)
+  if (scenes.length === 0) {
+    return <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-secondary)' }}>暂无场景，无法生成地图</p>
+  }
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <Select value={scene?.id || ''} onValueChange={onPick}>
+          <SelectTrigger className="w-44"><SelectValue placeholder="选择场景" /></SelectTrigger>
+          <SelectContent>{scenes.map((s) => <SelectItem key={s.id} value={s.id}>{sceneName(s)}</SelectItem>)}</SelectContent>
+        </Select>
+        <button onClick={() => onGenerate(false)} disabled={generating}
+          className="btn-secondary flex items-center gap-1 text-sm" style={generating ? { opacity: 0.6 } : undefined}>
+          {generating ? <Loader2 size={14} className="animate-spin" /> : <MapIcon size={14} />}
+          {generating ? '生成中…（逐场景调用 AI，较慢）' : hasAnyMap ? '生成缺失地图' : '生成全部地图'}
+        </button>
+        {hasAnyMap && (
+          <button onClick={() => onGenerate(true)} disabled={generating} className="btn-secondary text-sm" style={generating ? { opacity: 0.6 } : undefined}>全部重生成</button>
+        )}
+      </div>
+      {scene?.map ? (
+        <div className="rounded-md p-3 overflow-auto" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
+          <MapView map={scene.map} />
+          {scene.map.notes && <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>布局说明：{scene.map.notes}</p>}
+          {(scene.map as { _issues?: string[] })._issues?.length ? (
+            <p className="text-xs mt-1" style={{ color: '#b8860b' }}>校验提示：{(scene.map as { _issues?: string[] })._issues!.join('；')}</p>
+          ) : null}
+        </div>
+      ) : (
+        <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-secondary)' }}>该场景暂无地图——点上方「生成」按钮由 AI 生成。</p>
+      )}
     </div>
   )
 }
