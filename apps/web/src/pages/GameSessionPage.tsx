@@ -14,8 +14,17 @@ import { Copy, Bot } from 'lucide-react'
 const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE):[^\]]*\]/g
 const OOC_RE = /（[^（）]*）|\([^()]*\)/g
 
+// KP 偶尔会在叙述里夹带 HTML 标签（如 <b>…</b>）。叙述用 ReactMarkdown 渲染但未开 rehype-raw
+// （刻意不渲染 LLM 产出的原始 HTML，防 XSS），故这些标签会原样显示。这里把常见格式化标签剥掉，
+// 保留标签内的正文（需要强调时 KP 应改用 markdown，如 **加粗**）。
+const HTML_TAG_RE = /<\/?(?:b|i|u|s|em|strong|br|p|span|div|h[1-6]|ul|ol|li|code|pre|blockquote|hr|a)\b[^>]*>/gi
+
 function stripCommandTags(text: string): string {
-  return text.replace(CMD_TAG_RE, '').replace(/\n{3,}/g, '\n\n').trim()
+  return text
+    .replace(CMD_TAG_RE, '')
+    .replace(HTML_TAG_RE, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 /** 拆出正式行动与 OOC（小括号场外）内容，与后端 split_ooc 对齐。 */
