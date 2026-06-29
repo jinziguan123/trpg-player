@@ -11,6 +11,9 @@ __pycache__/
 *.db-wal
 *.db-shm
 
+# 用户上传的地图素材（运行时文件，不入库）
+server/data/
+
 .env
 # 含 AI 密钥，不入库（密钥应从 .env / 设置页注入）
 ai_settings.json
