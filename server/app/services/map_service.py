@@ -265,6 +265,20 @@ async def generate_maps_for_module(db: Session, module_id: str, force: bool = Fa
                 s["map"] = await generate_scene_map(s, npcs, clues, scene_names, assets)
             except Exception:
                 logger.exception("生成场景地图失败：scene=%s", s.get("id"))
+        # 为「结构性」状态（打破墙/进水/露出新房间…）自动据基础图生成变体地图
+        if s.get("map"):
+            states = []
+            for st in (s.get("states") or []):
+                st = dict(st)
+                if st.get("structural") and (force or not st.get("map")):
+                    hint = f"{'/'.join(st.get('when') or [])}：{st.get('description') or st.get('atmosphere') or '场景结构发生改变'}"
+                    try:
+                        st["map"] = await generate_variant_map(s["map"], hint)
+                    except Exception:
+                        logger.exception("生成变体地图失败：scene=%s when=%s", s.get("id"), st.get("when"))
+                states.append(st)
+            if states:
+                s["states"] = states
         new_scenes.append(s)
     module.scenes = new_scenes
     db.commit()

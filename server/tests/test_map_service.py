@@ -103,6 +103,25 @@ def test_generate_maps_persists_and_skips(db_factory, monkeypatch):
     assert by_id2["s2"]["map"]["tiles"] == GOOD_MAP["tiles"]
 
 
+def test_structural_state_gets_variant_map(db_factory, monkeypatch):
+    """结构性状态在生成地图时自动获得变体图；非结构性的不生成。"""
+    monkeypatch.setattr(map_service, "get_llm", lambda: _FakeLLM())
+    db = db_factory()
+    mod = Module(title="t", rule_system="coc", npcs=[], clues=[], scenes=[{
+        "id": "s1", "name": "甲", "description": "房间", "connections": [],
+        "states": [
+            {"when": ["wall_broken"], "structural": True, "description": "西墙被打破"},
+            {"when": ["dark"], "structural": False, "atmosphere": "更暗了"},
+        ],
+    }])
+    db.add(mod); db.commit()
+    import asyncio
+    out = asyncio.run(map_service.generate_maps_for_module(db, mod.id))
+    states = out.scenes[0]["states"]
+    assert states[0]["map"]["tiles"] == GOOD_MAP["tiles"]   # 结构性 → 有变体图
+    assert "map" not in states[1]                            # 非结构性 → 不生成
+
+
 def test_current_scene_map_resolves_and_places_player(db_factory):
     """运行时：返回当前场景地图 + 玩家落在入口；flag 变体带 map 时用变体地图。"""
     db = db_factory()

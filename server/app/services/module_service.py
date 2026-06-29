@@ -35,7 +35,7 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       "atmosphere": "一句话氛围基调，给 KP 渲染用：以感官（声/味/光/体感）+ 情绪基调描述，如『腐臭、低压、木板随时塌陷』。不要写成剧透或台词",
       "connections": ["scene_2"],
       "states": [
-        {{"when": ["剧情标志名，如 basement_flooded"], "danger": "切换后的危险度", "atmosphere": "切换后的氛围", "description": "（可选）切换后的场景描述，覆盖默认"}}
+        {{"when": ["剧情标志名，如 basement_flooded"], "danger": "切换后的危险度", "atmosphere": "切换后的氛围", "description": "（可选）切换后的场景描述，覆盖默认", "structural": false}}
       ]
     }}
   ],
@@ -93,6 +93,8 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
     - 只为**确实会随剧情变化**的场景/NPC 写 states（变体），其余场景/NPC 的 states 留空数组 []；
       变体 when 引用剧情标志名，命中后覆盖对应字段（场景的 danger/atmosphere/description；NPC 的
       personality/initial_location/alive 等）。典型如「地下室进水后由 calm 变 deadly」「管家暴露后从谦卑变敌对并转移位置」。
+    - 场景 state 若**改变了物理布局**（打破/打通墙、坍塌、进水淹没、露出新房间/暗格等），标 "structural": true；
+      仅氛围/危险度变化（不动布局）则为 false。系统会为 structural=true 的状态**自动生成对应的变体地图**。
     - triggers 列出"何时该置/清哪个标志"：when 用自然语言写触发条件，set_flags/clear_flags 写标志名。
     - **标志名必须前后一致呼应**：triggers.set_flags 用到的标志，要在某场景/NPC 的 states.when 里被消费；
       反之 states.when 引用的标志，应有某个 trigger 负责置上。没有任何随剧情变化的内容时，triggers 留空数组 []。
