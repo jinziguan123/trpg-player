@@ -6,7 +6,7 @@ export interface TileMap {
   w: number
   h: number
   tiles: string[]
-  objects?: { name: string; x: number; y: number; kind?: string }[]
+  objects?: { name: string; x: number; y: number; kind?: string; asset_id?: string }[]
   entrances?: { name: string; x: number; y: number; to?: string }[]
   npc_pos?: { name: string; x: number; y: number }[]
   notes?: string
@@ -14,6 +14,12 @@ export interface TileMap {
 
 /** 运行时叠加的实体（玩家/NPC/敌人/物品当前位置）；不传则只渲染地图自带的物体/NPC/出口。 */
 export interface MapEntity { name: string; x: number; y: number; kind: 'player' | 'npc' | 'enemy' | 'item' }
+
+/** 素材库条目（精简）：地图按「类型默认素材 / 显式 asset_id」引用其 image_url 渲染。 */
+export interface AssetLite { id: string; kind: string; image_url: string; name?: string }
+
+// 地形字符 → 素材类型
+const GLYPH_KIND: Record<string, string> = { '#': 'wall', '.': 'floor', '+': 'door', '~': 'water', ':': 'rubble' }
 
 const TILE = 40
 const TILT = 58           // 地面绕 X 轴倾斜角度（俯角），制造透视 2.5D
@@ -47,10 +53,20 @@ function Billboard({ x, y, h, z = 1, children }: { x: number; y: number; h: numb
 }
 
 /** 把一张瓦片地图以「透视倾斜地面 + 直立 billboard」的 2.5D 渲染（CSS 3D，浏览器做透视）。滚轮缩放。 */
-export function MapView({ map, entities }: { map: TileMap; entities?: MapEntity[] }) {
+export function MapView({ map, entities, assets }: { map: TileMap; entities?: MapEntity[]; assets?: AssetLite[] }) {
   const W = map.w, H = map.h
   const planeW = W * TILE, planeH = H * TILE
   const at = (x: number, y: number) => (map.tiles[y] && map.tiles[y][x]) || ' '
+
+  // 素材解析：类型→默认素材（列表按新→旧，取第一个作默认）；id→素材（显式引用优先）。
+  const byKind: Record<string, string> = {}
+  const byId: Record<string, string> = {}
+  for (const a of assets || []) {
+    if (!(a.kind in byKind)) byKind[a.kind] = a.image_url
+    byId[a.id] = a.image_url
+  }
+  const spriteFor = (kind?: string, assetId?: string) =>
+    (assetId && byId[assetId]) || (kind ? byKind[kind] : undefined)
 
   // 固定视口 + 内部缩放/平移：滚轮缩放地图本身（容器不变大），可拖拽平移。
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -94,14 +110,18 @@ export function MapView({ map, entities }: { map: TileMap; entities?: MapEntity[
     for (let x = 0; x < W; x++) {
       const c = at(x, y)
       if (c === ' ') continue
+      // 地面：墙格底下铺 floor 素材；其余按字符类型取素材；缺素材回退色块。
+      const groundKind = c === '#' ? 'floor' : GLYPH_KIND[c]
+      const sprite = spriteFor(groundKind)
       floors.push(
         <div key={`f${x},${y}`} style={{
           position: 'absolute', left: x * TILE, top: y * TILE, width: TILE, height: TILE,
-          background: FLOOR[c] || FLOOR['.'],
-          boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.07)', imageRendering: 'pixelated',
+          background: sprite ? `center/100% 100% no-repeat url("${sprite}")` : (FLOOR[c] || FLOOR['.']),
+          boxShadow: sprite ? undefined : 'inset 0 0 0 1px rgba(0,0,0,0.07)',
+          imageRendering: 'pixelated',
         }}>
-          {c === '+' && <div style={{ position: 'absolute', inset: '20% 28%', background: '#8a5a2f', borderRadius: 2 }} />}
-          {c === ':' && <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(rgba(67,56,42,0.5) 1px, transparent 1.5px)', backgroundSize: '9px 9px' }} />}
+          {!sprite && c === '+' && <div style={{ position: 'absolute', inset: '20% 28%', background: '#8a5a2f', borderRadius: 2 }} />}
+          {!sprite && c === ':' && <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(rgba(67,56,42,0.5) 1px, transparent 1.5px)', backgroundSize: '9px 9px' }} />}
         </div>,
       )
     }
@@ -112,34 +132,45 @@ export function MapView({ map, entities }: { map: TileMap; entities?: MapEntity[
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       if (at(x, y) !== '#') continue
+      const ws = spriteFor('wall')
       stand.push({ y, key: `w${x},${y}`, el: (
         <Billboard x={x} y={y} h={WALL_H}>
-          <div style={{ width: TILE, height: WALL_H, background: 'linear-gradient(#7d6c52,#5b4d3a)', boxShadow: 'inset 0 2px 0 #8e7c60, 0 2px 3px rgba(0,0,0,0.35)' }} />
+          <div style={{ width: TILE, height: WALL_H, imageRendering: 'pixelated',
+            background: ws ? `center/100% 100% no-repeat url("${ws}")` : 'linear-gradient(#7d6c52,#5b4d3a)',
+            boxShadow: ws ? undefined : 'inset 0 2px 0 #8e7c60, 0 2px 3px rgba(0,0,0,0.35)' }} />
         </Billboard>
       ) })
     }
   }
-  const tok = (x: number, y: number, label: string, color: string, Icon: IconT, key: string) => stand.push({
-    y, key, el: (
-      <Billboard x={x} y={y} h={TOKEN_H} z={2}>
-        <div title={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto' }}>
-          <div style={{ width: 24, height: 24, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 3px rgba(0,0,0,0.5)' }}>
-            <Icon size={14} color="#fff" />
-          </div>
-          <div style={{ width: 2, height: 7, background: 'rgba(0,0,0,0.35)' }} />
-        </div>
-      </Billboard>
-    ),
-  })
+  // token：有素材则用素材精灵（直立），否则回退图标圆片。
+  const tok = (x: number, y: number, label: string, color: string, Icon: IconT, key: string, kind?: string, assetId?: string) => {
+    const sprite = spriteFor(kind, assetId)
+    stand.push({
+      y, key, el: (
+        <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2}>
+          {sprite ? (
+            <div title={label} style={{ width: TILE, height: TILE, imageRendering: 'pixelated', pointerEvents: 'auto', filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.5))', background: `center bottom/contain no-repeat url("${sprite}")` }} />
+          ) : (
+            <div title={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto' }}>
+              <div style={{ width: 24, height: 24, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 3px rgba(0,0,0,0.5)' }}>
+                <Icon size={14} color="#fff" />
+              </div>
+              <div style={{ width: 2, height: 7, background: 'rgba(0,0,0,0.35)' }} />
+            </div>
+          )}
+        </Billboard>
+      ),
+    })
+  }
   for (const o of map.objects || []) {
     const isItem = o.kind === 'item'
-    tok(o.x, o.y, o.name, isItem ? '#b8860b' : '#7a6248', isItem ? Box : o.kind === 'feature' ? Eye : Armchair, `o${o.x},${o.y},${o.name}`)
+    tok(o.x, o.y, o.name, isItem ? '#b8860b' : '#7a6248', isItem ? Box : o.kind === 'feature' ? Eye : Armchair, `o${o.x},${o.y},${o.name}`, o.kind || 'furniture', o.asset_id)
   }
-  for (const e of map.entrances || []) tok(e.x, e.y, e.name, '#2d7d46', DoorOpen, `e${e.x},${e.y},${e.name}`)
-  for (const n of map.npc_pos || []) tok(n.x, n.y, n.name, '#3b6ea5', User, `n${n.x},${n.y},${n.name}`)
+  for (const e of map.entrances || []) tok(e.x, e.y, e.name, '#2d7d46', DoorOpen, `e${e.x},${e.y},${e.name}`, 'door')
+  for (const n of map.npc_pos || []) tok(n.x, n.y, n.name, '#3b6ea5', User, `n${n.x},${n.y},${n.name}`, 'npc')
   for (const en of entities || []) {
     const m = { player: ['var(--color-accent)', Crosshair], npc: ['#3b6ea5', User], enemy: ['var(--color-danger)', Crosshair], item: ['#b8860b', Box] }[en.kind] as [string, IconT]
-    tok(en.x, en.y, en.name, m[0], m[1], `en${en.x},${en.y},${en.name}`)
+    tok(en.x, en.y, en.name, m[0], m[1], `en${en.x},${en.y},${en.name}`, en.kind)
   }
   stand.sort((a, b) => a.y - b.y)
 

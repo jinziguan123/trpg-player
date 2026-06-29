@@ -9,6 +9,7 @@ import { CharacterPanel } from '../components/character/CharacterPanel'
 import { PartyRoster } from '../components/game/PartyRoster'
 import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
+import { useMapAssets } from '../components/module/useMapAssets'
 import { GiReturnArrow, GiRollingDices } from 'react-icons/gi'
 import { Copy, Bot, Map as MapIcon, ChevronUp } from 'lucide-react'
 
@@ -91,6 +92,7 @@ export function GameSessionPage() {
   const [showPanel, setShowPanel] = useState(true)
   const [showMap, setShowMap] = useState(false)
   const [sceneMap, setSceneMap] = useState<SceneMapPayload | null>(null)
+  const mapAssets = useMapAssets()
 
   const primaryId = currentSession?.player_character_id ?? null
   // 多人：我在本房间认领的角色（无则回退到主角，兼容单人）
@@ -428,7 +430,7 @@ export function GameSessionPage() {
                   <span className="text-xs font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-text-accent)' }}><MapIcon size={12} />{sceneMap.scene_name || '当前场景'}</span>
                   <button onClick={() => setShowMap(false)} title="收起地图" style={{ color: 'var(--color-text-secondary)' }}><ChevronUp size={14} /></button>
                 </div>
-                <MapView map={sceneMap.map} entities={sceneMap.entities} />
+                <MapView map={sceneMap.map} entities={sceneMap.entities} assets={mapAssets} />
               </div>
             ) : (
               <p className="text-xs text-center py-3" style={{ color: 'var(--color-text-secondary)' }}>当前场景暂无地图——可在模组「地图」视图里生成。</p>

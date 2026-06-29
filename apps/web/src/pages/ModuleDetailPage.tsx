@@ -8,6 +8,7 @@ import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch, Map a
 import { ModuleGraph } from '../components/module/ModuleGraph'
 import { ModuleTimeline } from '../components/module/ModuleTimeline'
 import { MapView, type TileMap } from '../components/module/MapView'
+import { useMapAssets } from '../components/module/useMapAssets'
 
 interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string }
 interface NpcState { when?: string[]; personality?: string; initial_location?: string; alive?: boolean }
@@ -373,6 +374,7 @@ function MapPanel({ scenes, sceneId, onPick, generating, onGenerate }: {
 }) {
   const scene = scenes.find((s) => s.id === sceneId) || scenes[0]
   const hasAnyMap = scenes.some((s) => s.map)
+  const assets = useMapAssets()
   if (scenes.length === 0) {
     return <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-secondary)' }}>暂无场景，无法生成地图</p>
   }
@@ -394,7 +396,7 @@ function MapPanel({ scenes, sceneId, onPick, generating, onGenerate }: {
       </div>
       {scene?.map ? (
         <div className="rounded-md p-3 overflow-auto" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
-          <MapView map={scene.map} />
+          <MapView map={scene.map} assets={assets} />
           {scene.map.notes && <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>布局说明：{scene.map.notes}</p>}
           {(scene.map as { _issues?: string[] })._issues?.length ? (
             <p className="text-xs mt-1" style={{ color: '#b8860b' }}>校验提示：{(scene.map as { _issues?: string[] })._issues!.join('；')}</p>
