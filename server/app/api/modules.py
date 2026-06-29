@@ -1,9 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.schemas.module import ModuleRead, ModuleUploadResponse, ModuleWrite
 from app.services import map_service, module_service
+
+
+class VariantMapRequest(BaseModel):
+    hint: str = ""
 
 router = APIRouter(prefix="/api/modules", tags=["modules"])
 
@@ -106,6 +111,21 @@ async def generate_maps(module_id: str, force: bool = False, db: Session = Depen
     if not module:
         raise HTTPException(404, "模组不存在")
     return module
+
+
+@router.post("/{module_id}/scenes/{scene_id}/variant-map")
+async def variant_map(module_id: str, scene_id: str, body: VariantMapRequest, db: Session = Depends(get_db)):
+    """据某场景的基础地图 + 一句变化说明，AI 生成变体地图（不落库，前端载入编辑器后再保存到对应 state）。"""
+    module = module_service.get_module(db, module_id)
+    if not module:
+        raise HTTPException(404, "模组不存在")
+    scene = next((s for s in (module.scenes or []) if s.get("id") == scene_id), None)
+    if not scene:
+        raise HTTPException(404, "场景不存在")
+    base = scene.get("map")
+    if not base:
+        raise HTTPException(400, "该场景还没有基础地图，请先生成或手绘基础地图")
+    return await map_service.generate_variant_map(base, body.hint)
 
 
 @router.delete("/{module_id}")

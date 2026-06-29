@@ -33,11 +33,13 @@ function defaultTiles(w: number, h: number): string[] {
 }
 
 /** 俯视网格地图编辑器：刷地形（点/拖）、放置/移除物体（点选切换）、改尺寸、存回 scene.map。 */
-export function MapEditor({ initial, assets, onSave, onCancel }: {
+export function MapEditor({ initial, assets, onSave, onCancel, onAIGenerate, title }: {
   initial?: TileMap
   assets: AssetLite[]
   onSave: (m: TileMap) => void
   onCancel: () => void
+  onAIGenerate?: (hint: string) => Promise<TileMap | null>
+  title?: string
 }) {
   const [w, setW] = useState(initial?.w || 14)
   const [h, setH] = useState(initial?.h || 10)
@@ -50,6 +52,19 @@ export function MapEditor({ initial, assets, onSave, onCancel }: {
   const [objName, setObjName] = useState('')
   const [objAsset, setObjAsset] = useState('')
   const [painting, setPainting] = useState(false)
+  const [aiHint, setAiHint] = useState('')
+  const [aiBusy, setAiBusy] = useState(false)
+
+  const applyMap = (m: TileMap) => {
+    setW(m.w); setH(m.h); setTiles([...m.tiles])
+    setObjects([...(m.objects || []), ...(m.npc_pos || []).map((n) => ({ ...n, kind: 'npc' })), ...(m.entrances || []).map((e) => ({ ...e, kind: 'door' }))])
+    setNotes(m.notes || '')
+  }
+  const runAI = async () => {
+    if (!onAIGenerate) return
+    setAiBusy(true)
+    try { const m = await onAIGenerate(aiHint); if (m) applyMap(m) } finally { setAiBusy(false) }
+  }
 
   useEffect(() => {
     const up = () => setPainting(false)
@@ -92,6 +107,14 @@ export function MapEditor({ initial, assets, onSave, onCancel }: {
 
   return (
     <div>
+      {title && <div className="text-sm font-semibold mb-2" style={{ color: 'var(--color-text-accent)' }}>{title}</div>}
+      {/* AI 生成（变体地图据基础图改） */}
+      {onAIGenerate && (
+        <div className="flex items-center gap-2 mb-2 p-2 rounded flex-wrap" style={{ background: 'var(--color-bg-tertiary)' }}>
+          <input value={aiHint} onChange={(e) => setAiHint(e.target.value)} placeholder="描述变化，如「西墙被打破，露出北侧密室」「管家移动到门口」" className="px-2 py-1 rounded text-sm flex-1 min-w-[200px]" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }} />
+          <button onClick={runAI} disabled={aiBusy} className="btn-secondary text-sm" style={aiBusy ? { opacity: 0.6 } : undefined}>{aiBusy ? 'AI 生成中…' : 'AI 据基础图生成'}</button>
+        </div>
+      )}
       {/* 工具栏 */}
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>地形</span>

@@ -64,6 +64,44 @@ MAP_GEN_PROMPT = """你是 TRPG 像素地图设计师。请把下面这个【场
 """
 
 
+VARIANT_MAP_PROMPT = """据下面的【基础地图】生成一张【变体地图】，体现这一剧情变化：{hint}
+
+只输出 JSON，结构与基础地图相同（w/h/tiles/objects/entrances/npc_pos/notes）。要求：
+1. w/h 必须与基础地图**完全一致**；在原布局上做**局部**改动，不要重画整张：
+   - 打通/打破墙：把对应的 `#` 改成 `+`（门）或 `.`（地板）；
+   - 露出新房间：把原本是墙/虚空（# 或空格）的位置补成地板 `.` 并围上墙 `#`；
+   - NPC/物体移动或出现/消失：改 npc_pos / objects 的坐标或增删。
+2. 坐标规则同基础地图：tiles 每行长度=w、共 h 行；objects/npc_pos 落在地板，entrances 落在门。
+3. 不剧透：名称中性。其余未变化的部分尽量与基础地图保持一致。
+
+地形字符表：
+{legend}
+
+【基础地图】：
+{base_json}
+"""
+
+
+async def generate_variant_map(base_map: dict, hint: str) -> dict:
+    """据基础地图 + 一句变化说明，让 LLM 产出同尺寸的变体地图（用于 flag 触发的地图改变）。"""
+    llm = get_llm()
+    raw = await llm.complete(
+        messages=[{"role": "user", "content": VARIANT_MAP_PROMPT.format(
+            hint=hint or "（未指定，按剧情合理推断一处变化）",
+            legend="\n".join(f"  {k!r} = {v}" for k, v in LEGEND.items()),
+            base_json=json.dumps({k: base_map.get(k) for k in ("w", "h", "tiles", "objects", "entrances", "npc_pos")}, ensure_ascii=False),
+        )}],
+        response_format={"type": "json_object"},
+        temperature=0.4,
+        max_tokens=4096,
+    )
+    m = _extract_json(raw)
+    issues = validate_map(m)
+    if issues:
+        m["_issues"] = issues
+    return m
+
+
 def _scene_label(scene: dict) -> str:
     return scene.get("name") or scene.get("title") or scene.get("id") or "(未命名)"
 

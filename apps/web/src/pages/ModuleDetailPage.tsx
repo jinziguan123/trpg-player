@@ -11,7 +11,7 @@ import { MapView, type TileMap } from '../components/module/MapView'
 import { MapEditor } from '../components/module/MapEditor'
 import { useMapAssets } from '../components/module/useMapAssets'
 
-interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string }
+interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string; map?: TileMap }
 interface NpcState { when?: string[]; personality?: string; initial_location?: string; alive?: boolean }
 interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[]; states?: SceneState[]; map?: TileMap }
 interface NPC { id: string; name?: string; description?: string; personality?: string; background?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number>; attributes?: Record<string, number>; states?: NpcState[] }
@@ -140,9 +140,15 @@ export function ModuleDetailPage() {
     } finally { setGenMaps(false) }
   }
 
-  const saveSceneMap = async (sceneId: string, map: TileMap) => {
+  // variantIdx<0 写基础 scene.map；否则写 scene.states[variantIdx].map（flag 触发的变体地图）
+  const saveSceneMap = async (sceneId: string, map: TileMap, variantIdx = -1) => {
     if (isNew || !id) return
-    const scenes = data.scenes.map((s) => (s.id === sceneId ? { ...s, map } : s))
+    const scenes = data.scenes.map((s) => {
+      if (s.id !== sceneId) return s
+      if (variantIdx < 0) return { ...s, map }
+      const states = (s.states || []).map((st, i) => (i === variantIdx ? { ...st, map } : st))
+      return { ...s, states }
+    })
     setData((d) => ({ ...d, scenes }))
     try {
       await api.put(`/modules/${id}`, {
@@ -153,6 +159,12 @@ export function ModuleDetailPage() {
     } catch (e) {
       toast.error(`保存失败：${e instanceof Error ? e.message : '未知错误'}`)
     }
+  }
+
+  const genVariantMap = async (sceneId: string, hint: string): Promise<TileMap | null> => {
+    if (!id) return null
+    try { return await api.post<TileMap>(`/modules/${id}/scenes/${sceneId}/variant-map`, { hint }) }
+    catch (e) { toast.error(`变体生成失败：${e instanceof Error ? e.message : '未知错误'}`); return null }
   }
 
   if (loading) return <p className="p-4" style={{ color: 'var(--color-text-secondary)' }}>加载中…</p>
@@ -210,6 +222,7 @@ export function ModuleDetailPage() {
           generating={genMaps}
           onGenerate={generateMaps}
           onSaveMap={saveSceneMap}
+          onVariantAI={genVariantMap}
         />
       ) : (
       <>
@@ -382,30 +395,39 @@ function AttrGrid({ attrs, edit, onChange }: { attrs?: Record<string, number>; e
 }
 
 /** 地图视图：选场景 → 看其像素地图；可一键生成/重生成全部场景地图。 */
-function MapPanel({ scenes, sceneId, onPick, generating, onGenerate, onSaveMap }: {
+function MapPanel({ scenes, sceneId, onPick, generating, onGenerate, onSaveMap, onVariantAI }: {
   scenes: Scene[]
   sceneId: string
   onPick: (id: string) => void
   generating: boolean
   onGenerate: (force: boolean) => void
-  onSaveMap: (sceneId: string, map: TileMap) => void
+  onSaveMap: (sceneId: string, map: TileMap, variantIdx?: number) => void
+  onVariantAI: (sceneId: string, hint: string) => Promise<TileMap | null>
 }) {
   const scene = scenes.find((s) => s.id === sceneId) || scenes[0]
   const hasAnyMap = scenes.some((s) => s.map)
   const assets = useMapAssets()
   const [editing, setEditing] = useState(false)
-  // 切换场景时退出编辑，避免把上个场景的编辑套到新场景
-  useEffect(() => { setEditing(false) }, [sceneId])
+  const [variant, setVariant] = useState(-1)   // -1=基础；否则 scene.states 下标
+  // 切换场景时退出编辑、回到基础
+  useEffect(() => { setEditing(false); setVariant(-1) }, [sceneId])
   if (scenes.length === 0) {
     return <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-secondary)' }}>暂无场景，无法生成地图</p>
   }
+  const states = (scene?.states || []).filter((st) => (st.when || []).length > 0)
+  const variantLabel = (st: SceneState) => `变体：${(st.when || []).join('/')}`
+  // 当前查看/编辑的地图：基础或变体（变体未画过则以基础为起点）
+  const shownMap = variant < 0 ? scene?.map : (states[variant]?.map || scene?.map)
+
   if (editing && scene) {
     return (
       <MapEditor
-        initial={scene.map}
+        title={variant < 0 ? '编辑基础地图' : variantLabel(states[variant])}
+        initial={shownMap}
         assets={assets}
-        onSave={(m) => { onSaveMap(scene.id, m); setEditing(false) }}
+        onSave={(m) => { onSaveMap(scene.id, m, variant < 0 ? -1 : (scene.states || []).indexOf(states[variant])); setEditing(false) }}
         onCancel={() => setEditing(false)}
+        onAIGenerate={variant < 0 ? undefined : (hint) => onVariantAI(scene.id, hint)}
       />
     )
   }
@@ -413,33 +435,42 @@ function MapPanel({ scenes, sceneId, onPick, generating, onGenerate, onSaveMap }
     <div>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         <Select value={scene?.id || ''} onValueChange={onPick}>
-          <SelectTrigger className="w-44"><SelectValue placeholder="选择场景" /></SelectTrigger>
+          <SelectTrigger className="w-40"><SelectValue placeholder="选择场景" /></SelectTrigger>
           <SelectContent>{scenes.map((s) => <SelectItem key={s.id} value={s.id}>{sceneName(s)}</SelectItem>)}</SelectContent>
         </Select>
+        {states.length > 0 && (
+          <Select value={String(variant)} onValueChange={(v) => setVariant(Number(v))}>
+            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="-1">基础地图</SelectItem>
+              {states.map((st, i) => <SelectItem key={i} value={String(i)}>{variantLabel(st)}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
         <button onClick={() => onGenerate(false)} disabled={generating}
           className="btn-secondary flex items-center gap-1 text-sm" style={generating ? { opacity: 0.6 } : undefined}>
           {generating ? <Loader2 size={14} className="animate-spin" /> : <MapIcon size={14} />}
-          {generating ? '生成中…（逐场景调用 AI，较慢）' : hasAnyMap ? '生成缺失地图' : '生成全部地图'}
+          {generating ? '生成中…' : hasAnyMap ? '生成缺失地图' : '生成全部地图'}
         </button>
-        {hasAnyMap && (
+        {hasAnyMap && variant < 0 && (
           <button onClick={() => onGenerate(true)} disabled={generating} className="btn-secondary text-sm" style={generating ? { opacity: 0.6 } : undefined}>全部重生成</button>
         )}
         {scene && (
           <button onClick={() => setEditing(true)} className="btn-secondary flex items-center gap-1 text-sm">
-            <Pencil size={14} /> {scene.map ? '编辑地图' : '手绘地图'}
+            <Pencil size={14} /> {shownMap ? '编辑' : (variant < 0 ? '手绘地图' : '绘制此变体')}
           </button>
         )}
       </div>
-      {scene?.map ? (
+      {variant >= 0 && !states[variant]?.map && (
+        <p className="text-xs mb-2" style={{ color: 'var(--color-text-secondary)' }}>此变体尚未单独绘制，下面显示的是基础地图——点「绘制此变体」可基于基础图改（含 AI 生成）。</p>
+      )}
+      {shownMap ? (
         <div className="rounded-md p-3 overflow-auto" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
-          <MapView map={scene.map} assets={assets} />
-          {scene.map.notes && <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>布局说明：{scene.map.notes}</p>}
-          {(scene.map as { _issues?: string[] })._issues?.length ? (
-            <p className="text-xs mt-1" style={{ color: '#b8860b' }}>校验提示：{(scene.map as { _issues?: string[] })._issues!.join('；')}</p>
-          ) : null}
+          <MapView map={shownMap} assets={assets} />
+          {shownMap.notes && <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>布局说明：{shownMap.notes}</p>}
         </div>
       ) : (
-        <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-secondary)' }}>该场景暂无地图——点上方「生成」由 AI 生成，或「手绘地图」自己画。</p>
+        <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-secondary)' }}>该场景暂无地图——点「生成」由 AI 生成，或「手绘地图」自己画。</p>
       )}
     </div>
   )

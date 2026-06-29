@@ -102,3 +102,19 @@ def test_current_scene_map_resolves_and_places_player(db_factory):
     db.commit()
     out2 = map_service.current_scene_map(db, sess)
     assert out2["map"]["tiles"] == alt_map["tiles"]
+
+
+def test_generate_variant_map(monkeypatch):
+    """据基础图 + 变化说明产出同尺寸变体图（含校验），用 fake LLM。"""
+    import asyncio
+    variant = {"w": 5, "h": 3, "tiles": ["#####", "+...+", "#####"],
+               "objects": [], "entrances": [{"name": "新口", "x": 4, "y": 1}], "npc_pos": []}
+
+    class FakeLLM2:
+        async def complete(self, messages, **kw):
+            assert "西墙被打破" in messages[0]["content"]  # hint 进了提示
+            return json.dumps(variant, ensure_ascii=False)
+    monkeypatch.setattr(map_service, "get_llm", lambda: FakeLLM2())
+    out = asyncio.run(map_service.generate_variant_map(GOOD_MAP, "西墙被打破，露出新出口"))
+    assert out["tiles"] == variant["tiles"]
+    assert "_issues" not in out  # 校验通过
