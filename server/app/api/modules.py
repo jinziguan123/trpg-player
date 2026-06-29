@@ -13,6 +13,20 @@ class VariantMapRequest(BaseModel):
 router = APIRouter(prefix="/api/modules", tags=["modules"])
 
 
+def _decode_text(content: bytes) -> str:
+    """容错解码文本：UTF-8(含BOM) → GB18030(覆盖 GBK/GB2312) → Big5 → UTF-16 依次尝试。
+
+    中文 txt 常是 GBK 编码（非 UTF-8），直接 utf-8 解码会抛 UnicodeDecodeError。
+    全部失败（多半是二进制文件）时抛友好错误而非 500。
+    """
+    for enc in ("utf-8-sig", "gb18030", "big5", "utf-16"):
+        try:
+            return content.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    raise HTTPException(422, "无法识别文件编码（可能是二进制文件）。请上传 PDF / Word(.docx) / 纯文本(UTF-8 或 GBK)")
+
+
 async def _extract_text(file: UploadFile) -> str:
     content = await file.read()
     filename = (file.filename or "").lower()
@@ -33,8 +47,13 @@ async def _extract_text(file: UploadFile) -> str:
         from docx import Document
         doc = Document(io.BytesIO(content))
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    elif filename.endswith(".doc"):
+        raise HTTPException(422, f"「{file.filename}」是旧版 Word(.doc)，暂不支持；请另存为 .docx 或 PDF 后上传")
     else:
-        return content.decode("utf-8")
+        try:
+            return _decode_text(content)
+        except HTTPException as e:
+            raise HTTPException(e.status_code, f"「{file.filename}」{e.detail}")
 
 
 @router.post("/upload", response_model=ModuleUploadResponse)

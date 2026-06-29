@@ -5,9 +5,18 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.api.modules import _decode_text
 from app.database import get_db
 from app.main import app
 from app.models import Base, Module  # noqa: F401 注册表
+
+
+def test_decode_text_handles_non_utf8():
+    """上传的中文 txt 常是 GBK 编码——以前直接 utf-8 解码会 500，现在能容错解码。"""
+    s = "失踪的考古队·墓室秘闻"
+    assert _decode_text(s.encode("utf-8")) == s          # UTF-8
+    assert _decode_text(s.encode("gb18030")) == s        # GBK/GB2312（报错那种）
+    assert _decode_text("﻿".encode("utf-8") + s.encode("utf-8")) == s  # 带 BOM
 
 
 @pytest.fixture
