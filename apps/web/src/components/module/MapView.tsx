@@ -8,7 +8,7 @@ export interface TileMap {
   tiles: string[]
   objects?: { name: string; x: number; y: number; kind?: string; asset_id?: string }[]
   entrances?: { name: string; x: number; y: number; to?: string }[]
-  npc_pos?: { name: string; x: number; y: number }[]
+  npc_pos?: { name: string; x: number; y: number; hostile?: boolean }[]
   notes?: string
 }
 
@@ -133,9 +133,11 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
     for (let x = 0; x < W; x++) {
       if (at(x, y) !== '#') continue
       const ws = spriteFor('wall')
+      // 最外侧（边界）墙半透明：避免近处外墙挡住内部，方便玩家观察场景
+      const isBorder = x === 0 || x === W - 1 || y === 0 || y === H - 1
       stand.push({ y, key: `w${x},${y}`, el: (
         <Billboard x={x} y={y} h={WALL_H}>
-          <div style={{ width: TILE, height: WALL_H, imageRendering: 'pixelated',
+          <div style={{ width: TILE, height: WALL_H, imageRendering: 'pixelated', opacity: isBorder ? 0.45 : 1,
             background: ws ? `center/100% 100% no-repeat url("${ws}")` : 'linear-gradient(#7d6c52,#5b4d3a)',
             boxShadow: ws ? undefined : 'inset 0 2px 0 #8e7c60, 0 2px 3px rgba(0,0,0,0.35)' }} />
         </Billboard>
@@ -167,7 +169,9 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
     tok(o.x, o.y, o.name, isItem ? '#b8860b' : '#7a6248', isItem ? Box : o.kind === 'feature' ? Eye : Armchair, `o${o.x},${o.y},${o.name}`, o.kind || 'furniture', o.asset_id)
   }
   for (const e of map.entrances || []) tok(e.x, e.y, e.name, '#2d7d46', DoorOpen, `e${e.x},${e.y},${e.name}`, 'door')
-  for (const n of map.npc_pos || []) tok(n.x, n.y, n.name, '#3b6ea5', User, `n${n.x},${n.y},${n.name}`, 'npc')
+  for (const n of map.npc_pos || []) n.hostile
+    ? tok(n.x, n.y, n.name, 'var(--color-danger)', Crosshair, `n${n.x},${n.y},${n.name}`, 'enemy')
+    : tok(n.x, n.y, n.name, '#3b6ea5', User, `n${n.x},${n.y},${n.name}`, 'npc')
   for (const en of entities || []) {
     const m = { player: ['var(--color-accent)', Crosshair], npc: ['#3b6ea5', User], enemy: ['var(--color-danger)', Crosshair], item: ['#b8860b', Box] }[en.kind] as [string, IconT]
     tok(en.x, en.y, en.name, m[0], m[1], `en${en.x},${en.y},${en.name}`, en.kind)

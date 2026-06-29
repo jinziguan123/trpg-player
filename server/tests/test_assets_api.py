@@ -78,6 +78,22 @@ def test_reject_non_image(client):
     assert r.status_code == 400
 
 
+def test_set_default(client):
+    c, _ = client
+    a = _upload(c, name="地板A", kind="floor").json()
+    b = _upload(c, name="地板B", kind="floor").json()
+    # 设 b 为默认 → b 在前、is_default True；a 取消
+    assert c.post(f"/api/assets/{b['id']}/default").json()["is_default"] is True
+    floors = c.get("/api/assets", params={"kind": "floor"}).json()
+    assert floors[0]["id"] == b["id"] and floors[0]["is_default"] is True
+    assert next(x for x in floors if x["id"] == a["id"])["is_default"] is False
+    # 改设 a → 互斥
+    c.post(f"/api/assets/{a['id']}/default")
+    floors2 = c.get("/api/assets", params={"kind": "floor"}).json()
+    assert floors2[0]["id"] == a["id"]
+    assert sum(1 for x in floors2 if x["is_default"]) == 1
+
+
 def test_builtin_not_deletable(client):
     c, Session = client
     db = Session()

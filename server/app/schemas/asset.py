@@ -14,6 +14,7 @@ class AssetRead(BaseModel):
     source: str
     license: str
     builtin: bool
+    is_default: bool = False
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}

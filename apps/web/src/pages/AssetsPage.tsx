@@ -5,9 +5,9 @@ import { api, getApiBase, getPlayerToken, mediaUrl } from '../api/client'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiReturnArrow } from 'react-icons/gi'
-import { Upload, Trash2, ImageIcon } from 'lucide-react'
+import { Upload, Trash2, ImageIcon, X } from 'lucide-react'
 
-interface Asset { id: string; name: string; kind: string; tags: string[]; image_url: string; builtin: boolean }
+interface Asset { id: string; name: string; kind: string; tags: string[]; image_url: string; builtin: boolean; is_default: boolean; source?: string; license?: string }
 
 const KINDS: { value: string; label: string }[] = [
   { value: 'floor', label: '地板' },
@@ -35,6 +35,7 @@ export function AssetsPage() {
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [filter, setFilter] = useState('all')
+  const [detail, setDetail] = useState<Asset | null>(null)
 
   const fetchAssets = useCallback(async () => {
     try { setAssets(await api.get<Asset[]>('/assets')) } catch { /* 静默 */ }
@@ -71,14 +72,19 @@ export function AssetsPage() {
   }
 
   const remove = async (id: string) => {
-    try { await api.delete(`/assets/${id}`); fetchAssets(); toast.success('素材已删除') }
+    try { await api.delete(`/assets/${id}`); setDetail(null); fetchAssets(); toast.success('素材已删除') }
     catch (e) { toast.error(e instanceof Error ? e.message : '删除失败') }
   }
 
+  const setDefault = async (a: Asset) => {
+    try {
+      const updated = await api.post<Asset>(`/assets/${a.id}/default`)
+      setDetail((d) => (d && d.id === a.id ? { ...d, is_default: true } : d))
+      void updated; fetchAssets(); toast.success(`已设为「${kindLabel(a.kind)}」默认素材`)
+    } catch { toast.error('设置失败') }
+  }
+
   const shown = filter === 'all' ? assets : assets.filter((a) => a.kind === filter)
-  // 渲染器以「每类最新上传」为默认素材；这里据同序（列表为 created_at 倒序）标出默认。
-  const defaultIdByKind: Record<string, string> = {}
-  for (const a of assets) if (!(a.kind in defaultIdByKind)) defaultIdByKind[a.kind] = a.id
 
   return (
     <div className="max-w-4xl">
@@ -147,9 +153,9 @@ export function AssetsPage() {
         <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))' }}>
           {shown.map((a) => (
             <div key={a.id} className="card !p-2 relative">
-              <div className="rounded mb-1 flex items-center justify-center" style={{ height: 80, background: 'repeating-conic-gradient(#0001 0% 25%, transparent 0% 50%) 50%/16px 16px, var(--color-bg-tertiary)' }}>
+              <button onClick={() => setDetail(a)} title="查看详情" className="rounded mb-1 flex items-center justify-center w-full cursor-pointer" style={{ height: 80, background: 'repeating-conic-gradient(#0001 0% 25%, transparent 0% 50%) 50%/16px 16px, var(--color-bg-tertiary)' }}>
                 <img src={mediaUrl(a.image_url)} alt={a.name} style={{ maxWidth: '90%', maxHeight: 72, imageRendering: 'pixelated' }} />
-              </div>
+              </button>
               <div className="flex items-center justify-between gap-1">
                 <span className="text-xs truncate" title={a.name}>{a.name}</span>
                 {!a.builtin && (
@@ -160,11 +166,42 @@ export function AssetsPage() {
               </div>
               <div className="flex items-center gap-1 mt-0.5 flex-wrap">
                 <span className="badge !text-[10px]">{kindLabel(a.kind)}</span>
-                {defaultIdByKind[a.kind] === a.id && <span className="badge !text-[10px]" style={{ color: 'var(--color-success)', borderColor: 'var(--color-success)' }}>默认</span>}
+                {a.is_default && <span className="badge !text-[10px]" style={{ color: 'var(--color-success)', borderColor: 'var(--color-success)' }}>默认</span>}
               </div>
               {a.tags.length > 0 && <div className="text-[10px] mt-0.5 truncate" style={{ color: 'var(--color-text-secondary)' }}>{a.tags.join('、')}</div>}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* 素材详情弹窗 */}
+      {detail && (
+        <div onClick={() => setDetail(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: 360, maxWidth: '90vw' }}>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="card-title !mb-0">{detail.name}</h3>
+              <button onClick={() => setDetail(null)} style={{ color: 'var(--color-text-secondary)' }}><X size={16} /></button>
+            </div>
+            <div className="rounded mb-3 flex items-center justify-center" style={{ height: 140, background: 'repeating-conic-gradient(#0001 0% 25%, transparent 0% 50%) 50%/20px 20px, var(--color-bg-tertiary)' }}>
+              <img src={mediaUrl(detail.image_url)} alt={detail.name} style={{ maxWidth: '90%', maxHeight: 128, imageRendering: 'pixelated' }} />
+            </div>
+            <div className="text-xs space-y-1" style={{ color: 'var(--color-text-secondary)' }}>
+              <div>类型：{kindLabel(detail.kind)}{detail.is_default && <span className="badge !text-[10px] ml-2" style={{ color: 'var(--color-success)', borderColor: 'var(--color-success)' }}>默认</span>}</div>
+              {detail.tags.length > 0 && <div>标签：{detail.tags.join('、')}</div>}
+              {detail.source && <div>来源：{detail.source}</div>}
+              {detail.license && <div>许可：{detail.license}</div>}
+            </div>
+            <div className="flex gap-2 mt-3">
+              <button onClick={() => setDefault(detail)} disabled={detail.is_default} className="btn-primary text-sm flex-1" style={detail.is_default ? { opacity: 0.5 } : undefined}>
+                {detail.is_default ? '已是该类默认' : '设为该类默认'}
+              </button>
+              {!detail.builtin && (
+                <ConfirmDialog title="删除素材" description={`确定删除「${detail.name}」？`} confirmLabel="删除" onConfirm={() => remove(detail.id)}>
+                  {(open) => <button onClick={open} className="btn-secondary text-sm flex items-center gap-1" style={{ color: 'var(--color-danger)' }}><Trash2 size={13} /> 删除</button>}
+                </ConfirmDialog>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -22,3 +22,5 @@ class Asset(Base, UUIDMixin, TimestampMixin):
     source: Mapped[str] = mapped_column(Text, default="")
     license: Mapped[str] = mapped_column(default="")
     builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 该类型的默认素材（地图按类型取默认）。每个 kind 至多一个 True。
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -22,7 +22,8 @@ def list_assets(kind: str | None = None, db: Session = Depends(get_db)):
     q = db.query(Asset)
     if kind:
         q = q.filter(Asset.kind == kind)
-    return q.order_by(Asset.created_at.desc()).all()
+    # 默认素材排在前：渲染器按类型取「第一个命中」即得默认（is_default 全局靠前，故每类默认者居前）。
+    return q.order_by(Asset.is_default.desc(), Asset.created_at.desc()).all()
 
 
 @router.post("", response_model=AssetRead)
@@ -70,6 +71,20 @@ def asset_image(asset_id: str, db: Session = Depends(get_db)):
     if not path.exists():
         raise HTTPException(404, "素材文件丢失")
     return FileResponse(path, media_type=asset.mime)
+
+
+@router.post("/{asset_id}/default", response_model=AssetRead)
+def set_default(asset_id: str, db: Session = Depends(get_db)):
+    """把该素材设为其类型的默认（同类型其它素材取消默认）。"""
+    asset = db.get(Asset, asset_id)
+    if not asset:
+        raise HTTPException(404, "素材不存在")
+    for other in db.query(Asset).filter(Asset.kind == asset.kind, Asset.is_default.is_(True)).all():
+        other.is_default = False
+    asset.is_default = True
+    db.commit()
+    db.refresh(asset)
+    return asset
 
 
 @router.delete("/{asset_id}")
