@@ -12,6 +12,31 @@ _CHARACTERISTIC_ALIAS = {
     "灵感": "INT", "知识": "EDU",  # CoC 7e：灵感=INT 直接判定，知识=EDU
 }
 
+# 「达成等级」中文标签：纯按骰值算出的六档（与要求难度无关），用于检定提示与分层反馈。
+TIER_LABEL_CN = {
+    "critical": "大成功",
+    "extreme": "极难成功",
+    "hard": "困难成功",
+    "regular": "普通成功",
+    "fail": "普通失败",
+    "fumble": "大失败",
+}
+
+
+def achieved_tier(d100: int, skill_value: int) -> str:
+    """仅按骰值 vs 技能值判定达成的成功等级（与「要求难度」无关）。"""
+    if d100 == 1:
+        return "critical"
+    if d100 <= skill_value // 5:
+        return "extreme"
+    if d100 <= skill_value // 2:
+        return "hard"
+    if d100 <= skill_value:
+        return "regular"
+    if d100 == 100 or (d100 >= 96 and skill_value < 50):
+        return "fumble"
+    return "fail"
+
 
 def resolve_skill_check(
     character_data: dict,
@@ -71,6 +96,8 @@ def resolve_skill_check(
         outcome = "failure"
         desc = f"失败 ({d100} > {target})"
 
+    tier = achieved_tier(d100, skill_value)
+    meets = outcome in ("critical_success", "hard_success", "success")
     return CheckResult(
         skill_name=skill_name,
         skill_value=skill_value,
@@ -78,6 +105,8 @@ def resolve_skill_check(
         target=target,
         outcome=outcome,
         description=desc,
+        tier=tier,
+        meets_difficulty=meets,
     )
 
 
