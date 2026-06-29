@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.ai_settings import router as ai_settings_router
+from app.api.assets import categories_router as asset_categories_router
 from app.api.assets import router as assets_router
 from app.api.characters import router as characters_router
 from app.api.chat import router as chat_router
@@ -16,3 +17,4 @@ api_router.include_router(chat_router)
 api_router.include_router(ai_settings_router)
 api_router.include_router(rulebooks_router)
 api_router.include_router(assets_router)
+api_router.include_router(asset_categories_router)

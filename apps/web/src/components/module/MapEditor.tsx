@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { Save, X } from 'lucide-react'
 import type { TileMap, AssetLite } from './MapView'
+import { useAssetCategories } from './useAssetCategories'
+
+// 纯地形类别（由地形画笔处理，不进"放置物体"下拉）
+const TERRAIN_KINDS = new Set(['floor', 'wall', 'water', 'rubble'])
 
 const CELL = 26
 // 地形画笔（glyph + 标签 + 占位色）
@@ -14,15 +18,7 @@ const TERRAIN = [
   { g: ' ', label: '空', color: 'transparent' },
 ]
 const TERRAIN_COLOR: Record<string, string> = Object.fromEntries(TERRAIN.map((t) => [t.g, t.color]))
-// 物体类型（放置层）；door→entrances、npc→npc_pos、其余→objects
-const OBJ_KINDS = [
-  { value: 'furniture', label: '家具' },
-  { value: 'item', label: '物品' },
-  { value: 'npc', label: 'NPC' },
-  { value: 'enemy', label: '敌人' },
-  { value: 'feature', label: '景物' },
-  { value: 'door', label: '门(出口)' },
-]
+// 放置层 token 的种类底色（未知自定义类别用兜底色）
 const KIND_COLOR: Record<string, string> = { furniture: '#7a6248', item: '#b8860b', npc: '#3b6ea5', enemy: '#a33', feature: '#6a5', door: '#2d7d46' }
 
 type Tok = { name: string; x: number; y: number; kind?: string; asset_id?: string; to?: string; hostile?: boolean }
@@ -50,6 +46,8 @@ export function MapEditor({ initial, assets, onSave, onCancel, onAIGenerate, onI
   const [notes, setNotes] = useState(initial?.notes || '')
   const [tileAssets, setTileAssets] = useState<Record<string, string>>(initial?.tile_assets || {})
   const [terrainAsset, setTerrainAsset] = useState('')   // 当前地形画笔选用的具体素材（空=该类默认）
+  const [cats] = useAssetCategories()
+  const objKinds = cats.filter((c) => !TERRAIN_KINDS.has(c.key))   // 可放置的类别（含自定义、含 door）
 
   const [tool, setTool] = useState('#')      // 当前画笔：地形 glyph 或 'obj'
   const [objKind, setObjKind] = useState('furniture')
@@ -112,7 +110,7 @@ export function MapEditor({ initial, assets, onSave, onCancel, onAIGenerate, onI
   const toggleToken = (x: number, y: number) => {
     const i = objects.findIndex((o) => o.x === x && o.y === y)
     if (i >= 0) { setObjects((o) => o.filter((_, j) => j !== i)); return }
-    const t: Tok = { name: objName.trim() || (OBJ_KINDS.find((k) => k.value === objKind)?.label ?? '物体'), x, y, kind: objKind }
+    const t: Tok = { name: objName.trim() || (cats.find((k) => k.key === objKind)?.label ?? '物体'), x, y, kind: objKind }
     if (objAsset) t.asset_id = objAsset
     if (objKind === 'door') t.to = ''
     setObjects((o) => [...o, t])
@@ -183,7 +181,7 @@ export function MapEditor({ initial, assets, onSave, onCancel, onAIGenerate, onI
         <div className="flex flex-wrap items-center gap-2 mb-2 p-2 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
           <Select value={objKind} onValueChange={(v) => { setObjKind(v); setObjAsset('') }}>
             <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
-            <SelectContent>{OBJ_KINDS.map((k) => <SelectItem key={k.value} value={k.value}>{k.label}</SelectItem>)}</SelectContent>
+            <SelectContent>{objKinds.map((k) => <SelectItem key={k.key} value={k.key}>{k.label}</SelectItem>)}</SelectContent>
           </Select>
           <input value={objName} onChange={(e) => setObjName(e.target.value)} placeholder="名称（如 石棺）" className="px-2 py-1 rounded text-sm" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', width: 140 }} />
           <Select value={objAsset || 'default'} onValueChange={(v) => setObjAsset(v === 'default' ? '' : v)}>

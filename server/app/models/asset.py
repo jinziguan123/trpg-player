@@ -4,6 +4,15 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, TimestampMixin, UUIDMixin
 
 
+class AssetCategory(Base, TimestampMixin):
+    """用户自定义的素材类别。内置类别（floor/wall/…）是常量、不入此表；这里只存自定义类别。"""
+
+    __tablename__ = "asset_categories"
+
+    key: Mapped[str] = mapped_column(primary_key=True)
+    label: Mapped[str] = mapped_column(default="")
+
+
 class Asset(Base, UUIDMixin, TimestampMixin):
     """地图素材库的一件素材：一张独立 PNG + 元数据。
 

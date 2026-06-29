@@ -100,3 +100,37 @@ def test_builtin_not_deletable(client):
     db.add(Asset(id="b1", name="内置墙", kind="wall", filename="b1.png", builtin=True))
     db.commit(); db.close()
     assert c.delete("/api/assets/b1").status_code == 400
+
+
+def test_edit_asset_name_kind(client):
+    c, _ = client
+    a = _upload(c, name="旧名", kind="furniture").json()
+    r = c.patch(f"/api/assets/{a['id']}", json={"name": "新名", "kind": "item", "tags": ["x", "y"]})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["name"] == "新名" and j["kind"] == "item" and j["tags"] == ["x", "y"]
+    # 未知类别拒绝
+    assert c.patch(f"/api/assets/{a['id']}", json={"kind": "不存在"}).status_code == 400
+
+
+def test_category_crud(client):
+    c, _ = client
+    # 列表含内置
+    cats = c.get("/api/asset-categories").json()
+    assert any(x["key"] == "floor" and x["builtin"] for x in cats)
+    # 新增自定义
+    assert c.post("/api/asset-categories", json={"key": "trap", "label": "陷阱"}).json()["label"] == "陷阱"
+    # key 与内置冲突 → 拒绝
+    assert c.post("/api/asset-categories", json={"key": "floor", "label": "x"}).status_code == 400
+    # 改名
+    assert c.put("/api/asset-categories/trap", json={"label": "机关"}).json()["label"] == "机关"
+    # 内置不可改名/删除
+    assert c.put("/api/asset-categories/floor", json={"label": "x"}).status_code == 400
+    assert c.delete("/api/asset-categories/floor").status_code == 400
+    # 自定义可删（无素材时）
+    assert c.delete("/api/asset-categories/trap").status_code == 200
+    # 用 patch 把素材改成自定义类别后，该类别不可删
+    c.post("/api/asset-categories", json={"key": "trap2", "label": "陷阱2"})
+    a = _upload(c, kind="furniture").json()
+    c.patch(f"/api/assets/{a['id']}", json={"kind": "trap2"})
+    assert c.delete("/api/asset-categories/trap2").status_code == 400
