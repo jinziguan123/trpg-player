@@ -493,3 +493,23 @@ def update_scene(db: Session, session_id: str, scene_id: str) -> None:
     ws["visited_scenes"] = visited
     session.world_state = ws
     db.commit()
+
+
+def set_flag(db: Session, session_id: str, flag: str, value: bool = True) -> None:
+    """置/清剧情标志（world_state.flags）。KP 通过 [SET_FLAG]/[CLEAR_FLAG] 推进剧情状态，
+    场景/NPC 的状态变体据此切换。flag 名做轻量规范化（去空白），value=False 即清除该标志。"""
+    flag = (flag or "").strip()
+    if not flag:
+        return
+    session = db.get(GameSession, session_id)
+    if not session:
+        return
+    ws = dict(session.world_state or {})
+    flags = dict(ws.get("flags") or {})
+    if value:
+        flags[flag] = True
+    else:
+        flags.pop(flag, None)
+    ws["flags"] = flags
+    session.world_state = ws
+    db.commit()

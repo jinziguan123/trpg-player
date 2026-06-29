@@ -46,10 +46,14 @@ SCENE_CHANGE_RE = re.compile(
 RULE_LOOKUP_RE = re.compile(
     r"\[RULE_LOOKUP:\s*query=([^\]]+)\]"
 )
+# 剧情状态推进：KP 在叙事节拍发 [SET_FLAG: flag=xxx] 置标志、[CLEAR_FLAG: flag=xxx] 清标志，
+# 场景/NPC 的状态变体据此切换（如「地下室进水后变致命」「危险消退」）。是内部控制标签，不展示给玩家。
+SET_FLAG_RE = re.compile(r"\[SET_FLAG:\s*flag=([^\]]+)\]")
+CLEAR_FLAG_RE = re.compile(r"\[CLEAR_FLAG:\s*flag=([^\]]+)\]")
 
 CMD_TAG_PREFIXES = (
     "DICE_CHECK:", "OPPOSED_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:",
-    "SCENE_CHANGE:", "RULE_LOOKUP:",
+    "SCENE_CHANGE:", "RULE_LOOKUP:", "SET_FLAG:", "CLEAR_FLAG:",
 )
 
 # 单次生成内最多连续查阅规则书的次数（防止 KP 反复查导致长链/慢）
@@ -1081,6 +1085,19 @@ async def _process_commands(
         new_scene_id = match.group(1).strip()
         session_service.update_scene(db, session_id, new_scene_id)
         yield _make_chunk("system", f"场景切换至：{new_scene_id}")
+
+    # 剧情状态推进：置/清标志后，刷新内存里的 game_session.world_state，使本次生成的后续
+    # 处理（续写、NPC 行动）与下一轮上下文都能看到最新状态。
+    for match in SET_FLAG_RE.finditer(kp_text):
+        flag = match.group(1).strip()
+        session_service.set_flag(db, session_id, flag, True)
+        db.refresh(game_session)
+        yield _make_chunk("system", f"剧情推进：{flag}")
+    for match in CLEAR_FLAG_RE.finditer(kp_text):
+        flag = match.group(1).strip()
+        session_service.set_flag(db, session_id, flag, False)
+        db.refresh(game_session)
+        yield _make_chunk("system", f"剧情状态解除：{flag}")
 
     for match in NPC_ACT_RE.finditer(kp_text):
         npc_id = match.group(1).strip()

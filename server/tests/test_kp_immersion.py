@@ -223,3 +223,67 @@ def test_no_flags_plot_state_is_neutral(db_factory):
     )
     sys = ctx.build_kp_context(session, module, hero, [])[0]["content"]
     assert "暂无特殊剧情标志" in sys
+
+
+# ---------- 剧情状态机第 2 步：[SET_FLAG]/[CLEAR_FLAG] 标签管线 ----------
+
+def test_set_and_clear_flag_service(db_factory):
+    """session_service.set_flag 置/清 world_state.flags。"""
+    from app.services import session_service
+    db = db_factory()
+    module, hero, session = _seed_stateful(
+        db, scenes=[{"id": "a", "name": "甲", "description": "甲"}], npcs=[], flags={},
+    )
+    session_service.set_flag(db, session.id, "basement_flooded", True)
+    db.refresh(session)
+    assert session.world_state["flags"]["basement_flooded"] is True
+    session_service.set_flag(db, session.id, "basement_flooded", False)
+    db.refresh(session)
+    assert "basement_flooded" not in session.world_state["flags"]
+
+
+def test_flag_tag_regexes():
+    """[SET_FLAG]/[CLEAR_FLAG] 正则正确抽取标志名。"""
+    from app.services.chat_service import SET_FLAG_RE, CLEAR_FLAG_RE
+    txt = "黑水漫上脚踝。[SET_FLAG: flag=basement_flooded]"
+    assert SET_FLAG_RE.findall(txt) == ["basement_flooded"]
+    assert CLEAR_FLAG_RE.findall("水退去了。[CLEAR_FLAG: flag=basement_flooded]") == ["basement_flooded"]
+
+
+def test_flag_tags_are_command_prefixes():
+    """SET_FLAG/CLEAR_FLAG 已登记为控制标签前缀，流式叙事不会把它们当正文展示。"""
+    from app.services.chat_service import CMD_TAG_PREFIXES
+    assert "SET_FLAG:" in CMD_TAG_PREFIXES
+    assert "CLEAR_FLAG:" in CMD_TAG_PREFIXES
+
+
+def test_plot_flag_instruction_appended_only_when_relevant(db_factory):
+    """有 states/triggers 且非开场时才广告 [SET_FLAG] 能力，并给出触发指引。"""
+    db = db_factory()
+    scene = {"id": "basement", "name": "地下室", "description": "地下室",
+             "states": [{"when": ["basement_flooded"], "danger": "deadly"}]}
+    module, hero, session = _seed_stateful(db, scenes=[scene], npcs=[], flags={})
+    module.triggers = [{"when": "玩家弄塌水管", "set_flags": ["basement_flooded"]}]
+    db.commit()
+    ev = EventLog(session_id=session.id, sequence_num=1, event_type="narration",
+                  content="进行中", actor_name="KP")
+    sys = ctx.build_kp_context(session, module, hero, [ev])[0]["content"]
+    assert "[SET_FLAG]" in sys or "SET_FLAG" in sys
+    assert "玩家弄塌水管" in sys           # 触发指引渲染
+    assert "basement_flooded" in sys
+
+    # 无 states/triggers 的普通模组：不广告该能力
+    plain_scene = {"id": "x", "name": "X", "description": "X"}
+    plain, hero2, sess2 = _seed_stateful(db, scenes=[plain_scene], npcs=[], flags={})
+    sys2 = ctx.build_kp_context(sess2, plain, hero2, [ev])[0]["content"]
+    assert "[SET_FLAG]" not in sys2
+
+
+def test_plot_flag_instruction_absent_at_opening(db_factory):
+    """开场不广告剧情推进能力（开场不该改剧情状态）。"""
+    db = db_factory()
+    scene = {"id": "basement", "name": "地下室", "description": "地下室",
+             "states": [{"when": ["x"], "danger": "deadly"}]}
+    module, hero, session = _seed_stateful(db, scenes=[scene], npcs=[], flags={})
+    sys = ctx.build_kp_context(session, module, hero, [])[0]["content"]  # 无事件=开场
+    assert "[SET_FLAG]" not in sys

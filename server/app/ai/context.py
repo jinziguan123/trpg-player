@@ -10,6 +10,7 @@ from app.ai.prompts.kp_system import (
     KP_SYSTEM_PROMPT,
     KP_OPENING_PROMPT,
     RULE_LOOKUP_INSTRUCTION,
+    PLOT_FLAG_INSTRUCTION,
 )
 from app.ai.prompts.npc_system import NPC_SYSTEM_PROMPT
 from app.ai.prompts.team_system import TEAM_SYSTEM_PROMPT
@@ -110,13 +111,56 @@ def _resolve_scene(scenes: list[dict] | None, scene_id: str | None, flags: set[s
     return None
 
 
-def _format_plot_state(flags: set[str]) -> str:
-    if not flags:
-        return "（暂无特殊剧情标志，各场景/NPC 按其默认状态叙述）"
-    return (
-        "已激活标志：" + "、".join(sorted(flags))
-        + "。场景与 NPC 的当前样貌已据此切换——叙述务必贴合当前状态，不要退回到旧样貌。"
-    )
+def _format_triggers(triggers: list[dict] | None) -> str:
+    """把作者设定的剧情触发器渲染成「当 X → 置/清某标志」的指引，供 KP 判断何时发标签。"""
+    if not triggers:
+        return ""
+    lines: list[str] = []
+    for t in triggers:
+        if not isinstance(t, dict):
+            continue
+        when = str(t.get("when") or t.get("condition") or "").strip()
+        sets = t.get("set_flags") or t.get("flags") or []
+        clears = t.get("clear_flags") or []
+        if isinstance(sets, str):
+            sets = [sets]
+        if isinstance(clears, str):
+            clears = [clears]
+        if not when or not (sets or clears):
+            continue
+        parts = []
+        if sets:
+            parts.append("置 " + "、".join(sets))
+        if clears:
+            parts.append("清 " + "、".join(clears))
+        lines.append(f"- 当{when} → {'，'.join(parts)}")
+    return "\n".join(lines)
+
+
+def _format_plot_state(flags: set[str], triggers: list[dict] | None = None) -> str:
+    lines: list[str] = []
+    if flags:
+        lines.append(
+            "已激活标志：" + "、".join(sorted(flags))
+            + "。场景与 NPC 的当前样貌已据此切换——叙述务必贴合当前状态，不要退回到旧样貌。"
+        )
+    else:
+        lines.append("（暂无特殊剧情标志，各场景/NPC 按其默认状态叙述）")
+    guide = _format_triggers(triggers)
+    if guide:
+        lines.append("剧情推进指引（达成对应条件时按下文规则发 [SET_FLAG]/[CLEAR_FLAG]）：\n" + guide)
+    return "\n".join(lines)
+
+
+def _has_plot_state(module: Module) -> bool:
+    """模组是否定义了「随剧情改变」的内容（带 states 的场景/NPC，或 triggers）。"""
+    if module.triggers:
+        return True
+    if any(s.get("states") for s in (module.scenes or [])):
+        return True
+    if any(n.get("states") for n in (module.npcs or [])):
+        return True
+    return False
 
 
 def _compact_scenes(scenes: list[dict] | None, current_scene_id: str | None) -> str:
@@ -360,7 +404,7 @@ def build_kp_context(
         world_setting=_format_json_compact(module.world_setting),
         scenes_info=_compact_scenes(scenes, session.current_scene_id),
         current_scene=_format_json(current_scene) if current_scene else "初始场景",
-        plot_state=_format_plot_state(flags),
+        plot_state=_format_plot_state(flags, module.triggers),
         npcs_info=npcs_info,
         clues_info=clues_info,
         player_info=player_info,
@@ -369,6 +413,10 @@ def build_kp_context(
     # 仅在挂载了规则书时广告 [RULE_LOOKUP] 能力（无书时不让 KP 发空查询）。
     if rules_lookup_enabled:
         system_content += RULE_LOOKUP_INSTRUCTION
+
+    # 仅当模组确有「随剧情改变」的场景/NPC 时，且非开场，才广告 [SET_FLAG]/[CLEAR_FLAG] 推进能力。
+    if not is_opening and _has_plot_state(module):
+        system_content += PLOT_FLAG_INSTRUCTION
 
     party_char_ids = {player_char.id} | {t.id for t in teammates}
 
