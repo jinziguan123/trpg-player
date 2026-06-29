@@ -455,6 +455,13 @@ def add_event(
     metadata: dict | None = None,
 ) -> EventLog:
     seq = get_next_sequence_num(db, session_id)
+    meta = dict(metadata or {})
+    # 给事件打上「发生在哪个场景」的戳：NPC 上下文据此只看自己所在场景的事件，
+    # 避免一个 NPC 知道玩家在别处发生的事（信息隔离）。调用方未显式给 scene_id 时取当前场景。
+    if "scene_id" not in meta:
+        sess = db.get(GameSession, session_id)
+        if sess and sess.current_scene_id:
+            meta["scene_id"] = sess.current_scene_id
     event = EventLog(
         session_id=session_id,
         sequence_num=seq,
@@ -463,7 +470,7 @@ def add_event(
         actor_name=actor_name,
         content=content,
         visibility=visibility or [],
-        metadata_=metadata or {},
+        metadata_=meta,
     )
     db.add(event)
     db.commit()

@@ -336,3 +336,39 @@ def test_npc_context_uses_background_and_resolved_state(db_factory):
     assert "侍奉宅邸三十年" in sysmsg          # 生平进入 NPC 自演上下文
     assert "敌意毕露" in sysmsg                # 按 flag 解析到暴露后的态度
     assert "谦卑恭顺" not in sysmsg            # 旧态度被变体覆盖
+
+
+# ---------- 附带缺口②：NPC 信息隔离 ----------
+
+def test_add_event_stamps_current_scene(db_factory):
+    """add_event 自动给事件打上当前场景戳。"""
+    from app.services import session_service
+    db = db_factory()
+    module, hero, session = _seed_stateful(
+        db, scenes=[{"id": "hall", "name": "门厅", "description": "门厅"}], npcs=[], flags={},
+    )
+    ev = session_service.add_event(db, session.id, "narration", "门厅里风声呜咽")
+    assert ev.metadata_["scene_id"] == "hall"
+
+
+def test_npc_only_sees_own_scene_events(db_factory):
+    """NPC 只看到自己所在场景的事件，看不到别处场景发生的事；未打戳事件兼容放行。"""
+    db = db_factory()
+    npc = {"id": "butler", "name": "管家", "description": "管家", "personality": "谦卑",
+           "initial_location": "hall"}
+    module, hero, session = _seed_stateful(
+        db, scenes=[{"id": "hall", "name": "门厅", "description": "门厅"},
+                    {"id": "basement", "name": "地下室", "description": "地下室"}],
+        npcs=[npc], flags={},
+    )
+    here = EventLog(session_id=session.id, sequence_num=1, event_type="narration",
+                    content="门厅事件A", actor_name="KP", metadata_={"scene_id": "hall"})
+    elsewhere = EventLog(session_id=session.id, sequence_num=2, event_type="narration",
+                         content="地下室秘闻B", actor_name="KP", metadata_={"scene_id": "basement"})
+    untagged = EventLog(session_id=session.id, sequence_num=3, event_type="narration",
+                        content="远古旁白C", actor_name="KP", metadata_={})
+    msgs = ctx.build_npc_context("butler", session, module, [here, elsewhere, untagged])
+    body = "\n".join(m["content"] for m in msgs if m["role"] != "system")
+    assert "门厅事件A" in body          # 同场景可见
+    assert "地下室秘闻B" not in body     # 别处场景被隔离
+    assert "远古旁白C" in body          # 未打戳兼容放行

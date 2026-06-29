@@ -541,10 +541,22 @@ def build_npc_context(
         npc_secrets=_as_text(npc_def.get("secrets")) or "无",
     )
 
-    visible_events = [
-        ev for ev in events
-        if not ev.visibility or npc_id in ev.visibility
-    ]
+    # 信息隔离：NPC 只看「自己所在场景」发生的事，外加显式指向它的事件（visibility 含 npc_id）。
+    # 这样一个 NPC 不会知道玩家在别处场景的言行。未打场景戳的旧事件（无 metadata.scene_id）
+    # 仍放行以兼容在途存档。注：同一场景内 NPC「到场前」的事件暂不过滤（更细的在场时序留待后续）。
+    npc_scene = npc_def.get("initial_location") or session.current_scene_id
+
+    def _npc_can_see(ev: EventLog) -> bool:
+        if ev.visibility and npc_id in ev.visibility:
+            return True
+        if ev.visibility and npc_id not in ev.visibility:
+            return False  # 显式限定了可见者且不含本 NPC
+        ev_scene = (ev.metadata_ or {}).get("scene_id")
+        if not ev_scene:
+            return True  # 未打戳的事件兼容放行
+        return ev_scene == npc_scene
+
+    visible_events = [ev for ev in events if _npc_can_see(ev)]
 
     messages = [{"role": "system", "content": system_content}]
     player_cid = session.player_character_id
