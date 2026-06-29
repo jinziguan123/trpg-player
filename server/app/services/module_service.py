@@ -33,7 +33,10 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       "description": "场景详细描述",
       "danger": "该场景的危险等级，仅限四选一：calm（安全平静）/uneasy（隐隐不安）/dangerous（明确危险）/deadly（致命凶险）",
       "atmosphere": "一句话氛围基调，给 KP 渲染用：以感官（声/味/光/体感）+ 情绪基调描述，如『腐臭、低压、木板随时塌陷』。不要写成剧透或台词",
-      "connections": ["scene_2"]
+      "connections": ["scene_2"],
+      "states": [
+        {{"when": ["剧情标志名，如 basement_flooded"], "danger": "切换后的危险度", "atmosphere": "切换后的氛围", "description": "（可选）切换后的场景描述，覆盖默认"}}
+      ]
     }}
   ],
   "npcs": [
@@ -42,9 +45,23 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       "name": "NPC名字",
       "description": "外貌和身份描述",
       "personality": "性格特点和行为方式",
+      "background": "生平/来历：成长经历、与本案/其他角色的渊源等（KP 视角的背景，可含与剧情相关的过往；与 secrets 区分——background 是来历，secrets 是玩家不该直接知道的真相）",
       "secrets": ["只有KP知道的秘密"],
       "initial_location": "scene_1",
-      "skills": {{"战斗": 55, "闪避": 40, "侦查": 60, "潜行": 50, "心理学": 45}}
+      "attributes": {{"STR": 50, "CON": 55, "SIZ": 60, "DEX": 50, "APP": 50, "INT": 70, "POW": 55, "EDU": 65, "LUCK": 50}},
+      "skills": {{"战斗": 55, "闪避": 40, "侦查": 60, "潜行": 50, "心理学": 45}},
+      "states": [
+        {{"when": ["剧情标志名，如 butler_exposed"], "personality": "切换后的态度", "initial_location": "切换后的位置", "alive": true}}
+      ]
+    }}
+  ],
+  "triggers": [
+    {{
+      "id": "trig_1",
+      "when": "用自然语言描述触发条件，如『玩家弄塌地下室水管』『管家的秘密被当面揭穿』『某 NPC 被杀』",
+      "set_flags": ["该转折发生后应置上的剧情标志名"],
+      "clear_flags": [],
+      "description": "（可选）这一步剧情推进的简述"
     }}
   ],
   "clues": [
@@ -72,6 +89,15 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
 9. 每个场景给出 danger（四选一枚举）与 atmosphere（一句话氛围）：danger 按该场景的实际威胁程度判定，
    多数调查/日常场景是 calm 或 uneasy，只有真正有战斗/陷阱/神话冲击的场景才 dangerous/deadly；
    atmosphere 只写基调与感官，绝不能泄露需要被发现的线索或真相
+10. 时间线/剧情推进（重要）：模组里"会随剧情改变"的场景/NPC，用 states + triggers 表达，不要假设场景危险度一成不变：
+    - 只为**确实会随剧情变化**的场景/NPC 写 states（变体），其余场景/NPC 的 states 留空数组 []；
+      变体 when 引用剧情标志名，命中后覆盖对应字段（场景的 danger/atmosphere/description；NPC 的
+      personality/initial_location/alive 等）。典型如「地下室进水后由 calm 变 deadly」「管家暴露后从谦卑变敌对并转移位置」。
+    - triggers 列出"何时该置/清哪个标志"：when 用自然语言写触发条件，set_flags/clear_flags 写标志名。
+    - **标志名必须前后一致呼应**：triggers.set_flags 用到的标志，要在某场景/NPC 的 states.when 里被消费；
+      反之 states.when 引用的标志，应有某个 trigger 负责置上。没有任何随剧情变化的内容时，triggers 留空数组 []。
+11. 每个 NPC 给出 attributes（CoC 九维 STR/CON/SIZ/DEX/APP/INT/POW/EDU/LUCK，0-90 整数，按身份合理估计）
+    与 background（生平来历）：attributes 供战斗/属性对抗与派生值使用；background 写来历渊源，与 secrets 区分。
 
 模组文本：
 {content}"""
@@ -109,6 +135,7 @@ def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
         scenes=data.get("scenes", []),
         npcs=data.get("npcs", []),
         clues=data.get("clues", []),
+        triggers=data.get("triggers", []),
     )
     db.add(module)
     db.commit()
@@ -135,6 +162,8 @@ def update_module(db: Session, module_id: str, data: dict) -> Module | None:
         module.npcs = data["npcs"]
     if "clues" in data and data["clues"] is not None:
         module.clues = data["clues"]
+    if "triggers" in data and data["triggers"] is not None:
+        module.triggers = data["triggers"]
     db.commit()
     db.refresh(module)
     return module

@@ -21,6 +21,7 @@ class ModuleRead(BaseModel):
     scenes: list
     npcs: list
     clues: list
+    triggers: list = []
     created_at: datetime
     updated_at: datetime
 
@@ -37,6 +38,7 @@ class ModuleWrite(BaseModel):
     scenes: list = []
     npcs: list = []
     clues: list = []
+    triggers: list = []
 
 
 class ModuleUploadResponse(BaseModel):

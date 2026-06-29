@@ -287,3 +287,52 @@ def test_plot_flag_instruction_absent_at_opening(db_factory):
     module, hero, session = _seed_stateful(db, scenes=[scene], npcs=[], flags={})
     sys = ctx.build_kp_context(session, module, hero, [])[0]["content"]  # 无事件=开场
     assert "[SET_FLAG]" not in sys
+
+
+# ---------- 剧情状态机第 3 步：解析 prompt + NPC 九维属性/生平 ----------
+
+def test_parse_template_covers_new_fields():
+    """解析模板要求 AI 产出 states/triggers/attributes/background。"""
+    from app.services.module_service import PARSE_PROMPT_TEMPLATE as T
+    for marker in ("states", "triggers", "attributes", "background", "九维"):
+        assert marker in T, f"解析模板缺少：{marker}"
+
+
+def test_create_and_update_module_roundtrips_triggers(db_factory):
+    """create/update 都能持久化 triggers，并随 npcs 携带 attributes/background。"""
+    from app.services import module_service
+    db = db_factory()
+    triggers = [{"id": "t1", "when": "水管被弄塌", "set_flags": ["basement_flooded"]}]
+    npc = {"id": "n1", "name": "管家", "attributes": {"STR": 50, "INT": 70},
+           "background": "侍奉宅邸三十年", "states": []}
+    m = module_service.create_module(db, {
+        "title": "状态模组", "rule_system": "coc",
+        "scenes": [], "npcs": [npc], "clues": [], "triggers": triggers,
+    })
+    assert m.triggers == triggers
+    assert m.npcs[0]["attributes"]["INT"] == 70
+    assert m.npcs[0]["background"] == "侍奉宅邸三十年"
+
+    m2 = module_service.update_module(db, m.id, {
+        "triggers": [{"id": "t2", "when": "另一条件", "set_flags": ["flag_x"]}],
+    })
+    assert m2.triggers[0]["id"] == "t2"
+
+
+def test_npc_context_uses_background_and_resolved_state(db_factory):
+    """NPC 自演上下文带生平，并按当前 flags 解析到当前样貌（暴露后敌对）。"""
+    db = db_factory()
+    npc = {
+        "id": "butler", "name": "管家", "description": "老管家",
+        "background": "侍奉宅邸三十年", "personality": "谦卑恭顺",
+        "secrets": ["地下室的尸体是他埋的"], "initial_location": "hall",
+        "states": [{"when": ["butler_exposed"], "personality": "撕下伪装，敌意毕露"}],
+    }
+    module, hero, session = _seed_stateful(
+        db, scenes=[{"id": "hall", "name": "门厅", "description": "门厅"}],
+        npcs=[npc], flags={"butler_exposed": True},
+    )
+    sysmsg = ctx.build_npc_context("butler", session, module, [])[0]["content"]
+    assert "侍奉宅邸三十年" in sysmsg          # 生平进入 NPC 自演上下文
+    assert "敌意毕露" in sysmsg                # 按 flag 解析到暴露后的态度
+    assert "谦卑恭顺" not in sysmsg            # 旧态度被变体覆盖

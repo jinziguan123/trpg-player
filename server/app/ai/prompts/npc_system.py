@@ -5,6 +5,9 @@ NPC_SYSTEM_PROMPT = """\
 姓名：{npc_name}
 {npc_description}
 
+## 你的生平
+{npc_background}
+
 ## 性格与动机
 {npc_personality}
 

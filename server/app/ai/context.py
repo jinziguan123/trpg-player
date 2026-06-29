@@ -525,13 +525,20 @@ def build_npc_context(
     npc_def = _find_npc_def(module, npc_id)
     if not npc_def:
         npc_def = {"name": "未知NPC", "description": "", "personality": "", "secrets": ""}
+    else:
+        # 按当前剧情 flags 解析到 NPC 的当前样貌（如已暴露→敌对、已死亡）。
+        npc_def = _resolve_state(npc_def, _active_flags(session))
+
+    def _as_text(v) -> str:
+        return "\n".join(v) if isinstance(v, list) else (v or "")
 
     system_content = NPC_SYSTEM_PROMPT.format(
         rule_system=module.rule_system.upper(),
         npc_name=npc_def.get("name", "未知"),
         npc_description=npc_def.get("description", ""),
+        npc_background=_as_text(npc_def.get("background")) or "（无特别记述）",
         npc_personality=npc_def.get("personality", "普通人"),
-        npc_secrets=npc_def.get("secrets", "无"),
+        npc_secrets=_as_text(npc_def.get("secrets")) or "无",
     )
 
     visible_events = [
