@@ -206,9 +206,14 @@ def _compact_npcs(
             "description": (n.get("description") or "")[:100],
             "personality": (n.get("personality") or "")[:60],
         }
+        if n.get("attributes"):  # CoC 九维：非剧透，供对抗/战斗判断与叙述参考
+            item["attributes"] = n.get("attributes")
         if n.get("alive") is False:  # 剧情变体可将 NPC 标记为已死亡
             item["status"] = "已死亡（不可再开口或行动）"
         if not hide_secrets:
+            # 生平含 KP 视角的过往，可能涉剧情 → 与 secrets 同样仅运行时给、开场剥离
+            if n.get("background"):
+                item["background"] = (n.get("background") or "")[:120]
             item["secrets"] = (n.get("secrets") or "")[:100]
         result.append(item)
     return json.dumps(result, ensure_ascii=False, separators=(",", ":")) if result else "无"
@@ -430,29 +435,30 @@ def build_kp_context(
     if not events:
         ws = module.world_setting or {}
 
-        # 开场分拍（形式 A）：世界观导入 → 角色亮相 → 踏入起始场景，揉进同一段开场白。
-        # 前两拍按模组数据/在场队伍动态出现，最后一拍恒为 KP_OPENING_PROMPT（场景钩子）。
+        # 开场（形式 A）：世界观导入 → 角色亮相 → 踏入起始场景，揉成一段连贯自然的开场白。
+        # 前两件按模组数据/在场队伍动态出现，落点恒为 KP_OPENING_PROMPT（场景钩子）。
+        # 注意：这些只是「开场白要涵盖的内容」，绝不能在叙述里出现编号或小标题（不着痕迹地融为一体）。
         beats: list[str] = []
         intro = ws.get("intro")
         if intro and str(intro).strip():
             beats.append(
-                "世界观导入：先用下面这段把全桌带入故事的基调与世界，可润色营造氛围，"
-                "但严守无剧透（绝不提及任何需在游戏中被发现的线索/真相/NPC 秘密）：\n"
-                + str(intro).strip()
+                "用下面这段把全桌带入故事的世界观与基调（可润色营造氛围，但严守无剧透，"
+                "绝不提及任何需在游戏中被发现的线索/真相/NPC 秘密）：\n" + str(intro).strip()
             )
         if teammates:
             beats.append(
-                f"角色亮相：在场共 {len(teammates) + 1} 名玩家角色，地位完全平等、没有「主角」。"
-                "逐一点出每位角色为人所见的公开身份，让全桌彼此认识，并邀请各位自行介绍；"
-                "绝不替任何玩家描写其动作、姿态、心理或台词，也不要只把镜头对准某一人。"
+                f"让在场的 {len(teammates) + 1} 名地位完全平等的玩家角色逐一登场亮相、点出各自"
+                "为人所见的公开身份并邀请自我介绍（没有「主角」，不要只对着某一人，"
+                "更绝不替任何玩家描写其动作、姿态、心理或台词）"
             )
 
         if beats:
-            numbered = "\n\n".join(f"（{i + 1}）{b}" for i, b in enumerate(beats))
             opening = (
-                "游戏即将开始。请在同一段开场白里、按以下顺序依次完成各拍，每一拍都不要剧透：\n\n"
-                + numbered
-                + f"\n\n（{len(beats) + 1}）踏入起始场景——"
+                "游戏即将开始。请朗读一段**连贯自然**的开场白，把下面几件事不着痕迹地融成一个整体——"
+                "像电影开场般顺滑过渡，**不要分点、不要出现编号或「第一/第二」「世界观导入」之类小标题**，"
+                "也不要剧透：\n"
+                + "；\n".join(beats)
+                + "。\n最后自然落到眼前的起始场景——\n"
                 + KP_OPENING_PROMPT
             )
         else:

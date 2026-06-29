@@ -100,7 +100,10 @@ def test_intro_injected_into_opening(db_factory):
     )
     opening = _opening_text(ctx.build_kp_context(session, module, hero, []))
     assert intro in opening
-    assert "世界观导入" in opening
+    assert "世界观与基调" in opening          # 作为世界观铺陈的引子注入
+    # 要求 KP 融成连贯一段、且明确禁止编号/小标题（避免「第一拍/第二拍」泄进叙述）
+    assert "连贯自然" in opening
+    assert "不要分点" in opening
 
 
 def test_no_intro_no_induction(db_factory):
@@ -372,3 +375,23 @@ def test_npc_only_sees_own_scene_events(db_factory):
     assert "门厅事件A" in body          # 同场景可见
     assert "地下室秘闻B" not in body     # 别处场景被隔离
     assert "远古旁白C" in body          # 未打戳兼容放行
+
+
+def test_kp_sees_npc_attributes_and_background(db_factory):
+    """KP 的 NPC 列表带九维属性与生平（生平仅运行时给、开场剥离）。"""
+    npc = {"id": "butler", "name": "管家", "description": "老管家", "personality": "谦卑",
+           "background": "侍奉宅邸三十年", "attributes": {"STR": 50, "INT": 70},
+           "initial_location": "hall"}
+    # 运行时：能看到属性与生平
+    db = db_factory()
+    module, hero, session = _seed_stateful(
+        db, scenes=[{"id": "hall", "name": "门厅", "description": "门厅"}], npcs=[npc], flags={},
+    )
+    ev = EventLog(session_id=session.id, sequence_num=1, event_type="narration",
+                  content="进行中", actor_name="KP")
+    sys_play = ctx.build_kp_context(session, module, hero, [ev])[0]["content"]
+    assert "侍奉宅邸三十年" in sys_play         # 生平可见
+    assert "STR" in sys_play and "70" in sys_play  # 九维属性可见
+    # 开场：生平随 secrets 一同剥离，属性仍可给
+    sys_open = ctx.build_kp_context(session, module, hero, [])[0]["content"]
+    assert "侍奉宅邸三十年" not in sys_open
