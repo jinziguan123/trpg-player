@@ -35,9 +35,9 @@ MAP_GEN_PROMPT = """你是 TRPG 像素地图设计师。请把下面这个【场
   "w": 网格宽(列数, 12-18 的整数),
   "h": 网格高(行数, 9-14 的整数),
   "tiles": ["每行一个长度恰为 w 的字符串", "...共 h 行..."],
-  "objects": [{{"name": "家具/道具的中性名,如 石棺/书桌/火盆", "x": 列, "y": 行, "kind": "furniture|item|feature"}}],
+  "objects": [{{"name": "家具/道具的中性名,如 石棺/书桌/火盆", "x": 列, "y": 行, "kind": "furniture|item|feature", "asset_id": "可选，见下方素材库表"}}],
   "entrances": [{{"name": "出口名,如 通往前室", "x": 列, "y": 行, "to": "目标场景id（从下方连接表里选）"}}],
-  "npc_pos": [{{"name": "NPC名", "x": 列, "y": 行, "hostile": false}}],
+  "npc_pos": [{{"name": "NPC名", "x": 列, "y": 行, "hostile": false, "asset_id": "可选，见下方素材库表"}}],
   "notes": "一句话说明布局思路（便于人工核验）"
 }}
 
@@ -54,6 +54,9 @@ MAP_GEN_PROMPT = """你是 TRPG 像素地图设计师。请把下面这个【场
 6. **不剧透**：objects 用中性名称（"石棺"而非"藏着尸体的石棺"），不写线索真相。
 7. 把给定的 NPC 放进 npc_pos；可见的家具/道具放进 objects；没有就给空数组。
 8. 敌对生物/怪物（会攻击玩家的）在 npc_pos 里标 "hostile": true，便于地图上用敌人样式区分；普通 NPC 为 false。
+9. 素材库：下表是已有的可用素材（格式 [类型] id｜名称）。若某 object/NPC 与表中某素材**语义匹配**
+   （按名称/类型，如「石棺」对应素材库里的石棺），就把它的 "asset_id" 填成该素材的 id，让地图用上对应贴图；
+   拿不准或无匹配就**不要填 asset_id**，系统会按类型取默认素材。terrain（地板/墙/门）不用填，按类型默认。
 
 【场景】
 名称：{name}
@@ -61,6 +64,9 @@ MAP_GEN_PROMPT = """你是 TRPG 像素地图设计师。请把下面这个【场
 可通行连接（每个给一个门 `+`，entrances.to 用括号里的 id）：{connections}
 在此场景的 NPC（放进 npc_pos）：{npcs}
 在此场景的可见物体/道具（放进 objects，中性名）：{objects}
+
+【素材库可用素材】
+{asset_catalog}
 """
 
 
@@ -106,7 +112,15 @@ def _scene_label(scene: dict) -> str:
     return scene.get("name") or scene.get("title") or scene.get("id") or "(未命名)"
 
 
-def build_map_prompt(scene: dict, npcs: list[str], clues: list[str], scene_names: dict[str, str]) -> str:
+def _format_asset_catalog(assets: list[dict] | None) -> str:
+    """素材库目录给 AI 选用：[类型] id｜名称（只列可放置层，地形按默认不必选）。"""
+    rows = [a for a in (assets or []) if a.get("kind") not in (None, "floor", "wall", "door", "water", "rubble")]
+    if not rows:
+        return "（素材库暂无可选物体/NPC 素材；不要填 asset_id）"
+    return "\n".join(f"  [{a.get('kind')}] {a.get('id')}｜{a.get('name')}" for a in rows[:60])
+
+
+def build_map_prompt(scene: dict, npcs: list[str], clues: list[str], scene_names: dict[str, str], assets: list[dict] | None = None) -> str:
     conns = scene.get("connections") or []
     conn_str = "、".join(f"{scene_names.get(cid, cid)}（{cid}）" for cid in conns) or "无"
     return MAP_GEN_PROMPT.format(
@@ -116,6 +130,7 @@ def build_map_prompt(scene: dict, npcs: list[str], clues: list[str], scene_names
         connections=conn_str,
         npcs="、".join(npcs) or "无",
         objects="、".join(clues) or "无（自行据描述布置家具）",
+        asset_catalog=_format_asset_catalog(assets),
     )
 
 
@@ -158,18 +173,30 @@ def validate_map(m: dict) -> list[str]:
     return issues
 
 
+def _clean_asset_ids(m: dict, asset_ids: set[str]) -> None:
+    """剔除 AI 编造的、库里不存在的 asset_id（保留有效的让地图用上对应素材）。"""
+    for grp in ("objects", "npc_pos"):
+        for it in m.get(grp, []) or []:
+            aid = it.get("asset_id")
+            if aid and aid not in asset_ids:
+                it.pop("asset_id", None)
+
+
 async def generate_scene_map(
     scene: dict, npcs: list[str], clues: list[str], scene_names: dict[str, str],
+    assets: list[dict] | None = None,
 ) -> dict:
-    """调用 LLM 为单个场景生成地图（含一次校验，问题随 map._issues 返回，不抛错）。"""
+    """调用 LLM 为单个场景生成地图（含一次校验，问题随 map._issues 返回，不抛错）。
+    assets 给定时把素材库目录喂给 AI，让它为匹配的物体/NPC 填 asset_id（自动用上库内素材）。"""
     llm = get_llm()
     raw = await llm.complete(
-        messages=[{"role": "user", "content": build_map_prompt(scene, npcs, clues, scene_names)}],
+        messages=[{"role": "user", "content": build_map_prompt(scene, npcs, clues, scene_names, assets)}],
         response_format={"type": "json_object"},
         temperature=0.4,
         max_tokens=4096,
     )
     m = _extract_json(raw)
+    _clean_asset_ids(m, {a.get("id") for a in (assets or [])})
     issues = validate_map(m)
     if issues:
         m["_issues"] = issues
@@ -225,6 +252,8 @@ async def generate_maps_for_module(db: Session, module_id: str, force: bool = Fa
     module = db.get(Module, module_id)
     if not module:
         return None
+    from app.models.asset import Asset
+    assets = [{"id": a.id, "name": a.name, "kind": a.kind} for a in db.query(Asset).all()]
     scene_names = {s.get("id"): _scene_label(s) for s in (module.scenes or [])}
     new_scenes = []
     for s in (module.scenes or []):
@@ -233,7 +262,7 @@ async def generate_maps_for_module(db: Session, module_id: str, force: bool = Fa
             npcs = [n.get("name", "?") for n in (module.npcs or []) if n.get("initial_location") == s.get("id")]
             clues = [c.get("name", "?") for c in (module.clues or []) if c.get("location") == s.get("id")]
             try:
-                s["map"] = await generate_scene_map(s, npcs, clues, scene_names)
+                s["map"] = await generate_scene_map(s, npcs, clues, scene_names, assets)
             except Exception:
                 logger.exception("生成场景地图失败：scene=%s", s.get("id"))
         new_scenes.append(s)

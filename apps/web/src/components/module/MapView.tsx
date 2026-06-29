@@ -133,11 +133,11 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
     for (let x = 0; x < W; x++) {
       if (at(x, y) !== '#') continue
       const ws = spriteFor('wall')
-      // 最外侧（边界）墙半透明：避免近处外墙挡住内部，方便玩家观察场景
-      const isBorder = x === 0 || x === W - 1 || y === 0 || y === H - 1
+      // 水平中线以下（靠近镜头）的墙半透明：近处的墙会挡住内部，远处（上半）的墙不挡、保持不透明
+      const isNear = y * 2 >= H
       stand.push({ y, key: `w${x},${y}`, el: (
         <Billboard x={x} y={y} h={WALL_H}>
-          <div style={{ width: TILE, height: WALL_H, imageRendering: 'pixelated', opacity: isBorder ? 0.45 : 1,
+          <div style={{ width: TILE, height: WALL_H, imageRendering: 'pixelated', opacity: isNear ? 0.4 : 1,
             background: ws ? `center/100% 100% no-repeat url("${ws}")` : 'linear-gradient(#7d6c52,#5b4d3a)',
             boxShadow: ws ? undefined : 'inset 0 2px 0 #8e7c60, 0 2px 3px rgba(0,0,0,0.35)' }} />
         </Billboard>

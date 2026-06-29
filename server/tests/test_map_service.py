@@ -47,6 +47,30 @@ def test_validate_map_flags_bad_coords():
     assert any("行数" in s for s in map_service.validate_map(bad2))
 
 
+def test_prompt_lists_asset_catalog_and_cleans_ids(monkeypatch):
+    """素材库目录进提示；生成结果里库中不存在的 asset_id 被剔除、有效的保留。"""
+    scene = {"id": "s1", "name": "甲", "description": "房间", "connections": []}
+    assets = [{"id": "a1", "name": "石棺", "kind": "furniture"}, {"id": "fl", "name": "地板", "kind": "floor"}]
+    prompt = map_service.build_map_prompt(scene, [], ["石棺"], {}, assets)
+    assert "a1｜石棺" in prompt
+    assert "地板" not in prompt.split("素材库可用素材")[-1]  # 地形类不进可选目录
+
+    out_map = {**GOOD_MAP, "objects": [
+        {"name": "石棺", "x": 2, "y": 1, "kind": "furniture", "asset_id": "a1"},   # 有效
+        {"name": "怪箱", "x": 2, "y": 1, "kind": "furniture", "asset_id": "ghost"},  # 库里没有
+    ]}
+
+    class FakeLLM3:
+        async def complete(self, messages, **kw):
+            assert "a1｜石棺" in messages[0]["content"]
+            return json.dumps(out_map, ensure_ascii=False)
+    monkeypatch.setattr(map_service, "get_llm", lambda: FakeLLM3())
+    import asyncio
+    m = asyncio.run(map_service.generate_scene_map(scene, [], ["石棺"], {}, assets))
+    ids = [o.get("asset_id") for o in m["objects"]]
+    assert "a1" in ids and "ghost" not in ids  # 有效保留、编造剔除
+
+
 def test_build_map_prompt_maps_connection_ids():
     scene = {"id": "s1", "name": "前室", "description": "堆满宝物", "connections": ["s2"]}
     prompt = map_service.build_map_prompt(scene, npcs=["守卫"], clues=["石板"], scene_names={"s2": "耳室"})
