@@ -30,6 +30,8 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       "id": "scene_1",
       "title": "场景标题",
       "description": "场景详细描述",
+      "danger": "该场景的危险等级，仅限四选一：calm（安全平静）/uneasy（隐隐不安）/dangerous（明确危险）/deadly（致命凶险）",
+      "atmosphere": "一句话氛围基调，给 KP 渲染用：以感官（声/味/光/体感）+ 情绪基调描述，如『腐臭、低压、木板随时塌陷』。不要写成剧透或台词",
       "connections": ["scene_2"]
     }}
   ],
@@ -66,6 +68,9 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
    原文没有就按角色定位合理估计（如守卫战斗高、学者知识高、普通人多在 40-50）。至少覆盖可能用到的
    对抗/侦查/social 类技能（战斗、闪避、侦查、潜行、聆听、话术、心理学等），供 KP 暗骰与对抗骰使用
 8. difficulty 根据模组战斗频率、解谜难度、角色死亡风险综合判断
+9. 每个场景给出 danger（四选一枚举）与 atmosphere（一句话氛围）：danger 按该场景的实际威胁程度判定，
+   多数调查/日常场景是 calm 或 uneasy，只有真正有战斗/陷阱/神话冲击的场景才 dangerous/deadly；
+   atmosphere 只写基调与感官，绝不能泄露需要被发现的线索或真相
 
 模组文本：
 {content}"""

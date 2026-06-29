@@ -7,7 +7,7 @@ import { GiReturnArrow, GiScrollUnfurled, GiPadlock } from 'react-icons/gi'
 import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText } from 'lucide-react'
 import { ModuleGraph } from '../components/module/ModuleGraph'
 
-interface Scene { id: string; name?: string; title?: string; description?: string; connections?: string[] }
+interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[] }
 interface NPC { id: string; name?: string; description?: string; personality?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number> }
 interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string }
 interface ModuleData {
@@ -34,6 +34,14 @@ const WS_FIELDS: { key: string; label: string }[] = [
   { key: 'player_count', label: '人数' },
   { key: 'difficulty', label: '难度' },
 ]
+
+const DANGER_OPTS: { value: string; label: string; color: string }[] = [
+  { value: 'calm', label: '平静', color: 'var(--color-text-secondary)' },
+  { value: 'uneasy', label: '不安', color: '#b8860b' },
+  { value: 'dangerous', label: '危险', color: '#c2410c' },
+  { value: 'deadly', label: '致命', color: 'var(--color-danger)' },
+]
+const dangerMeta = (v?: string) => DANGER_OPTS.find((o) => o.value === v)
 
 let _idc = 0
 const genId = (p: string) => `${p}_${Date.now().toString(36)}_${_idc++}`
@@ -155,11 +163,18 @@ export function ModuleDetailPage() {
       </Section>
 
       {/* 场景 */}
-      <Section title={`场景（${data.scenes.length}）`} onAdd={edit ? () => setData((d) => ({ ...d, scenes: [...d.scenes, { id: genId('scene'), name: '', description: '', connections: [] }] })) : undefined}>
+      <Section title={`场景（${data.scenes.length}）`} onAdd={edit ? () => setData((d) => ({ ...d, scenes: [...d.scenes, { id: genId('scene'), name: '', description: '', danger: 'calm', atmosphere: '', connections: [] }] })) : undefined}>
         {data.scenes.map((s, i) => (
           <ItemCard key={s.id || i} onRemove={edit ? () => removeAt('scenes', i) : undefined}>
             <Row label="名称">{edit ? <TextInput value={sceneName(s) === '(未命名场景)' ? '' : sceneName(s)} onChange={(v) => upd('scenes', i, { name: v })} /> : <span className="font-semibold">{sceneName(s)}</span>}</Row>
             <Row label="描述">{edit ? <TextInput value={s.description || ''} onChange={(v) => upd('scenes', i, { description: v })} multiline /> : <span className="whitespace-pre-wrap">{s.description || '—'}</span>}</Row>
+            <Row label="危险度">{edit ? (
+              <Select value={s.danger || 'calm'} onValueChange={(v) => upd('scenes', i, { danger: v })}>
+                <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                <SelectContent>{DANGER_OPTS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
+              </Select>
+            ) : <span className="badge" style={{ color: dangerMeta(s.danger)?.color, borderColor: dangerMeta(s.danger)?.color }}>{dangerMeta(s.danger)?.label || '平静'}</span>}</Row>
+            <Row label="氛围">{edit ? <TextInput value={s.atmosphere || ''} onChange={(v) => upd('scenes', i, { atmosphere: v })} placeholder="感官+情绪基调，如『腐臭、低压、随时塌方』" /> : <span style={{ color: 'var(--color-text-secondary)' }}>{s.atmosphere || '—'}</span>}</Row>
             <Row label="连接">{edit ? <TextInput value={(s.connections || []).join(', ')} onChange={(v) => upd('scenes', i, { connections: v.split(/[,，]/).map((x) => x.trim()).filter(Boolean) })} placeholder="目标场景 id，逗号分隔" /> : <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{(s.connections || []).join('、') || '—'}　id: {s.id}</span>}</Row>
           </ItemCard>
         ))}

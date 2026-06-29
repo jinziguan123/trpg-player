@@ -9,13 +9,19 @@ import { GiPadlock } from 'react-icons/gi'
 import { X } from 'lucide-react'
 import '@xyflow/react/dist/base.css'
 
-interface Scene { id: string; name?: string; title?: string; description?: string; connections?: string[] }
+interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[] }
 interface NPC { id: string; name?: string; description?: string; personality?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number> }
 interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string }
 interface SceneData extends Record<string, unknown> { name: string; npcs: string[]; clues: string[]; orphan?: boolean }
 
 const NODE_W = 210
 const ACCENT = '#8b2500'
+const DANGER_META: Record<string, { label: string; color: string }> = {
+  calm: { label: '平静', color: 'var(--color-text-secondary)' },
+  uneasy: { label: '不安', color: '#b8860b' },
+  dangerous: { label: '危险', color: '#c2410c' },
+  deadly: { label: '致命', color: 'var(--color-danger)' },
+}
 const sceneName = (s: Scene) => s.name || s.title || s.id || '(未命名)'
 const nodeHeight = (d: SceneData) => 40 + (d.npcs.length ? 22 : 0) + (d.clues.length ? 22 : 0)
 
@@ -144,6 +150,14 @@ function DetailPanel({ scene, npcs, clues, sceneNameById, orphan, orphanNpcs, or
         <button onClick={onClose} className="p-1 rounded hover:bg-[var(--color-bg-tertiary)] flex-shrink-0" title="关闭"><X size={16} /></button>
       </div>
 
+      {!orphan && (
+        <PanelBlock label="危险度 / 氛围">
+          <div className="flex items-center gap-2">
+            {(() => { const m = DANGER_META[scene?.danger || 'calm'] || DANGER_META.calm; return <span className="badge" style={{ color: m.color, borderColor: m.color }}>{m.label}</span> })()}
+            <span style={{ color: 'var(--color-text-secondary)' }}>{scene?.atmosphere || '—'}</span>
+          </div>
+        </PanelBlock>
+      )}
       {!orphan && (
         <PanelBlock label="描述">
           <p className="whitespace-pre-wrap" style={{ color: 'var(--color-text-primary)' }}>{scene?.description || '—'}</p>
