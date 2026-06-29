@@ -53,6 +53,28 @@ class OpenAICompatProvider(LLMProvider):
         data = resp.json()
         return data["choices"][0]["message"]["content"]
 
+    # 视觉能力按模型名启发式判断（deepseek-chat 等纯文本模型返回 False）
+    _VISION_HINTS = ("gpt-4o", "gpt-4.1", "gpt-4-vision", "o4", "vision", "claude",
+                     "gemini", "qwen-vl", "qwen2-vl", "qwen2.5-vl", "glm-4v", "llava", "internvl", "yi-vision")
+
+    def supports_vision(self) -> bool:
+        m = (self.model or "").lower()
+        return any(h in m for h in self._VISION_HINTS)
+
+    async def complete_vision(
+        self, prompt: str, image_b64: str, mime: str, max_tokens: int | None = None,
+    ) -> str:
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+        ]
+        payload: dict = {"model": self.model, "messages": [{"role": "user", "content": content}], "temperature": 0.4}
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        resp = await self._client.post(self._api_url, headers=self._headers(), json=payload)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+
     async def stream(
         self,
         messages: list[dict],

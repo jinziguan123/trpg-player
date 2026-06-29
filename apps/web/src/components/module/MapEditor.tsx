@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { Save, X } from 'lucide-react'
 import type { TileMap, AssetLite } from './MapView'
@@ -34,12 +34,13 @@ function defaultTiles(w: number, h: number): string[] {
 }
 
 /** 俯视网格地图编辑器：刷地形（点/拖）、放置/移除物体（点选切换）、改尺寸、存回 scene.map。 */
-export function MapEditor({ initial, assets, onSave, onCancel, onAIGenerate, title }: {
+export function MapEditor({ initial, assets, onSave, onCancel, onAIGenerate, onImageGenerate, title }: {
   initial?: TileMap
   assets: AssetLite[]
   onSave: (m: TileMap) => void
   onCancel: () => void
   onAIGenerate?: (hint: string) => Promise<TileMap | null>
+  onImageGenerate?: (file: File) => Promise<TileMap | null>
   title?: string
 }) {
   const [w, setW] = useState(initial?.w || 14)
@@ -68,6 +69,12 @@ export function MapEditor({ initial, assets, onSave, onCancel, onAIGenerate, tit
     if (!onAIGenerate) return
     setAiBusy(true)
     try { const m = await onAIGenerate(aiHint); if (m) applyMap(m) } finally { setAiBusy(false) }
+  }
+  const imgRef = useRef<HTMLInputElement>(null)
+  const runImage = async (file?: File) => {
+    if (!onImageGenerate || !file) return
+    setAiBusy(true)
+    try { const m = await onImageGenerate(file); if (m) applyMap(m) } finally { setAiBusy(false) }
   }
 
   useEffect(() => {
@@ -132,6 +139,15 @@ export function MapEditor({ initial, assets, onSave, onCancel, onAIGenerate, tit
         <div className="flex items-center gap-2 mb-2 p-2 rounded flex-wrap" style={{ background: 'var(--color-bg-tertiary)' }}>
           <input value={aiHint} onChange={(e) => setAiHint(e.target.value)} placeholder="描述变化，如「西墙被打破，露出北侧密室」「管家移动到门口」" className="px-2 py-1 rounded text-sm flex-1 min-w-[200px]" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }} />
           <button onClick={runAI} disabled={aiBusy} className="btn-secondary text-sm" style={aiBusy ? { opacity: 0.6 } : undefined}>{aiBusy ? 'AI 生成中…' : 'AI 据基础图生成'}</button>
+        </div>
+      )}
+      {/* 多模态：据模组自带地图图片生成（需视觉 LLM） */}
+      {onImageGenerate && (
+        <div className="flex items-center gap-2 mb-2 p-2 rounded flex-wrap" style={{ background: 'var(--color-bg-tertiary)' }}>
+          <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>有模组自带地图图片？</span>
+          <input ref={imgRef} type="file" accept="image/*" className="hidden" onChange={(e) => { runImage(e.target.files?.[0]); e.target.value = '' }} />
+          <button onClick={() => imgRef.current?.click()} disabled={aiBusy} className="btn-secondary text-sm" style={aiBusy ? { opacity: 0.6 } : undefined}>{aiBusy ? '识别中…' : '上传地图图片识别生成'}</button>
+          <span className="text-xs" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>视觉模型据图转成瓦片地图（需在设置选支持视觉的模型）</span>
         </div>
       )}
       {/* 工具栏 */}

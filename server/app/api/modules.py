@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -126,6 +126,24 @@ async def variant_map(module_id: str, scene_id: str, body: VariantMapRequest, db
     if not base:
         raise HTTPException(400, "该场景还没有基础地图，请先生成或手绘基础地图")
     return await map_service.generate_variant_map(base, body.hint)
+
+
+@router.post("/{module_id}/scenes/{scene_id}/map-from-image")
+async def map_from_image(module_id: str, scene_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """多模态：上传模组自带的地图图片，由视觉 LLM 转成本项目的瓦片地图（不落库，前端载入编辑器后再保存）。"""
+    module = module_service.get_module(db, module_id)
+    if not module:
+        raise HTTPException(404, "模组不存在")
+    scene = next((s for s in (module.scenes or []) if s.get("id") == scene_id), None)
+    if not scene:
+        raise HTTPException(404, "场景不存在")
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(400, "请上传图片")
+    data = await file.read()
+    try:
+        return await map_service.generate_map_from_image(data, file.content_type, scene)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.delete("/{module_id}")

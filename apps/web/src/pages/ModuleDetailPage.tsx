@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { api } from '../api/client'
+import { api, getApiBase, getPlayerToken } from '../api/client'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiReturnArrow, GiScrollUnfurled, GiPadlock } from 'react-icons/gi'
 import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch, Map as MapIcon, Loader2 } from 'lucide-react'
@@ -167,6 +167,19 @@ export function ModuleDetailPage() {
     catch (e) { toast.error(`变体生成失败：${e instanceof Error ? e.message : '未知错误'}`); return null }
   }
 
+  // 多模态：据上传的模组地图图片生成瓦片地图（需视觉 LLM）
+  const genMapFromImage = async (sceneId: string, file: File): Promise<TileMap | null> => {
+    if (!id) return null
+    try {
+      const form = new FormData(); form.append('file', file)
+      const res = await fetch(`${getApiBase()}/modules/${id}/scenes/${sceneId}/map-from-image`, {
+        method: 'POST', headers: { 'X-Player-Token': getPlayerToken() }, body: form,
+      })
+      if (!res.ok) throw new Error(await res.text())
+      return await res.json()
+    } catch (e) { toast.error(`据图片生成失败：${e instanceof Error ? e.message : '未知错误'}`); return null }
+  }
+
   if (loading) return <p className="p-4" style={{ color: 'var(--color-text-secondary)' }}>加载中…</p>
 
   const tagsText = Array.isArray(data.world_setting.tags) ? (data.world_setting.tags as string[]).join('、') : wsStr(data.world_setting, 'tags')
@@ -223,6 +236,7 @@ export function ModuleDetailPage() {
           onGenerate={generateMaps}
           onSaveMap={saveSceneMap}
           onVariantAI={genVariantMap}
+          onImageGen={genMapFromImage}
         />
       ) : (
       <>
@@ -403,6 +417,7 @@ function MapPanel({ scenes, sceneId, onPick, generating, onGenerate, onSaveMap, 
   onGenerate: (force: boolean) => void
   onSaveMap: (sceneId: string, map: TileMap, variantIdx?: number) => void
   onVariantAI: (sceneId: string, hint: string) => Promise<TileMap | null>
+  onImageGen: (sceneId: string, file: File) => Promise<TileMap | null>
 }) {
   const scene = scenes.find((s) => s.id === sceneId) || scenes[0]
   const hasAnyMap = scenes.some((s) => s.map)
@@ -428,6 +443,7 @@ function MapPanel({ scenes, sceneId, onPick, generating, onGenerate, onSaveMap, 
         onSave={(m) => { onSaveMap(scene.id, m, variant < 0 ? -1 : (scene.states || []).indexOf(states[variant])); setEditing(false) }}
         onCancel={() => setEditing(false)}
         onAIGenerate={variant < 0 ? undefined : (hint) => onVariantAI(scene.id, hint)}
+        onImageGenerate={variant < 0 ? (file) => onImageGen(scene.id, file) : undefined}
       />
     )
   }

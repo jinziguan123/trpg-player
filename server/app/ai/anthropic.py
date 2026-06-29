@@ -75,6 +75,27 @@ class AnthropicProvider(LLMProvider):
         # Anthropic 返回格式: {"content": [{"type": "text", "text": "..."}]}
         return data["content"][0]["text"]
 
+    def supports_vision(self) -> bool:
+        return True  # Claude 3+ 系列均支持视觉
+
+    async def complete_vision(
+        self, prompt: str, image_b64: str, mime: str, max_tokens: int | None = None,
+    ) -> str:
+        content = [
+            {"type": "image", "source": {"type": "base64", "media_type": mime, "data": image_b64}},
+            {"type": "text", "text": prompt},
+        ]
+        payload = {
+            "model": self.model,
+            "max_tokens": max_tokens or 4096,
+            "temperature": 0.4,
+            "messages": [{"role": "user", "content": content}],
+        }
+        resp = await self._client.post(self._api_url, headers=self._headers(), json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+
     async def stream(
         self,
         messages: list[dict],

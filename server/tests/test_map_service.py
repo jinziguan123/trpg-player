@@ -147,6 +147,29 @@ def test_current_scene_map_resolves_and_places_player(db_factory):
     assert out2["map"]["tiles"] == alt_map["tiles"]
 
 
+def test_generate_map_from_image(monkeypatch):
+    """多模态：支持视觉时据图片产出地图；不支持时报错。"""
+    import asyncio
+
+    class VisionLLM:
+        def supports_vision(self): return True
+        async def complete_vision(self, prompt, image_b64, mime, max_tokens=None):
+            assert "瓦片网格" in prompt and image_b64  # 提示+图片都传了
+            return json.dumps(GOOD_MAP, ensure_ascii=False)
+
+    class TextLLM:
+        def supports_vision(self): return False
+
+    monkeypatch.setattr(map_service, "get_llm", lambda: VisionLLM())
+    m = asyncio.run(map_service.generate_map_from_image(b"\x89PNG...", "image/png", {"id": "s", "name": "甲"}))
+    assert m["tiles"] == GOOD_MAP["tiles"]
+
+    monkeypatch.setattr(map_service, "get_llm", lambda: TextLLM())
+    import pytest as _pt
+    with _pt.raises(ValueError):
+        asyncio.run(map_service.generate_map_from_image(b"x", "image/png", {"id": "s"}))
+
+
 def test_generate_variant_map(monkeypatch):
     """据基础图 + 变化说明产出同尺寸变体图（含校验），用 fake LLM。"""
     import asyncio
