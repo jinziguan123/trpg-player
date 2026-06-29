@@ -122,6 +122,29 @@ async def parse_module_text(raw_text: str, rule_system: str) -> dict:
     return json.loads(result)
 
 
+def _extract_json(raw: str) -> dict:
+    s = raw.strip()
+    if s.startswith("```"):
+        s = s.split("```", 2)[1]
+        if s.startswith("json"):
+            s = s[4:]
+    a, b = s.find("{"), s.rfind("}")
+    return json.loads(s[a:b + 1])
+
+
+async def parse_module_images(images: list[tuple[bytes, str]], rule_system: str, extra_text: str = "") -> dict:
+    """多模态：据模组的图片（扫描页/图文模组）识别提取结构化数据（需视觉 LLM）。"""
+    import base64
+    llm = get_llm()
+    if not llm.supports_vision():
+        raise ValueError("当前模型不支持图片解析。请在设置里切换到支持视觉的模型（如 GPT-4o / Claude / Gemini / Qwen-VL），或上传文字版模组。")
+    content = extra_text.strip() or "（模组内容见所附图片，请仔细阅读图片中的文字与示意图后提取）"
+    prompt = PARSE_PROMPT_TEMPLATE.format(rule_system=rule_system.upper(), content=content)
+    imgs = [(base64.b64encode(b).decode(), mime) for b, mime in images]
+    raw = await llm.complete_vision(prompt, imgs, max_tokens=8192)
+    return _extract_json(raw)
+
+
 def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
     world_setting = data.get("world_setting", {})
     for key in ("player_count", "era", "difficulty", "tags", "player_brief", "intro"):

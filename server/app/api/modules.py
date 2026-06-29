@@ -65,17 +65,28 @@ async def upload_module(
     if not files:
         raise HTTPException(400, "请至少上传一个文件")
 
+    _IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
     parts: list[str] = []
+    images: list[tuple[bytes, str]] = []   # (bytes, mime) —— 图片走多模态视觉解析
     for f in files:
-        text = await _extract_text(f)
-        if len(files) > 1:
-            parts.append(f"=== 文件：{f.filename} ===\n{text}")
+        fn = (f.filename or "").lower()
+        ct = f.content_type or ""
+        if ct.startswith("image/") or fn.endswith(_IMG_EXT):
+            images.append((await f.read(), ct or "image/png"))
         else:
-            parts.append(text)
+            text = await _extract_text(f)
+            parts.append(f"=== 文件：{f.filename} ===\n{text}" if len(files) > 1 else text)
 
     raw_text = "\n\n".join(parts)
 
-    parsed = await module_service.parse_module_text(raw_text, rule_system)
+    try:
+        if images:
+            # 图文/扫描件模组：用视觉模型据图片（+ 任何文字）识别提取
+            parsed = await module_service.parse_module_images(images, rule_system, raw_text)
+        else:
+            parsed = await module_service.parse_module_text(raw_text, rule_system)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     parsed["rule_system"] = rule_system
 
     module = module_service.create_module(db, parsed, raw_content=raw_text)

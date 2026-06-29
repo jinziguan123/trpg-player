@@ -111,7 +111,7 @@ async def generate_map_from_image(image_bytes: bytes, mime: str, scene: dict) ->
         legend="\n".join(f"  {k!r} = {v}" for k, v in LEGEND.items()),
         name=_scene_label(scene), description=scene.get("description") or "(无描述)",
     )
-    raw = await llm.complete_vision(prompt, base64.b64encode(image_bytes).decode(), mime, max_tokens=4096)
+    raw = await llm.complete_vision(prompt, [(base64.b64encode(image_bytes).decode(), mime)], max_tokens=4096)
     m = _extract_json(raw)
     issues = validate_map(m)
     if issues:

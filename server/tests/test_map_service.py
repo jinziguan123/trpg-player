@@ -153,8 +153,8 @@ def test_generate_map_from_image(monkeypatch):
 
     class VisionLLM:
         def supports_vision(self): return True
-        async def complete_vision(self, prompt, image_b64, mime, max_tokens=None):
-            assert "瓦片网格" in prompt and image_b64  # 提示+图片都传了
+        async def complete_vision(self, prompt, images, max_tokens=None):
+            assert "瓦片网格" in prompt and images and images[0][0]  # 提示+至少一张图（base64）
             return json.dumps(GOOD_MAP, ensure_ascii=False)
 
     class TextLLM:

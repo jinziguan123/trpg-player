@@ -62,12 +62,11 @@ class OpenAICompatProvider(LLMProvider):
         return any(h in m for h in self._VISION_HINTS)
 
     async def complete_vision(
-        self, prompt: str, image_b64: str, mime: str, max_tokens: int | None = None,
+        self, prompt: str, images: list[tuple[str, str]], max_tokens: int | None = None,
     ) -> str:
-        content = [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
-        ]
+        content: list[dict] = [{"type": "text", "text": prompt}]
+        for b64, mime in images:
+            content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
         payload: dict = {"model": self.model, "messages": [{"role": "user", "content": content}], "temperature": 0.4}
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens

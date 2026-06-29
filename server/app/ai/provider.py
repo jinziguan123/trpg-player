@@ -27,7 +27,7 @@ class LLMProvider(ABC):
         return False
 
     async def complete_vision(
-        self, prompt: str, image_b64: str, mime: str, max_tokens: int | None = None,
+        self, prompt: str, images: list[tuple[str, str]], max_tokens: int | None = None,
     ) -> str:
-        """据一张图片 + 文本提示生成文本（多模态）。非视觉 Provider 不实现。"""
+        """据若干图片 + 文本提示生成文本（多模态）。images=[(base64, mime), …]。非视觉 Provider 不实现。"""
         raise NotImplementedError("当前模型不支持多模态")

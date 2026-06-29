@@ -11,6 +11,30 @@ from app.main import app
 from app.models import Base, Module  # noqa: F401 注册表
 
 
+def test_parse_module_images(monkeypatch):
+    """图片模组：支持视觉时据图识别出结构；不支持时报错。"""
+    import asyncio
+    import json as _json
+    from app.services import module_service as ms
+
+    class Vision:
+        def supports_vision(self): return True
+        async def complete_vision(self, prompt, images, max_tokens=None):
+            assert images and "JSON" in prompt
+            return "```json\n" + _json.dumps({"title": "图片模组", "scenes": [], "npcs": [], "clues": []}) + "\n```"
+
+    class TextOnly:
+        def supports_vision(self): return False
+
+    monkeypatch.setattr(ms, "get_llm", lambda: Vision())
+    out = asyncio.run(ms.parse_module_images([(b"\x89PNG...", "image/png")], "coc"))
+    assert out["title"] == "图片模组"
+
+    monkeypatch.setattr(ms, "get_llm", lambda: TextOnly())
+    with pytest.raises(ValueError):
+        asyncio.run(ms.parse_module_images([(b"x", "image/png")], "coc"))
+
+
 def test_decode_text_handles_non_utf8():
     """上传的中文 txt 常是 GBK 编码——以前直接 utf-8 解码会 500，现在能容错解码。"""
     s = "失踪的考古队·墓室秘闻"

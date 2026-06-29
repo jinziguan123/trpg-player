@@ -79,12 +79,13 @@ class AnthropicProvider(LLMProvider):
         return True  # Claude 3+ 系列均支持视觉
 
     async def complete_vision(
-        self, prompt: str, image_b64: str, mime: str, max_tokens: int | None = None,
+        self, prompt: str, images: list[tuple[str, str]], max_tokens: int | None = None,
     ) -> str:
-        content = [
-            {"type": "image", "source": {"type": "base64", "media_type": mime, "data": image_b64}},
-            {"type": "text", "text": prompt},
+        content: list[dict] = [
+            {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}}
+            for b64, mime in images
         ]
+        content.append({"type": "text", "text": prompt})
         payload = {
             "model": self.model,
             "max_tokens": max_tokens or 4096,
