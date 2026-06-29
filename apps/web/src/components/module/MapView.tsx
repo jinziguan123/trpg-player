@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { User, Box, DoorOpen, Armchair, Eye, Crosshair, ZoomIn, ZoomOut } from 'lucide-react'
 import type { ComponentType } from 'react'
 
@@ -52,18 +52,41 @@ export function MapView({ map, entities }: { map: TileMap; entities?: MapEntity[
   const planeW = W * TILE, planeH = H * TILE
   const at = (x: number, y: number) => (map.tiles[y] && map.tiles[y][x]) || ' '
 
+  // 固定视口 + 内部缩放/平移：滚轮缩放地图本身（容器不变大），可拖拽平移。
+  const viewportRef = useRef<HTMLDivElement>(null)
   const [zoom, setZoom] = useState(1)
-  const wrapRef = useRef<HTMLDivElement>(null)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [dragging, setDragging] = useState(false)
+
+  // 进入时按视口大小自适应缩放，并居中
+  useLayoutEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    const fit = Math.min(1, (el.clientWidth - 24) / sceneW, (el.clientHeight - 24) / sceneH)
+    setZoom(fit > 0.1 ? fit : 1)
+    setPan({ x: 0, y: 0 })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map])
+
   useEffect(() => {
-    const el = wrapRef.current
+    const el = viewportRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
-      e.preventDefault()  // 在地图上滚轮=缩放，不滚动页面
-      setZoom((z) => Math.min(3, Math.max(0.4, z * (e.deltaY < 0 ? 1.12 : 0.89))))
+      e.preventDefault()  // 在地图上滚轮=缩放地图，不滚动页面、不改容器大小
+      setZoom((z) => Math.min(4, Math.max(0.2, z * (e.deltaY < 0 ? 1.12 : 0.89))))
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    const start = { mx: e.clientX, my: e.clientY, px: pan.x, py: pan.y }
+    setDragging(true)
+    const move = (ev: MouseEvent) => setPan({ x: start.px + (ev.clientX - start.mx), y: start.py + (ev.clientY - start.my) })
+    const up = () => { setDragging(false); window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
 
   // 地面瓦片（含墙格的地面底，墙体另画直立板）
   const floors: React.ReactNode[] = []
@@ -120,15 +143,28 @@ export function MapView({ map, entities }: { map: TileMap; entities?: MapEntity[
   }
   stand.sort((a, b) => a.y - b.y)
 
-  // 场景盒：给透视投影留足横向（近边变宽）与纵向（墙体抬高）余量，避免边角被裁切。
+  // 场景盒：给透视投影留足横向（近边变宽）与纵向（墙体抬高）余量。
   const sceneW = planeW * 1.35 + 40
   const sceneH = planeH * 0.55 + WALL_H + 60
 
   return (
-    <div ref={wrapRef} style={{ position: 'relative', width: sceneW * zoom, height: sceneH * zoom, margin: '0 auto' }}>
-      <button onClick={() => setZoom((z) => Math.max(0.4, z * 0.89))} title="缩小" style={zoomBtn(8)}><ZoomOut size={14} /></button>
-      <button onClick={() => setZoom((z) => Math.min(3, z * 1.12))} title="放大" style={zoomBtn(40)}><ZoomIn size={14} /></button>
-      <div style={{ position: 'absolute', top: 0, left: 0, width: sceneW, height: sceneH, transform: `scale(${zoom})`, transformOrigin: 'top left' }}>
+    <div
+      ref={viewportRef}
+      onMouseDown={onMouseDown}
+      style={{
+        position: 'relative', width: '100%', height: VIEWPORT_H, overflow: 'hidden',
+        cursor: dragging ? 'grabbing' : 'grab', userSelect: 'none', touchAction: 'none',
+        borderRadius: 6,
+      }}
+    >
+      <button onMouseDown={(e) => e.stopPropagation()} onClick={() => setZoom((z) => Math.max(0.2, z * 0.89))} title="缩小" style={zoomBtn(8)}><ZoomOut size={14} /></button>
+      <button onMouseDown={(e) => e.stopPropagation()} onClick={() => setZoom((z) => Math.min(4, z * 1.12))} title="放大" style={zoomBtn(40)}><ZoomIn size={14} /></button>
+      {/* 内容层：固定视口内做 平移+缩放，容器尺寸不随缩放变化 */}
+      <div style={{
+        position: 'absolute', left: '50%', top: '50%',
+        width: sceneW, height: sceneH, marginLeft: -sceneW / 2, marginTop: -sceneH / 2,
+        transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: 'center',
+      }}>
         <div style={{ position: 'absolute', inset: 0, perspective: `${PERSP}px`, perspectiveOrigin: '50% 46%' }}>
           <div style={{
             position: 'absolute', left: '50%', top: '50%',
@@ -144,8 +180,11 @@ export function MapView({ map, entities }: { map: TileMap; entities?: MapEntity[
   )
 }
 
+const VIEWPORT_H = 420   // 地图视口固定高度（缩放只改地图、不改容器）
+
 const zoomBtn = (top: number): React.CSSProperties => ({
   position: 'absolute', right: 8, top, zIndex: 5,
   width: 26, height: 26, borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center',
   background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)',
+  cursor: 'pointer',
 })
