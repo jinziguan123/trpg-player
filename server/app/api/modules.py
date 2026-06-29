@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.schemas.module import ModuleRead, ModuleUploadResponse, ModuleWrite
-from app.services import module_service
+from app.services import map_service, module_service
 
 router = APIRouter(prefix="/api/modules", tags=["modules"])
 
@@ -94,6 +94,15 @@ def update_module(module_id: str, data: ModuleWrite, db: Session = Depends(get_d
 @router.get("/{module_id}", response_model=ModuleRead)
 def get_module(module_id: str, db: Session = Depends(get_db)):
     module = module_service.get_module(db, module_id)
+    if not module:
+        raise HTTPException(404, "模组不存在")
+    return module
+
+
+@router.post("/{module_id}/maps", response_model=ModuleRead)
+async def generate_maps(module_id: str, force: bool = False, db: Session = Depends(get_db)):
+    """为模组各场景生成像素地图（已有的默认跳过，force=true 全部重生成）。逐场景调用 AI，可能较慢。"""
+    module = await map_service.generate_maps_for_module(db, module_id, force=force)
     if not module:
         raise HTTPException(404, "模组不存在")
     return module
