@@ -8,6 +8,7 @@ import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch, Map a
 import { ModuleGraph } from '../components/module/ModuleGraph'
 import { ModuleTimeline } from '../components/module/ModuleTimeline'
 import { MapView, type TileMap } from '../components/module/MapView'
+import { MapEditor } from '../components/module/MapEditor'
 import { useMapAssets } from '../components/module/useMapAssets'
 
 interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string }
@@ -139,6 +140,21 @@ export function ModuleDetailPage() {
     } finally { setGenMaps(false) }
   }
 
+  const saveSceneMap = async (sceneId: string, map: TileMap) => {
+    if (isNew || !id) return
+    const scenes = data.scenes.map((s) => (s.id === sceneId ? { ...s, map } : s))
+    setData((d) => ({ ...d, scenes }))
+    try {
+      await api.put(`/modules/${id}`, {
+        title: data.title, rule_system: data.rule_system, description: data.description,
+        world_setting: data.world_setting, scenes, npcs: data.npcs, clues: data.clues, triggers: data.triggers,
+      })
+      toast.success('地图已保存')
+    } catch (e) {
+      toast.error(`保存失败：${e instanceof Error ? e.message : '未知错误'}`)
+    }
+  }
+
   if (loading) return <p className="p-4" style={{ color: 'var(--color-text-secondary)' }}>加载中…</p>
 
   const tagsText = Array.isArray(data.world_setting.tags) ? (data.world_setting.tags as string[]).join('、') : wsStr(data.world_setting, 'tags')
@@ -193,6 +209,7 @@ export function ModuleDetailPage() {
           onPick={setMapSceneId}
           generating={genMaps}
           onGenerate={generateMaps}
+          onSaveMap={saveSceneMap}
         />
       ) : (
       <>
@@ -365,18 +382,32 @@ function AttrGrid({ attrs, edit, onChange }: { attrs?: Record<string, number>; e
 }
 
 /** 地图视图：选场景 → 看其像素地图；可一键生成/重生成全部场景地图。 */
-function MapPanel({ scenes, sceneId, onPick, generating, onGenerate }: {
+function MapPanel({ scenes, sceneId, onPick, generating, onGenerate, onSaveMap }: {
   scenes: Scene[]
   sceneId: string
   onPick: (id: string) => void
   generating: boolean
   onGenerate: (force: boolean) => void
+  onSaveMap: (sceneId: string, map: TileMap) => void
 }) {
   const scene = scenes.find((s) => s.id === sceneId) || scenes[0]
   const hasAnyMap = scenes.some((s) => s.map)
   const assets = useMapAssets()
+  const [editing, setEditing] = useState(false)
+  // 切换场景时退出编辑，避免把上个场景的编辑套到新场景
+  useEffect(() => { setEditing(false) }, [sceneId])
   if (scenes.length === 0) {
     return <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-secondary)' }}>暂无场景，无法生成地图</p>
+  }
+  if (editing && scene) {
+    return (
+      <MapEditor
+        initial={scene.map}
+        assets={assets}
+        onSave={(m) => { onSaveMap(scene.id, m); setEditing(false) }}
+        onCancel={() => setEditing(false)}
+      />
+    )
   }
   return (
     <div>
@@ -393,6 +424,11 @@ function MapPanel({ scenes, sceneId, onPick, generating, onGenerate }: {
         {hasAnyMap && (
           <button onClick={() => onGenerate(true)} disabled={generating} className="btn-secondary text-sm" style={generating ? { opacity: 0.6 } : undefined}>全部重生成</button>
         )}
+        {scene && (
+          <button onClick={() => setEditing(true)} className="btn-secondary flex items-center gap-1 text-sm">
+            <Pencil size={14} /> {scene.map ? '编辑地图' : '手绘地图'}
+          </button>
+        )}
       </div>
       {scene?.map ? (
         <div className="rounded-md p-3 overflow-auto" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
@@ -403,7 +439,7 @@ function MapPanel({ scenes, sceneId, onPick, generating, onGenerate }: {
           ) : null}
         </div>
       ) : (
-        <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-secondary)' }}>该场景暂无地图——点上方「生成」按钮由 AI 生成。</p>
+        <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-secondary)' }}>该场景暂无地图——点上方「生成」由 AI 生成，或「手绘地图」自己画。</p>
       )}
     </div>
   )
