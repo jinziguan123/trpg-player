@@ -7,9 +7,12 @@ import { GiReturnArrow, GiScrollUnfurled, GiPadlock } from 'react-icons/gi'
 import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText } from 'lucide-react'
 import { ModuleGraph } from '../components/module/ModuleGraph'
 
-interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[] }
-interface NPC { id: string; name?: string; description?: string; personality?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number> }
+interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string }
+interface NpcState { when?: string[]; personality?: string; initial_location?: string; alive?: boolean }
+interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[]; states?: SceneState[] }
+interface NPC { id: string; name?: string; description?: string; personality?: string; background?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number>; attributes?: Record<string, number>; states?: NpcState[] }
 interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string }
+interface Trigger { id: string; when?: string; set_flags?: string[]; clear_flags?: string[]; description?: string }
 interface ModuleData {
   id?: string
   title: string
@@ -19,13 +22,18 @@ interface ModuleData {
   scenes: Scene[]
   npcs: NPC[]
   clues: Clue[]
+  triggers: Trigger[]
 }
 
 const BLANK: ModuleData = {
   title: '', rule_system: 'coc', description: '',
   world_setting: { era: '', location: '', tone: '', player_count: '', difficulty: '', tags: [], player_brief: '', intro: '' },
-  scenes: [], npcs: [], clues: [],
+  scenes: [], npcs: [], clues: [], triggers: [],
 }
+
+const COC_ATTRS = ['STR', 'CON', 'SIZ', 'DEX', 'APP', 'INT', 'POW', 'EDU', 'LUCK']
+const csv = (a?: string[]) => (a || []).join(', ')
+const parseCsv = (v: string) => v.split(/[,，、]/).map((s) => s.trim()).filter(Boolean)
 
 const WS_FIELDS: { key: string; label: string }[] = [
   { key: 'era', label: '年代' },
@@ -72,6 +80,19 @@ export function ModuleDetailPage() {
   const removeAt = (key: 'scenes' | 'npcs' | 'clues', i: number) =>
     setData((d) => ({ ...d, [key]: (d[key] as unknown[]).filter((_, j) => j !== i) }))
 
+  // 剧情变体（场景/NPC 的 states）增删改
+  const addState = (key: 'scenes' | 'npcs', i: number) =>
+    setData((d) => ({ ...d, [key]: (d[key] as Record<string, unknown>[]).map((it, ii) => ii === i ? { ...it, states: [...((it.states as unknown[]) || []), { when: [] }] } : it) }))
+  const updState = (key: 'scenes' | 'npcs', i: number, j: number, patch: Record<string, unknown>) =>
+    setData((d) => ({ ...d, [key]: (d[key] as Record<string, unknown>[]).map((it, ii) => ii === i ? { ...it, states: ((it.states as Record<string, unknown>[]) || []).map((st, jj) => jj === j ? { ...st, ...patch } : st) } : it) }))
+  const rmState = (key: 'scenes' | 'npcs', i: number, j: number) =>
+    setData((d) => ({ ...d, [key]: (d[key] as Record<string, unknown>[]).map((it, ii) => ii === i ? { ...it, states: ((it.states as unknown[]) || []).filter((_, jj) => jj !== j) } : it) }))
+
+  // 触发器（模组级 triggers）增删改
+  const addTrigger = () => setData((d) => ({ ...d, triggers: [...d.triggers, { id: genId('trig'), when: '', set_flags: [], clear_flags: [] }] }))
+  const updTrigger = (i: number, patch: Partial<Trigger>) => setData((d) => ({ ...d, triggers: d.triggers.map((t, ii) => ii === i ? { ...t, ...patch } : t) }))
+  const rmTrigger = (i: number) => setData((d) => ({ ...d, triggers: d.triggers.filter((_, ii) => ii !== i) }))
+
   const save = async () => {
     if (!data.title.trim()) { toast.error('请填写模组标题'); return }
     setSaving(true)
@@ -88,6 +109,7 @@ export function ModuleDetailPage() {
         scenes: data.scenes,
         npcs: data.npcs.map((n) => ({ ...n, secrets: (n.secrets || []).filter((s) => s.trim()) })),
         clues: data.clues,
+        triggers: data.triggers,
       }
       const saved = isNew
         ? await api.post<ModuleData>('/modules', payload)
@@ -177,6 +199,19 @@ export function ModuleDetailPage() {
             ) : <span className="badge" style={{ color: dangerMeta(s.danger)?.color, borderColor: dangerMeta(s.danger)?.color }}>{dangerMeta(s.danger)?.label || '平静'}</span>}</Row>
             <Row label="氛围">{edit ? <TextInput value={s.atmosphere || ''} onChange={(v) => upd('scenes', i, { atmosphere: v })} placeholder="感官+情绪基调，如『腐臭、低压、随时塌方』" /> : <span style={{ color: 'var(--color-text-secondary)' }}>{s.atmosphere || '—'}</span>}</Row>
             <Row label="连接">{edit ? <TextInput value={(s.connections || []).join(', ')} onChange={(v) => upd('scenes', i, { connections: v.split(/[,，]/).map((x) => x.trim()).filter(Boolean) })} placeholder="目标场景 id，逗号分隔" /> : <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{(s.connections || []).join('、') || '—'}　id: {s.id}</span>}</Row>
+            <VariantList states={s.states} edit={edit} onAdd={() => addState('scenes', i)} onRemove={(j) => rmState('scenes', i, j)} onWhen={(j, f) => updState('scenes', i, j, { when: f })}
+              renderFields={(st, j) => (
+                <>
+                  <Row label="危险度">{edit ? (
+                    <Select value={(st.danger as string) || 'calm'} onValueChange={(v) => updState('scenes', i, j, { danger: v })}>
+                      <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                      <SelectContent>{DANGER_OPTS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
+                    </Select>
+                  ) : <span className="badge" style={{ color: dangerMeta(st.danger as string)?.color, borderColor: dangerMeta(st.danger as string)?.color }}>{dangerMeta(st.danger as string)?.label || '—'}</span>}</Row>
+                  <Row label="氛围">{edit ? <TextInput value={(st.atmosphere as string) || ''} onChange={(v) => updState('scenes', i, j, { atmosphere: v })} placeholder="切换后的氛围" /> : <span className="text-xs">{(st.atmosphere as string) || '—'}</span>}</Row>
+                  <Row label="描述">{edit ? <TextInput value={(st.description as string) || ''} onChange={(v) => updState('scenes', i, j, { description: v })} multiline placeholder="（可选）切换后的场景描述" /> : <span className="whitespace-pre-wrap text-xs">{(st.description as string) || '—'}</span>}</Row>
+                </>
+              )} />
           </ItemCard>
         ))}
         {data.scenes.length === 0 && <Empty />}
@@ -189,9 +224,24 @@ export function ModuleDetailPage() {
             <Row label="姓名">{edit ? <TextInput value={n.name || ''} onChange={(v) => upd('npcs', i, { name: v })} /> : <span className="font-semibold">{n.name || '(未命名)'}</span>}</Row>
             <Row label="描述">{edit ? <TextInput value={n.description || ''} onChange={(v) => upd('npcs', i, { description: v })} multiline /> : <span className="whitespace-pre-wrap">{n.description || '—'}</span>}</Row>
             <Row label="性格">{edit ? <TextInput value={n.personality || ''} onChange={(v) => upd('npcs', i, { personality: v })} /> : <span>{n.personality || '—'}</span>}</Row>
+            <Row label="生平">{edit ? <TextInput value={n.background || ''} onChange={(v) => upd('npcs', i, { background: v })} multiline placeholder="来历渊源（与秘密区分）" /> : <span className="whitespace-pre-wrap">{n.background || '—'}</span>}</Row>
             <Row label="初始位置">{edit ? <TextInput value={n.initial_location || ''} onChange={(v) => upd('npcs', i, { initial_location: v })} placeholder="场景 id" /> : <span className="text-xs">{n.initial_location || '—'}</span>}</Row>
+            <Row label="属性">{<AttrGrid attrs={n.attributes} edit={edit} onChange={(a) => upd('npcs', i, { attributes: a })} />}</Row>
             <Row label={<span style={{ color: 'var(--color-danger)' }} className="inline-flex items-center gap-0.5"><GiPadlock />秘密</span>}>{edit ? <TextInput value={(n.secrets || []).join('\n')} onChange={(v) => upd('npcs', i, { secrets: v.split('\n') })} multiline placeholder="每行一条，仅 KP 可见" /> : <span className="whitespace-pre-wrap" style={{ color: 'var(--color-danger)' }}>{(n.secrets || []).join('\n') || '—'}</span>}</Row>
             <Row label="技能">{edit ? <TextInput value={skillsToText(n.skills)} onChange={(v) => upd('npcs', i, { skills: parseSkills(v) })} multiline placeholder="每行 技能: 数值，如 侦查: 60" /> : <span className="text-xs">{skillsToText(n.skills).replace(/\n/g, '、') || '—'}</span>}</Row>
+            <VariantList states={n.states} edit={edit} onAdd={() => addState('npcs', i)} onRemove={(j) => rmState('npcs', i, j)} onWhen={(j, f) => updState('npcs', i, j, { when: f })}
+              renderFields={(st, j) => (
+                <>
+                  <Row label="性格">{edit ? <TextInput value={(st.personality as string) || ''} onChange={(v) => updState('npcs', i, j, { personality: v })} placeholder="切换后的态度" /> : <span className="text-xs">{(st.personality as string) || '—'}</span>}</Row>
+                  <Row label="位置">{edit ? <TextInput value={(st.initial_location as string) || ''} onChange={(v) => updState('npcs', i, j, { initial_location: v })} placeholder="切换后的场景 id" /> : <span className="text-xs">{(st.initial_location as string) || '—'}</span>}</Row>
+                  <Row label="存活">{edit ? (
+                    <Select value={st.alive === false ? 'false' : 'true'} onValueChange={(v) => updState('npcs', i, j, { alive: v === 'true' })}>
+                      <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectItem value="true">存活</SelectItem><SelectItem value="false">死亡</SelectItem></SelectContent>
+                    </Select>
+                  ) : <span className="text-xs" style={st.alive === false ? { color: 'var(--color-danger)' } : undefined}>{st.alive === false ? '死亡' : '存活'}</span>}</Row>
+                </>
+              )} />
           </ItemCard>
         ))}
         {data.npcs.length === 0 && <Empty />}
@@ -209,8 +259,74 @@ export function ModuleDetailPage() {
         ))}
         {data.clues.length === 0 && <Empty />}
       </Section>
+
+      {/* 触发器（剧情推进：何时置/清哪个标志） */}
+      <Section title={`触发器（${data.triggers.length}）`} onAdd={edit ? addTrigger : undefined}>
+        {edit && (
+          <p className="text-xs mb-2" style={{ color: 'var(--color-text-secondary)', opacity: 0.8 }}>
+            定义剧情推进：当某事发生 → 置/清剧情标志；标志名需与场景/NPC 变体的「条件」一致呼应。
+          </p>
+        )}
+        {data.triggers.map((t, i) => (
+          <ItemCard key={t.id || i} onRemove={edit ? () => rmTrigger(i) : undefined}>
+            <Row label="触发条件">{edit ? <TextInput value={t.when || ''} onChange={(v) => updTrigger(i, { when: v })} placeholder="自然语言，如『玩家弄塌地下室水管』" /> : <span>{t.when || '—'}</span>}</Row>
+            <Row label="置标志">{edit ? <TextInput value={csv(t.set_flags)} onChange={(v) => updTrigger(i, { set_flags: parseCsv(v) })} placeholder="标志名，逗号分隔" /> : <span className="text-xs" style={{ color: 'var(--color-text-accent)' }}>{csv(t.set_flags) || '—'}</span>}</Row>
+            <Row label="清标志">{edit ? <TextInput value={csv(t.clear_flags)} onChange={(v) => updTrigger(i, { clear_flags: parseCsv(v) })} placeholder="（可选）状态消退时清除的标志" /> : <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{csv(t.clear_flags) || '—'}</span>}</Row>
+          </ItemCard>
+        ))}
+        {data.triggers.length === 0 && <Empty />}
+      </Section>
       </>
       )}
+    </div>
+  )
+}
+
+/** 剧情变体列表（场景/NPC 的 states）：每个变体一个「条件(when) + 覆盖字段」卡片。 */
+function VariantList({ states, edit, onAdd, onRemove, onWhen, renderFields }: {
+  states?: Record<string, unknown>[]
+  edit: boolean
+  onAdd: () => void
+  onRemove: (j: number) => void
+  onWhen: (j: number, flags: string[]) => void
+  renderFields: (st: Record<string, unknown>, j: number) => React.ReactNode
+}) {
+  const list = states || []
+  if (!edit && list.length === 0) return null
+  return (
+    <div className="mt-1 rounded" style={{ border: '1px dashed var(--color-border)', padding: 8 }}>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-semibold" style={{ color: 'var(--color-text-secondary)' }}>剧情变体（随剧情切换）</span>
+        {edit && <button onClick={onAdd} className="btn-secondary text-xs !px-1.5 !py-0.5 flex items-center gap-1"><Plus size={11} />变体</button>}
+      </div>
+      {list.length === 0 && <p className="text-xs" style={{ color: 'var(--color-text-secondary)', opacity: 0.6 }}>无</p>}
+      {list.map((st, j) => (
+        <div key={j} className="rounded p-1.5 mb-1 relative" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
+          {edit && <button onClick={() => onRemove(j)} className="absolute top-1 right-1 p-0.5" style={{ color: 'var(--color-danger)' }} title="删除变体"><Trash2 size={11} /></button>}
+          <Row label="条件">{edit ? <TextInput value={csv(st.when as string[])} onChange={(v) => onWhen(j, parseCsv(v))} placeholder="标志名，逗号分隔（全部激活才生效）" /> : <span className="text-xs">{csv(st.when as string[]) || '（恒生效）'}</span>}</Row>
+          {renderFields(st, j)}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** CoC 九维属性编辑/展示（3 列网格）。 */
+function AttrGrid({ attrs, edit, onChange }: { attrs?: Record<string, number>; edit: boolean; onChange: (a: Record<string, number>) => void }) {
+  const a = attrs || {}
+  if (!edit) {
+    const txt = COC_ATTRS.filter((k) => a[k] != null).map((k) => `${k} ${a[k]}`).join('、')
+    return <span className="text-xs">{txt || '—'}</span>
+  }
+  return (
+    <div className="grid grid-cols-3 gap-1">
+      {COC_ATTRS.map((k) => (
+        <label key={k} className="flex items-center gap-1 text-xs">
+          <span style={{ width: 32, color: 'var(--color-text-secondary)' }}>{k}</span>
+          <input type="number" value={a[k] ?? ''} onChange={(e) => { const next = { ...a }; if (e.target.value === '') delete next[k]; else next[k] = Number(e.target.value); onChange(next) }}
+            className="w-full px-1 py-0.5 rounded" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)' }} />
+        </label>
+      ))}
     </div>
   )
 }
