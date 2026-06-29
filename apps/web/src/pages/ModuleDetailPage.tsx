@@ -23,7 +23,7 @@ interface ModuleData {
 
 const BLANK: ModuleData = {
   title: '', rule_system: 'coc', description: '',
-  world_setting: { era: '', location: '', tone: '', player_count: '', difficulty: '', tags: [], player_brief: '' },
+  world_setting: { era: '', location: '', tone: '', player_count: '', difficulty: '', tags: [], player_brief: '', intro: '' },
   scenes: [], npcs: [], clues: [],
 }
 
@@ -159,6 +159,7 @@ export function ModuleDetailPage() {
           <Row key={key} label={label}>{edit ? <TextInput value={wsStr(data.world_setting, key)} onChange={(v) => updateWS(key, v)} /> : <span>{wsStr(data.world_setting, key) || '—'}</span>}</Row>
         ))}
         <Row label="标签">{edit ? <TextInput value={tagsText} onChange={(v) => updateWS('tags', v.split(/[,，、]/).map((s) => s.trim()).filter(Boolean))} placeholder="逗号分隔" /> : <span>{tagsText || '—'}</span>}</Row>
+        <Row label="世界观导入">{edit ? <TextInput value={wsStr(data.world_setting, 'intro')} onChange={(v) => updateWS('intro', v)} multiline placeholder="开场朗读用的世界观/基调铺陈（年代、风物、是哪一类故事），无剧透，区别于开场钩子" /> : <span className="whitespace-pre-wrap">{wsStr(data.world_setting, 'intro') || '—'}</span>}</Row>
         <Row label="开场钩子">{edit ? <TextInput value={wsStr(data.world_setting, 'player_brief')} onChange={(v) => updateWS('player_brief', v)} multiline placeholder="玩家开场就合法知道的动机/处境（不含待发现的线索/真相）" /> : <span className="whitespace-pre-wrap">{wsStr(data.world_setting, 'player_brief') || '—'}</span>}</Row>
       </Section>
 

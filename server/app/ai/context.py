@@ -324,20 +324,42 @@ def build_kp_context(
     messages = [{"role": "system", "content": system_content}]
 
     if not events:
-        opening = KP_OPENING_PROMPT
-        player_brief = (module.world_setting or {}).get("player_brief")
+        ws = module.world_setting or {}
+
+        # 开场分拍（形式 A）：世界观导入 → 角色亮相 → 踏入起始场景，揉进同一段开场白。
+        # 前两拍按模组数据/在场队伍动态出现，最后一拍恒为 KP_OPENING_PROMPT（场景钩子）。
+        beats: list[str] = []
+        intro = ws.get("intro")
+        if intro and str(intro).strip():
+            beats.append(
+                "世界观导入：先用下面这段把全桌带入故事的基调与世界，可润色营造氛围，"
+                "但严守无剧透（绝不提及任何需在游戏中被发现的线索/真相/NPC 秘密）：\n"
+                + str(intro).strip()
+            )
+        if teammates:
+            beats.append(
+                f"角色亮相：在场共 {len(teammates) + 1} 名玩家角色，地位完全平等、没有「主角」。"
+                "逐一点出每位角色为人所见的公开身份，让全桌彼此认识，并邀请各位自行介绍；"
+                "绝不替任何玩家描写其动作、姿态、心理或台词，也不要只把镜头对准某一人。"
+            )
+
+        if beats:
+            numbered = "\n\n".join(f"（{i + 1}）{b}" for i, b in enumerate(beats))
+            opening = (
+                "游戏即将开始。请在同一段开场白里、按以下顺序依次完成各拍，每一拍都不要剧透：\n\n"
+                + numbered
+                + f"\n\n（{len(beats) + 1}）踏入起始场景——"
+                + KP_OPENING_PROMPT
+            )
+        else:
+            opening = KP_OPENING_PROMPT
+
+        player_brief = ws.get("player_brief")
         if player_brief and str(player_brief).strip():
             opening += (
                 "\n\n【玩家已知背景（player_brief）——开场唯一可作为「玩家已经知道」的钩子】\n"
                 + str(player_brief).strip()
                 + "\n（除此之外，玩家此刻一无所知；不要把这段之外的任何信息当成玩家已知。）"
-            )
-        if teammates:
-            opening += (
-                f"\n\n【多人开场】在场共 {len(teammates) + 1} 名玩家角色，地位平等，没有「主角」。"
-                "开场白要让每一位都自然登场、各有存在感，不要只对某一个人说话、也不要把镜头只对准某一人。"
-                "只铺好场景、氛围与全队共同面对的处境即可；"
-                "绝不要替任何玩家描写其动作、姿态或台词——把第一步行动权完整留给玩家们。"
             )
         messages.append({"role": "user", "content": opening})
     else:

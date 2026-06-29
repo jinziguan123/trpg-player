@@ -81,3 +81,63 @@ def test_scene_without_danger_still_builds(db_factory):
     ])
     sys = ctx.build_kp_context(session, module, hero, [])[0]["content"]
     assert "房间" in sys
+
+
+# ---------- Phase 2：world_setting.intro 开场世界观导入 ----------
+
+def _opening_text(msgs):
+    return "\n".join(m["content"] for m in msgs if m["role"] == "user")
+
+
+def test_intro_injected_into_opening(db_factory):
+    """有 intro 时，开场白第一拍注入世界观导入原文。"""
+    db = db_factory()
+    intro = "1923 年的新英格兰，雾季漫长，这是一个体面人家背后腐烂之物的缓燃恐怖故事。"
+    module, hero, session = _seed(
+        db,
+        scenes=[{"id": "hall", "name": "门厅", "description": "昏暗门厅"}],
+        world_setting={"intro": intro},
+    )
+    opening = _opening_text(ctx.build_kp_context(session, module, hero, []))
+    assert intro in opening
+    assert "世界观导入" in opening
+
+
+def test_no_intro_no_induction(db_factory):
+    """无 intro 时不强加世界观导入拍，开场退回纯场景钩子。"""
+    db = db_factory()
+    module, hero, session = _seed(
+        db,
+        scenes=[{"id": "hall", "name": "门厅", "description": "昏暗门厅"}],
+        world_setting={},
+    )
+    opening = _opening_text(ctx.build_kp_context(session, module, hero, []))
+    assert "世界观导入" not in opening
+    assert "把玩家带入起始场景" in opening
+
+
+def test_intro_not_leaked_during_play(db_factory):
+    """游戏开始后（已有事件）不再重复世界观导入拍。"""
+    db = db_factory()
+    module, hero, session = _seed(
+        db,
+        scenes=[{"id": "hall", "name": "门厅", "description": "昏暗门厅"}],
+        world_setting={"intro": "某段世界观铺陈"},
+    )
+    ev = EventLog(session_id=session.id, sequence_num=1, event_type="narration",
+                  content="开场已生成", actor_name="KP")
+    opening = _opening_text(ctx.build_kp_context(session, module, hero, [ev]))
+    assert "世界观导入" not in opening
+
+
+def test_create_module_persists_intro(db_factory):
+    """create_module 把顶层 intro 落进 world_setting（与 player_brief 同处）。"""
+    from app.services.module_service import create_module
+    db = db_factory()
+    module = create_module(db, {
+        "title": "导入测试", "rule_system": "coc",
+        "intro": "一段世界观铺陈", "player_brief": "你受托前来",
+        "scenes": [], "npcs": [], "clues": [],
+    })
+    assert module.world_setting["intro"] == "一段世界观铺陈"
+    assert module.world_setting["player_brief"] == "你受托前来"

@@ -16,6 +16,7 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
   "title": "模组标题",
   "description": "一句话简介（不超过30字，不要透露关键剧情）",
   "player_brief": "开场时玩家角色就合法知道的背景：他们的身份动机、当前处境、接到的委托或为何来到起始地点。只写玩家此刻本就清楚的前情，绝对不要包含任何需要在游戏中被发现的内容（尸体、笔记、隐藏线索、NPC 的秘密、剧情真相、失踪者下落等）。若模组没有明确的玩家前情，留空字符串。",
+  "intro": "面向全桌的【世界观与基调导入】，开场时朗读用：年代质感、地点风物、这是一类什么样的故事（恐怖/悬疑/冒险的调性与预期、内容警示）。它和 player_brief 不同——player_brief 是角色剧内已知的前情事实，intro 是把玩家带入世界的氛围与世界观铺陈。同样严守无剧透：绝不包含任何需要在游戏中被发现的线索/真相/NPC 秘密。若模组没有值得铺陈的世界观，留空字符串。",
   "player_count": "推荐游玩人数，如 1-4",
   "era": "背景年代标签，如 1920s、现代、中世纪、维多利亚时代",
   "difficulty": "难度等级，仅限以下四选一：入门/普通/困难/噩梦",
@@ -95,7 +96,7 @@ async def parse_module_text(raw_text: str, rule_system: str) -> dict:
 
 def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
     world_setting = data.get("world_setting", {})
-    for key in ("player_count", "era", "difficulty", "tags", "player_brief"):
+    for key in ("player_count", "era", "difficulty", "tags", "player_brief", "intro"):
         if key in data:
             world_setting[key] = data[key]
 
