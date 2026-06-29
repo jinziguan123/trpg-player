@@ -96,8 +96,9 @@ export function ModuleDetailPage() {
 
   const tagsText = Array.isArray(data.world_setting.tags) ? (data.world_setting.tags as string[]).join('、') : wsStr(data.world_setting, 'tags')
 
+  const wide = graph && !edit
   return (
-    <div className="max-w-3xl">
+    <div className={wide ? 'max-w-6xl' : 'max-w-3xl'}>
       <div className="flex items-center gap-3 mb-4">
         <button onClick={() => navigate('/modules')} className="btn-secondary flex items-center gap-1 !px-2 !py-1 text-sm">
           <GiReturnArrow /> 返回
