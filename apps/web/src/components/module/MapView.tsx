@@ -7,8 +7,9 @@ export interface TileMap {
   h: number
   tiles: string[]
   objects?: { name: string; x: number; y: number; kind?: string; asset_id?: string }[]
-  entrances?: { name: string; x: number; y: number; to?: string }[]
-  npc_pos?: { name: string; x: number; y: number; hostile?: boolean }[]
+  entrances?: { name: string; x: number; y: number; to?: string; asset_id?: string }[]
+  npc_pos?: { name: string; x: number; y: number; hostile?: boolean; asset_id?: string }[]
+  tile_assets?: Record<string, string>   // 逐格地形素材覆盖："x,y" → asset_id（不填则按类型默认）
   notes?: string
 }
 
@@ -110,9 +111,10 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
     for (let x = 0; x < W; x++) {
       const c = at(x, y)
       if (c === ' ') continue
-      // 地面：墙格底下铺 floor 素材；其余按字符类型取素材；缺素材回退色块。
+      // 地面：墙格底下铺 floor 素材；其余按字符类型取素材。非墙格可有逐格素材覆盖（tile_assets），否则按类型默认，再否则色块。
       const groundKind = c === '#' ? 'floor' : GLYPH_KIND[c]
-      const sprite = spriteFor(groundKind)
+      const ov = c !== '#' ? map.tile_assets?.[`${x},${y}`] : undefined
+      const sprite = (ov && byId[ov]) || spriteFor(groundKind)
       floors.push(
         <div key={`f${x},${y}`} style={{
           position: 'absolute', left: x * TILE, top: y * TILE, width: TILE, height: TILE,
@@ -132,7 +134,8 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       if (at(x, y) !== '#') continue
-      const ws = spriteFor('wall')
+      const wov = map.tile_assets?.[`${x},${y}`]
+      const ws = (wov && byId[wov]) || spriteFor('wall')
       // 水平中线以下（靠近镜头）的墙半透明：近处的墙会挡住内部，远处（上半）的墙不挡、保持不透明
       const isNear = y * 2 >= H
       stand.push({ y, key: `w${x},${y}`, el: (
@@ -168,10 +171,10 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
     const isItem = o.kind === 'item'
     tok(o.x, o.y, o.name, isItem ? '#b8860b' : '#7a6248', isItem ? Box : o.kind === 'feature' ? Eye : Armchair, `o${o.x},${o.y},${o.name}`, o.kind || 'furniture', o.asset_id)
   }
-  for (const e of map.entrances || []) tok(e.x, e.y, e.name, '#2d7d46', DoorOpen, `e${e.x},${e.y},${e.name}`, 'door')
+  for (const e of map.entrances || []) tok(e.x, e.y, e.name, '#2d7d46', DoorOpen, `e${e.x},${e.y},${e.name}`, 'door', e.asset_id)
   for (const n of map.npc_pos || []) n.hostile
-    ? tok(n.x, n.y, n.name, 'var(--color-danger)', Crosshair, `n${n.x},${n.y},${n.name}`, 'enemy')
-    : tok(n.x, n.y, n.name, '#3b6ea5', User, `n${n.x},${n.y},${n.name}`, 'npc')
+    ? tok(n.x, n.y, n.name, 'var(--color-danger)', Crosshair, `n${n.x},${n.y},${n.name}`, 'enemy', n.asset_id)
+    : tok(n.x, n.y, n.name, '#3b6ea5', User, `n${n.x},${n.y},${n.name}`, 'npc', n.asset_id)
   for (const en of entities || []) {
     const m = { player: ['var(--color-accent)', Crosshair], npc: ['#3b6ea5', User], enemy: ['var(--color-danger)', Crosshair], item: ['#b8860b', Box] }[en.kind] as [string, IconT]
     tok(en.x, en.y, en.name, m[0], m[1], `en${en.x},${en.y},${en.name}`, en.kind)
