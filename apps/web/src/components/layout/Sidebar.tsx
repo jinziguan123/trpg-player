@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { GiScrollUnfurled, GiCharacter, GiDiceTwentyFacesTwenty, GiArchiveResearch, GiGears, GiBookCover } from 'react-icons/gi'
+import { GiScrollUnfurled, GiCharacter, GiDiceTwentyFacesTwenty, GiArchiveResearch, GiGears, GiBookCover, GiStoneBlock } from 'react-icons/gi'
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 
 const NAV_ITEMS = [
   { to: '/', label: '卷宗', icon: GiArchiveResearch },
   { to: '/modules', label: '模组', icon: GiScrollUnfurled },
   { to: '/rulebooks', label: '规则书', icon: GiBookCover },
+  { to: '/assets', label: '素材', icon: GiStoneBlock },
   { to: '/characters', label: '角色', icon: GiCharacter },
   { to: '/game', label: '游戏', icon: GiDiceTwentyFacesTwenty },
   { to: '/settings', label: '设置', icon: GiGears },
