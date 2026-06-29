@@ -152,6 +152,8 @@ export function GameSessionPage() {
       // 生成结束后从 DB 对齐：用持久化的最终叙述替换流式拼接的内容，
       // 同时兜住「刷新落在生成完成瞬间」时丢失的那段叙述。
       void resyncHistory()
+      // 同步会话状态：刷新 world_state.pending_checks，使「投骰」按钮按待定检定增减。
+      refetchSession()
       return
     }
     if (t === 'seat') {
@@ -198,6 +200,9 @@ export function GameSessionPage() {
       addMessage({ id: chunk.id || '', type: 'narration', content: chunk.content || '', actor_name: 'KP' })
     } else if (t === 'dice' || t === 'system' || t === 'ooc') {
       addMessage({ id: chunk.id || '', type: t, content: chunk.content || '', actor_name: chunk.actor_name, metadata: chunk.metadata })
+    } else if (t === 'check_request') {
+      // 待定检定提示：作为系统消息存（metadata.check_request 携带 check_id），渲染时带「投骰」按钮
+      addMessage({ id: chunk.id || '', type: 'system', content: chunk.content || '', actor_name: chunk.actor_name, metadata: { ...(chunk.metadata || {}), is_player: isPlayer } })
     }
   }, [addMessage, appendToStream, endStream, startStreamMessage, resyncHistory, refetchSession])
 
@@ -288,7 +293,8 @@ export function GameSessionPage() {
     return () => el.removeEventListener('scroll', handleScroll)
   }, [handleScroll])
 
-  const rollCheck = async (skill: string, difficulty: string) => {
+  // 玩家「申请」检定：只报技能，难度交 KP 裁定（玩家不指定）。
+  const rollCheck = async (skill: string) => {
     if (!currentSession || streaming) {
       if (streaming) toast.error('KP 正在叙事，请稍候')
       return
@@ -296,11 +302,26 @@ export function GameSessionPage() {
     try {
       setStreaming(true)
       await api.post(`/sessions/${currentSession.id}/check`, {
-        skill, difficulty, acting_character_id: myCharId,
+        skill, acting_character_id: myCharId,
       })
     } catch (e: unknown) {
       setStreaming(false)
-      toast.error(e instanceof Error ? e.message : '检定失败')
+      toast.error(e instanceof Error ? e.message : '检定申请失败')
+    }
+  }
+
+  // 玩家点「投骰」：对一个待定检定掷骰。
+  const submitRoll = async (checkId: string) => {
+    if (!currentSession || streaming) {
+      if (streaming) toast.error('KP 正在叙事，请稍候')
+      return
+    }
+    try {
+      setStreaming(true)
+      await api.post(`/sessions/${currentSession.id}/roll`, { check_id: checkId })
+    } catch (e: unknown) {
+      setStreaming(false)
+      toast.error(e instanceof Error ? e.message : '投骰失败')
     }
   }
 
@@ -417,6 +438,30 @@ export function GameSessionPage() {
               )
             }
             if (msg.type === 'system') {
+              // 待定检定提示：携带 check_request 元数据时，渲染成带「投骰」按钮的卡片
+              const checkId = msg.metadata?.check_request ? String(msg.metadata?.id ?? '') : ''
+              if (checkId) {
+                const pending = (currentSession?.world_state as Record<string, unknown> | undefined)?.pending_checks as Record<string, unknown> | undefined
+                const stillPending = !!pending && checkId in pending
+                const mine = !msg.metadata?.char_id || msg.metadata?.char_id === myCharId
+                return (
+                  <div key={msg.id} className="chat-msg py-1 flex justify-center">
+                    <div className="rounded-md px-3 py-2 text-sm flex items-center gap-3"
+                      style={{ background: 'var(--color-bg-tertiary)', borderLeft: '3px solid var(--color-accent)', maxWidth: '100%' }}>
+                      <GiRollingDices style={{ color: 'var(--color-accent)', fontSize: '1.1rem', flexShrink: 0 }} />
+                      <span className="whitespace-pre-wrap">{msg.content}</span>
+                      {stillPending && mine && (
+                        <button onClick={() => submitRoll(checkId)} disabled={streaming}
+                          className="btn-primary text-xs !px-2.5 !py-1 flex items-center gap-1 flex-shrink-0"
+                          style={streaming ? { opacity: 0.5 } : undefined}>
+                          <GiRollingDices size={13} /> 投骰
+                        </button>
+                      )}
+                      {!stillPending && <span className="text-xs flex-shrink-0" style={{ color: 'var(--color-text-secondary)', opacity: 0.6 }}>已投骰</span>}
+                    </div>
+                  </div>
+                )
+              }
               return (
                 <div key={msg.id} className="chat-msg py-1 text-center">
                   <span className="inline-block text-xs px-2.5 py-1 rounded whitespace-pre-wrap"

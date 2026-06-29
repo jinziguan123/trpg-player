@@ -29,15 +29,9 @@ interface CharacterData {
 
 interface CharacterPanelProps {
   character: CharacterData
-  /** 提供时（在场、查看自己的卡）技能可点击发起检定 */
-  onSkillCheck?: (skill: string, difficulty: string) => void
+  /** 提供时（在场、查看自己的卡）技能可点击「申请检定」——难度由 KP 裁定，玩家不指定 */
+  onSkillCheck?: (skill: string) => void
 }
-
-const DIFFICULTIES: { key: string; label: string }[] = [
-  { key: 'normal', label: '普通' },
-  { key: 'hard', label: '困难' },
-  { key: 'extreme', label: '极难' },
-]
 
 const ATTR_LABELS: Record<string, string> = {
   STR: '力量', CON: '体质', SIZ: '体型', DEX: '敏捷',
@@ -192,10 +186,9 @@ function BasicInfoTab({ character }: { character: CharacterData }) {
 
 function SkillsTab({
   character, onSkillCheck,
-}: { character: CharacterData; onSkillCheck?: (skill: string, difficulty: string) => void }) {
+}: { character: CharacterData; onSkillCheck?: (skill: string) => void }) {
   const skills = character.skills || {}
   const [query, setQuery] = useState('')
-  const [difficulty, setDifficulty] = useState('normal')
   const sorted = Object.entries(skills).sort((a, b) => b[1] - a[1])
   const filtered = query.trim()
     ? sorted.filter(([name]) => fuzzyMatch(query.trim(), name))
@@ -211,24 +204,9 @@ function SkillsTab({
         style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}
       />
       {onSkillCheck && (
-        <div className="py-1">
-          <div className="flex items-center gap-1.5 flex-nowrap">
-            <span className="text-xs flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }}>难度</span>
-            {DIFFICULTIES.map((d) => (
-              <button
-                key={d.key}
-                onClick={() => setDifficulty(d.key)}
-                className="text-xs px-1.5 py-0.5 rounded transition-colors flex-shrink-0"
-                style={difficulty === d.key
-                  ? { background: 'var(--color-accent)', color: '#fff' }
-                  : { background: 'var(--color-bg-tertiary)', color: 'var(--color-text-secondary)' }}
-              >
-                {d.label}
-              </button>
-            ))}
-          </div>
-          <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>点击技能发起检定（需确认）</p>
-        </div>
+        <p className="text-xs py-1" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>
+          点击技能向 KP 申请检定（难度由 KP 裁定，之后再投骰）
+        </p>
       )}
       <div className="space-y-0.5">
         {filtered.map(([name, value]) => {
@@ -249,19 +227,18 @@ function SkillsTab({
               </div>
             )
           }
-          const diffLabel = DIFFICULTIES.find((d) => d.key === difficulty)?.label ?? '普通'
           return (
             <ConfirmDialog
               key={name}
-              title="发起检定"
-              description={`对「${name}」（当前值 ${value}）发起${diffLabel}检定并掷骰？`}
-              confirmLabel="掷骰"
-              onConfirm={() => onSkillCheck(name, difficulty)}
+              title="申请检定"
+              description={`就「${name}」（当前值 ${value}）向 KP 申请检定？难度由 KP 据情境裁定，随后你再投骰。`}
+              confirmLabel="申请"
+              onConfirm={() => onSkillCheck(name)}
             >
               {(open) => (
                 <button
                   onClick={open}
-                  title={`发起 ${name} 检定`}
+                  title={`申请 ${name} 检定`}
                   className="w-full flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-accent)] hover:bg-opacity-10 cursor-pointer transition-colors"
                 >
                   {row}
