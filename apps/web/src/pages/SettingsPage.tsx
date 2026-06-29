@@ -19,6 +19,7 @@ interface AIProfile {
   model_name: string
   api_key: string
   is_active: boolean
+  vision?: boolean
 }
 
 interface TestResult {
@@ -33,6 +34,7 @@ type FormData = {
   base_url: string
   model_name: string
   api_key: string
+  vision: boolean
 }
 
 const EMPTY_FORM: FormData = {
@@ -41,6 +43,7 @@ const EMPTY_FORM: FormData = {
   base_url: '',
   model_name: '',
   api_key: '',
+  vision: false,
 }
 
 const PROTOCOL_INFO: Record<
@@ -178,6 +181,7 @@ function AISettingsPanel() {
       base_url: p.base_url,
       model_name: p.model_name,
       api_key: p.api_key,
+      vision: !!p.vision,
     })
   }
 
@@ -505,6 +509,17 @@ function AISettingsPanel() {
                   setForm({ ...form, model_name: e.target.value })
                 }
               />
+            </div>
+
+            {/* 多模态（视觉） */}
+            <div>
+              <label className="flex items-center gap-2 text-sm font-semibold cursor-pointer" style={{ fontSize: '0.85rem' }}>
+                <input type="checkbox" checked={form.vision} onChange={(e) => setForm({ ...form, vision: e.target.checked })} />
+                支持视觉（多模态）
+              </label>
+              <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+                勾选后才能用「据图片生成地图 / 图片模组解析」等看图功能。请确保所选模型确实支持视觉（如 GPT-4o / Claude / Gemini / Qwen-VL）。
+              </p>
             </div>
 
             {/* API Key */}

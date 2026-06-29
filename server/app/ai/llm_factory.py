@@ -14,9 +14,10 @@ from app.ai.provider import LLMProvider
 class OpenAICompatProvider(LLMProvider):
     """OpenAI 兼容协议的通用 Provider（DeepSeek / OpenAI / 任意 OpenAI 兼容端点）。"""
 
-    def __init__(self, model: str = "deepseek-chat", base_url: str = "", api_key: str = ""):
+    def __init__(self, model: str = "deepseek-chat", base_url: str = "", api_key: str = "", vision: bool = False):
         self.model = model
         self._api_key = api_key
+        self._vision = vision  # 配置里的显式「支持视觉」开关
         self._client = httpx.AsyncClient(timeout=120.0)
         base = base_url.rstrip("/") if base_url else "https://api.deepseek.com"
         self._api_url = f"{base}/chat/completions"
@@ -58,6 +59,8 @@ class OpenAICompatProvider(LLMProvider):
                      "gemini", "qwen-vl", "qwen2-vl", "qwen2.5-vl", "glm-4v", "llava", "internvl", "yi-vision")
 
     def supports_vision(self) -> bool:
+        if self._vision:   # 配置里显式开了视觉 → 直接认可（覆盖名字猜测）
+            return True
         m = (self.model or "").lower()
         return any(h in m for h in self._VISION_HINTS)
 
@@ -129,6 +132,7 @@ def get_llm() -> LLMProvider:
             model=profile.model_name,
             base_url=profile.base_url,
             api_key=profile.api_key,
+            vision=getattr(profile, "vision", False),
         )
 
     # 没有激活配置，回退到 .env 配置

@@ -147,6 +147,14 @@ def test_current_scene_map_resolves_and_places_player(db_factory):
     assert out2["map"]["tiles"] == alt_map["tiles"]
 
 
+def test_provider_vision_flag():
+    """显式 vision 开关覆盖模型名启发式。"""
+    from app.ai.llm_factory import OpenAICompatProvider
+    assert OpenAICompatProvider(model="deepseek-chat").supports_vision() is False
+    assert OpenAICompatProvider(model="deepseek-chat", vision=True).supports_vision() is True  # 显式开
+    assert OpenAICompatProvider(model="gpt-4o").supports_vision() is True                      # 名字命中
+
+
 def test_generate_map_from_image(monkeypatch):
     """多模态：支持视觉时据图片产出地图；不支持时报错。"""
     import asyncio

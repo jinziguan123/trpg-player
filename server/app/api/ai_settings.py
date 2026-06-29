@@ -26,6 +26,7 @@ class AIProfile(BaseModel):
     model_name: str = ""
     api_key: str = ""
     is_active: bool = False
+    vision: bool = False  # 是否支持多模态（看图）。显式开关，覆盖按模型名的启发式判断
 
 
 class AIProfileCreate(BaseModel):
@@ -34,6 +35,7 @@ class AIProfileCreate(BaseModel):
     base_url: str = ""
     model_name: str = ""
     api_key: str = ""
+    vision: bool = False
 
 
 class AIProfileUpdate(BaseModel):
@@ -42,6 +44,7 @@ class AIProfileUpdate(BaseModel):
     base_url: str | None = None
     model_name: str | None = None
     api_key: str | None = None
+    vision: bool | None = None
 
 
 class TestResult(BaseModel):
@@ -155,6 +158,7 @@ def create_profile(body: AIProfileCreate):
         base_url=body.base_url,
         model_name=body.model_name,
         api_key=body.api_key,
+        vision=body.vision,
         is_active=len(profiles) == 0,  # 第一个配置自动激活
     )
     profiles.append(new_profile)
@@ -183,6 +187,8 @@ def update_profile(profile_id: str, body: AIProfileUpdate):
         target.base_url = body.base_url
     if body.model_name is not None:
         target.model_name = body.model_name
+    if body.vision is not None:
+        target.vision = body.vision
     if body.api_key is not None:
         # 如果包含掩码字符，说明前端没有修改 key，保留旧值
         if "****" not in body.api_key:
