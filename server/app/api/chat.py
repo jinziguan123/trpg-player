@@ -5,7 +5,7 @@ from app.api.deps import player_token
 from app.database import get_db
 from app.models.session import GameSession
 from app.schemas.event import ChatRequest, CheckRequest, RollRequest
-from app.services import session_service
+from app.services import map_service, session_service
 from app.services.chat_service import (
     _make_chunk,
     event_to_chunk,
@@ -161,3 +161,12 @@ async def roll(
         run_roll_generation(session_id, data.check_id.strip()),
     )
     return {"ok": True}
+
+
+@router.get("/{session_id}/scene-map")
+def scene_map(session_id: str, db: Session = Depends(get_db)):
+    """当前场景的（按剧情 flags 解析后的）像素地图 + 实体位置，供游戏内地图面板渲染。"""
+    game_session = db.get(GameSession, session_id)
+    if not game_session:
+        raise HTTPException(404, "会话不存在")
+    return map_service.current_scene_map(db, game_session)

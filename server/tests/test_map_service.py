@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, Module  # noqa: F401
+from app.models import Base, Character, GameSession, Module  # noqa: F401
 from app.services import map_service
 
 
@@ -77,3 +77,28 @@ def test_generate_maps_persists_and_skips(db_factory, monkeypatch):
     out2 = asyncio.run(map_service.generate_maps_for_module(db, mod.id, force=True))
     by_id2 = {s["id"]: s for s in out2.scenes}
     assert by_id2["s2"]["map"]["tiles"] == GOOD_MAP["tiles"]
+
+
+def test_current_scene_map_resolves_and_places_player(db_factory):
+    """运行时：返回当前场景地图 + 玩家落在入口；flag 变体带 map 时用变体地图。"""
+    db = db_factory()
+    base_map = {"w": 5, "h": 3, "tiles": ["#####", "+...#", "#####"], "entrances": [{"name": "门", "x": 0, "y": 1}]}
+    alt_map = {"w": 3, "h": 3, "tiles": ["###", "#.#", "###"]}
+    scene = {"id": "s1", "name": "甲", "map": base_map,
+             "states": [{"when": ["wall_broken"], "map": alt_map}]}
+    mod = Module(title="t", rule_system="coc", scenes=[scene], npcs=[], clues=[])
+    hero = Character(name="阿强", rule_system="coc", is_player=True)
+    db.add_all([mod, hero]); db.commit()
+    sess = GameSession(module_id=mod.id, player_character_id=hero.id, status="active",
+                       current_scene_id="s1", world_state={"flags": {}})
+    db.add(sess); db.commit()
+
+    out = map_service.current_scene_map(db, sess)
+    assert out["map"]["tiles"] == base_map["tiles"]
+    assert out["entities"] == [{"name": "阿强", "x": 0, "y": 1, "kind": "player"}]  # 落在入口门
+
+    # 置 flag 后用变体地图（打破墙壁→新地图）
+    sess.world_state = {"flags": {"wall_broken": True}}
+    db.commit()
+    out2 = map_service.current_scene_map(db, sess)
+    assert out2["map"]["tiles"] == alt_map["tiles"]

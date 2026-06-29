@@ -8,8 +8,11 @@ import { useSessionStore } from '../stores/sessionStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { PartyRoster } from '../components/game/PartyRoster'
 import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
+import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { GiReturnArrow, GiRollingDices } from 'react-icons/gi'
-import { Copy, Bot } from 'lucide-react'
+import { Copy, Bot, Map as MapIcon, ChevronUp } from 'lucide-react'
+
+interface SceneMapPayload { scene_id: string | null; scene_name: string | null; map: TileMap | null; entities: MapEntity[] }
 
 const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE):[^\]]*\]/g
 const OOC_RE = /（[^（）]*）|\([^()]*\)/g
@@ -86,6 +89,8 @@ export function GameSessionPage() {
   const [panelCharId, setPanelCharId] = useState<string | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
   const [showPanel, setShowPanel] = useState(true)
+  const [showMap, setShowMap] = useState(false)
+  const [sceneMap, setSceneMap] = useState<SceneMapPayload | null>(null)
 
   const primaryId = currentSession?.player_character_id ?? null
   // 多人：我在本房间认领的角色（无则回退到主角，兼容单人）
@@ -276,6 +281,12 @@ export function GameSessionPage() {
     }
   }, [shownCharId, refreshTick])
 
+  // 场景地图：展开时拉取当前场景的地图+实体位置；场景切换/生成结束(refreshTick)后刷新
+  useEffect(() => {
+    if (!showMap || !sessionId) return
+    api.get<SceneMapPayload>(`/sessions/${sessionId}/scene-map`).then(setSceneMap).catch(() => setSceneMap(null))
+  }, [showMap, sessionId, currentSession?.current_scene_id, refreshTick])
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [messages.length])
@@ -385,12 +396,20 @@ export function GameSessionPage() {
               房间码 {currentSession.room_code} <Copy size={11} />
             </button>
           )}
-          <button
-            onClick={() => setShowPanel(!showPanel)}
-            className="ml-auto text-xs btn-secondary !px-2 !py-0.5"
-          >
-            {showPanel ? '收起角色卡' : '展开角色卡'}
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setShowMap(!showMap)}
+              className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
+            >
+              <MapIcon size={12} /> {showMap ? '收起地图' : '地图'}
+            </button>
+            <button
+              onClick={() => setShowPanel(!showPanel)}
+              className="text-xs btn-secondary !px-2 !py-0.5"
+            >
+              {showPanel ? '收起角色卡' : '展开角色卡'}
+            </button>
+          </div>
         </div>
         {currentSession.participants && currentSession.participants.length > 1 && (
           <div className="pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
@@ -399,6 +418,21 @@ export function GameSessionPage() {
               selectedId={shownCharId}
               onSelect={(id) => { setPanelCharId(id); setShowPanel(true) }}
             />
+          </div>
+        )}
+        {showMap && (
+          <div className="pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
+            {sceneMap?.map ? (
+              <div className="rounded-md p-2 overflow-auto" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-text-accent)' }}><MapIcon size={12} />{sceneMap.scene_name || '当前场景'}</span>
+                  <button onClick={() => setShowMap(false)} title="收起地图" style={{ color: 'var(--color-text-secondary)' }}><ChevronUp size={14} /></button>
+                </div>
+                <MapView map={sceneMap.map} entities={sceneMap.entities} />
+              </div>
+            ) : (
+              <p className="text-xs text-center py-3" style={{ color: 'var(--color-text-secondary)' }}>当前场景暂无地图——可在模组「地图」视图里生成。</p>
+            )}
           </div>
         )}
         {!liveConnected && (

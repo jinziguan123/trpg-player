@@ -12,7 +12,9 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.ai.llm_factory import get_llm
+from app.models.character import Character
 from app.models.module import Module
+from app.models.session import GameSession
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +136,49 @@ async def generate_scene_map(
         m["_issues"] = issues
         logger.warning("场景 %s 地图校验问题：%s", scene.get("id"), issues)
     return m
+
+
+def _spawn_pos(m: dict) -> tuple[int, int]:
+    """玩家在场景里的落点：优先第一个出口（入口），否则第一块地板，再否则 (0,0)。"""
+    ents = m.get("entrances") or []
+    if ents and isinstance(ents[0].get("x"), int):
+        return ents[0]["x"], ents[0].get("y", 0)
+    for y, row in enumerate(m.get("tiles") or []):
+        x = row.find(".")
+        if x >= 0:
+            return x, y
+    return 0, 0
+
+
+def current_scene_map(db: Session, session: GameSession) -> dict:
+    """运行时：按当前 flags 解析当前场景，返回其地图 + 实体位置（v1：玩家 token 落在入口）。
+
+    地图随剧情变化复用场景 states——若某变体带了 `map` 字段，解析后即用该变体地图
+    （打破墙壁→新房间等只需在变体里给新地图）。
+    """
+    from app.ai.context import _active_flags, _resolve_state
+
+    module = db.get(Module, session.module_id)
+    scenes = (module.scenes if module else []) or []
+    scene = next(
+        (s for s in scenes if s.get("id") == session.current_scene_id),
+        scenes[0] if scenes else None,
+    )
+    if not scene:
+        return {"scene_id": None, "scene_name": None, "map": None, "entities": []}
+    resolved = _resolve_state(scene, _active_flags(session))
+    m = resolved.get("map")
+    entities: list[dict] = []
+    if m:
+        sx, sy = _spawn_pos(m)
+        pc = db.get(Character, session.player_character_id)
+        entities.append({"name": pc.name if pc else "玩家", "x": sx, "y": sy, "kind": "player"})
+    return {
+        "scene_id": scene.get("id"),
+        "scene_name": scene.get("name") or scene.get("title") or scene.get("id"),
+        "map": m,
+        "entities": entities,
+    }
 
 
 async def generate_maps_for_module(db: Session, module_id: str, force: bool = False) -> Module | None:
