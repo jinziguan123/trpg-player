@@ -28,16 +28,22 @@ class ChatRequest(BaseModel):
 
 
 class CheckRequest(BaseModel):
-    """玩家主动发起技能/属性检定。"""
+    """玩家『申请』技能/属性检定——只报技能，难度由 KP 裁定（玩家不指定）。"""
 
     skill: str
-    difficulty: Literal["normal", "hard", "extreme"] = "normal"
     acting_character_id: str | None = None
+
+
+class RollRequest(BaseModel):
+    """玩家对一个待定检定点『投骰』。"""
+
+    check_id: str
 
 
 class StreamChunk(BaseModel):
     type: Literal[
-        "narration", "dialogue", "action", "dice", "system", "thinking", "done"
+        "narration", "dialogue", "action", "dice", "system",
+        "check_request", "thinking", "done",
     ]
     actor_name: str | None = None
     content: str = ""

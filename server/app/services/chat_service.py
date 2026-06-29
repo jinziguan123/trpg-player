@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from collections.abc import AsyncIterator
 
 from sqlalchemy.orm import Session
@@ -14,6 +15,7 @@ from app.ai.agents.team_agent import TeamAgent
 from app.ai.context import build_kp_context, build_npc_context, build_team_context
 from app.ai.llm_factory import get_llm
 from app.ai.prompts.kp_system import (
+    CHECK_REQUEST_PROMPT,
     KP_DICE_CONTINUATION_PROMPT,
     KP_RULE_CONTINUATION_PROMPT,
 )
@@ -95,6 +97,23 @@ def split_speech_action(text: str) -> list[tuple[str, str]]:
 # 模组未给某 NPC 某技能数值时的兜底基线（普通人水平），保证 NPC 检定可解析。
 DEFAULT_NPC_SKILL = 45
 
+# 要求难度的中文标签（用于「请进行一个【困难】的【侦查】检定」提示；normal 不带难度词）。
+DIFFICULTY_LABEL = {"normal": "", "hard": "困难", "extreme": "极难"}
+
+# 达成等级中文标签（六档），与引擎 CheckResult.tier 对应。
+TIER_LABEL = {
+    "critical": "大成功", "extreme": "极难成功", "hard": "困难成功",
+    "regular": "普通成功", "fail": "普通失败", "fumble": "大失败",
+}
+
+
+def _check_prompt_text(actor_name: str, skill: str, difficulty: str) -> str:
+    """req 1：系统主动给出的检定提示语。"""
+    diff = DIFFICULTY_LABEL.get(difficulty, "")
+    if diff:
+        return f"请 {actor_name} 进行一次「{diff}」难度的「{skill}」检定"
+    return f"请 {actor_name} 进行一次「{skill}」检定"
+
 # 成功等级排序（对抗骰比较用）：大成功 > 困难/极难成功 > 普通成功 > 失败 > 大失败。
 _OUTCOME_RANK = {
     "critical_success": 4,
@@ -121,11 +140,11 @@ def _resolve_check_actor(
     player_char: Character,
     teammates: list[Character] | None,
     module: Module,
-) -> tuple[dict, str, bool]:
-    """把 char= 解析成 (character_data, 显示名, is_npc)。
+) -> tuple[dict, str, bool, str | None]:
+    """把 char= 解析成 (character_data, 显示名, is_npc, char_id)。
 
     空/主角→主角；队友名→对应队友；NPC 名→用模组 NPC 数值卡（缺该技能用 DEFAULT_NPC_SKILL
-    兜底）。匹配不到时兜底当作主角，避免检定无法进行。
+    兜底）。匹配不到时兜底当作主角，避免检定无法进行。char_id 为对应玩家角色的 id（NPC 为 None）。
     """
     name = (char_ref or "").strip()
 
@@ -137,18 +156,18 @@ def _resolve_check_actor(
         }
 
     if not name or name in ("主角", "玩家", player_char.name):
-        return cdata_of(player_char), player_char.name, False
+        return cdata_of(player_char), player_char.name, False, player_char.id
     for t in (teammates or []):
         if t.name and (t.name == name or name in t.name or t.name in name):
-            return cdata_of(t), t.name, False
+            return cdata_of(t), t.name, False, t.id
     for npc in (module.npcs or []):
         nm = npc.get("name", "")
         if nm and (nm == name or name in nm or nm in name):
             skills = dict(npc.get("skills") or {})
             if skill_name and skill_name not in skills:
                 skills[skill_name] = DEFAULT_NPC_SKILL
-            return {"base_attributes": {}, "skills": skills, "system_data": {}}, nm, True
-    return cdata_of(player_char), player_char.name, False
+            return {"base_attributes": {}, "skills": skills, "system_data": {}}, nm, True, None
+    return cdata_of(player_char), player_char.name, False, player_char.id
 
 
 _ALL_TOKENS = {"在场", "全体", "全部", "所有人", "所有", "all", "everyone"}
@@ -190,8 +209,8 @@ async def _resolve_opposed(
     if not a_skill or not b_skill:
         return
 
-    a_data, a_name, _ = _resolve_check_actor(a_ref, a_skill, player_char, teammates, module)
-    b_data, b_name, _ = _resolve_check_actor(b_ref, b_skill, player_char, teammates, module)
+    a_data, a_name, _, _ = _resolve_check_actor(a_ref, a_skill, player_char, teammates, module)
+    b_data, b_name, _, _ = _resolve_check_actor(b_ref, b_skill, player_char, teammates, module)
     a_res = engine.resolve_check(a_data, a_skill, "normal")
     b_res = engine.resolve_check(b_data, b_skill, "normal")
 
@@ -734,10 +753,46 @@ async def run_chat_generation(session_id: str) -> None:
         db.close()
 
 
-async def run_check_generation(
-    session_id: str, actor_id: str, skill: str, difficulty: str = "normal",
+async def _run_kp_turn(
+    db, session_id, game_session, module, player_char, party_others, user_prompt: str,
 ) -> None:
-    """玩家主动发起检定：对其角色掷骰（明骰）→ 落库广播 → KP 据结果叙述后续。"""
+    """跑一轮 KP：注入 user_prompt → 流式叙事 → 处理指令（待定检定/掷骰/场景等）→ done。"""
+    llm = get_llm()
+    events = session_service.get_session_events(db, session_id)
+    rules_enabled = rulebook_service.has_rulebook(db, module.rule_system)
+    messages = build_kp_context(
+        game_session, module, player_char, events,
+        teammates=party_others, rules_lookup_enabled=rules_enabled,
+    )
+    messages.append({"role": "user", "content": user_prompt})
+
+    kp = KPAgent(llm)
+    res = ["", "", []]
+    try:
+        async for chunk in _stream_narration_filtered(
+            kp, messages, res, npcs=_matcher_npcs(module, party_others),
+        ):
+            room_hub.broadcast(session_id, chunk)
+    except asyncio.CancelledError:
+        _persist_narration(db, session_id, res)
+        raise
+    _persist_narration(db, session_id, res)
+
+    async for chunk in _process_commands(
+        db, session_id, res[1], module, player_char, game_session, llm,
+        teammates=party_others,
+    ):
+        room_hub.broadcast(session_id, chunk)
+    room_hub.broadcast(session_id, _make_chunk("done"))
+
+
+async def run_check_request_generation(
+    session_id: str, actor_id: str, skill: str,
+) -> None:
+    """玩家『申请』检定：交 KP 裁定本次是否需要检定、用什么难度（玩家不指定难度）。
+
+    KP 若判定需要，会输出 [DICE_CHECK]，经 _process_commands 挂成「待玩家投骰」；
+    若判定无需检定，则直接简短叙述。"""
     from app.database import SessionLocal
 
     db = SessionLocal()
@@ -749,19 +804,54 @@ async def run_check_generation(
         party_others = session_service.get_party_members(
             db, session_id, exclude_id=game_session.player_character_id,
         )
+        await _run_kp_turn(
+            db, session_id, game_session, module, player_char, party_others,
+            CHECK_REQUEST_PROMPT.format(actor=actor.name, skill=skill),
+        )
+    except asyncio.CancelledError:
+        logger.info("检定申请生成被取消: session=%s", session_id)
+    except Exception:
+        logger.exception("检定申请生成失败: session=%s", session_id)
+        room_hub.broadcast(session_id, _make_chunk("system", "生成出错，请重试"))
+        room_hub.broadcast(session_id, _make_chunk("done"))
+    finally:
+        db.close()
 
+
+async def run_roll_generation(session_id: str, check_id: str) -> None:
+    """玩家点『投骰』：取出待定检定 → 按 KP 定的难度掷骰 → 广播达成等级 → KP 据等级续写。"""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        game_session = db.get(GameSession, session_id)
+        check = session_service.pop_pending_check(db, session_id, check_id)
+        if not check:
+            room_hub.broadcast(session_id, _make_chunk("done"))
+            return
+        module = db.get(Module, game_session.module_id)
+        player_char = db.get(Character, game_session.player_character_id)
+        party_others = session_service.get_party_members(
+            db, session_id, exclude_id=game_session.player_character_id,
+        )
+
+        skill = check["skill"]
+        difficulty = check.get("difficulty", "normal")
+        source = check.get("source", "")
+        char_data, disp_name, _is_npc, _cid = _resolve_check_actor(
+            check.get("char_ref", ""), skill, player_char, party_others, module,
+        )
         engine = get_engine(module.rule_system)
-        cdata = {
-            "base_attributes": actor.base_attributes,
-            "skills": actor.skills,
-            "system_data": actor.system_data,
-        }
-        result = engine.resolve_check(cdata, skill, difficulty)
-        dice_content = f"{actor.name}｜{skill} 检定（{difficulty}）：{result.description}"
+        result = engine.resolve_check(char_data, skill, difficulty)
+        tier_cn = TIER_LABEL.get(result.tier, result.tier)
+
+        dice_content = (
+            f"{disp_name}｜{skill} 检定（{difficulty}）：{tier_cn}（{result.description}）"
+        )
         dice_meta = {
-            "skill": skill, "skill_value": result.skill_value,
-            "roll": result.roll, "target": result.target,
-            "outcome": result.outcome, "actor": actor.name,
+            "skill": skill, "skill_value": result.skill_value, "roll": result.roll,
+            "target": result.target, "outcome": result.outcome, "tier": result.tier,
+            "actor": disp_name,
         }
         ev = session_service.add_event(
             db, session_id, "dice", dice_content, actor_name="系统", metadata=dice_meta,
@@ -771,43 +861,19 @@ async def run_check_generation(
             _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id),
         )
 
-        # 交 KP 据检定结果续写（复用骰子续写范式）
-        llm = get_llm()
-        events = session_service.get_session_events(db, session_id)
-        rules_enabled = rulebook_service.has_rulebook(db, module.rule_system)
-        messages = build_kp_context(
-            game_session, module, player_char, events,
-            teammates=party_others, rules_lookup_enabled=rules_enabled,
+        desc = (
+            f"{disp_name} {skill}（{difficulty}），达成 {tier_cn}"
+            + (f"（针对：{source}）" if source else "")
+            + f"：{result.description}"
         )
-        messages.append({
-            "role": "user",
-            "content": KP_DICE_CONTINUATION_PROMPT.format(
-                dice_results=f"{actor.name} {skill}（{difficulty}）：{result.description}"
-            ),
-        })
-
-        kp = KPAgent(llm)
-        res = ["", "", []]
-        try:
-            async for chunk in _stream_narration_filtered(
-                kp, messages, res, npcs=_matcher_npcs(module, party_others),
-            ):
-                room_hub.broadcast(session_id, chunk)
-        except asyncio.CancelledError:
-            _persist_narration(db, session_id, res)
-            raise
-        _persist_narration(db, session_id, res)
-
-        async for chunk in _process_commands(
-            db, session_id, res[1], module, player_char, game_session, llm,
-            teammates=party_others,
-        ):
-            room_hub.broadcast(session_id, chunk)
-        room_hub.broadcast(session_id, _make_chunk("done"))
+        await _run_kp_turn(
+            db, session_id, game_session, module, player_char, party_others,
+            KP_DICE_CONTINUATION_PROMPT.format(dice_results=desc),
+        )
     except asyncio.CancelledError:
-        logger.info("检定生成被取消: session=%s", session_id)
+        logger.info("投骰生成被取消: session=%s", session_id)
     except Exception:
-        logger.exception("检定生成失败: session=%s", session_id)
+        logger.exception("投骰生成失败: session=%s", session_id)
         room_hub.broadcast(session_id, _make_chunk("system", "生成出错，请重试"))
         room_hub.broadcast(session_id, _make_chunk("done"))
     finally:
@@ -1001,11 +1067,38 @@ async def _process_commands(
         difficulty = (kv.get("difficulty") or "normal").strip() or "normal"
         char_ref = (kv.get("char") or "").strip()
         blind = (kv.get("visibility") or "open").strip().lower() == "blind"
+        source = (kv.get("source") or "").strip()
 
-        char_data, disp_name, is_npc = _resolve_check_actor(
+        char_data, disp_name, is_npc, char_id = _resolve_check_actor(
             char_ref, skill_name, player_char, teammates, module,
         )
+
+        # req 1/2：真人控制、且非暗投的检定 → 不自动掷，挂成「待玩家投骰」并给出提示；
+        # NPC 暗骰 / AI 队友 / 暗投 仍由系统自动掷（无人点投骰，避免卡住）。
+        if (
+            not is_npc and not blind
+            and session_service.is_human_controlled(db, session_id, char_id)
+        ):
+            check_id = uuid.uuid4().hex
+            pending = {
+                "id": check_id, "skill": skill_name, "difficulty": difficulty,
+                "char_ref": char_ref, "char_id": char_id, "actor_name": disp_name,
+                "source": source,
+            }
+            session_service.add_pending_check(db, session_id, pending)
+            prompt_text = _check_prompt_text(disp_name, skill_name, difficulty)
+            meta = {"check_request": True, **pending}
+            ev = session_service.add_event(
+                db, session_id, "system", prompt_text, actor_name="系统", metadata=meta,
+            )
+            yield _make_chunk(
+                "check_request", prompt_text, metadata=meta,
+                event_id=ev.id, actor_id=char_id,
+            )
+            continue  # 等玩家 /roll，本轮不掷、不续写
+
         result = engine.resolve_check(char_data, skill_name, difficulty)
+        tier_cn = TIER_LABEL.get(result.tier, result.tier)
 
         if blind:
             # 暗投（玩家/队友）/暗骰（NPC）：聊天只显示"做了一次隐藏检定"，成败仅回灌 KP。
@@ -1014,11 +1107,11 @@ async def _process_commands(
             dice_meta = {"skill": skill_name, "actor": disp_name, "blind": True}
             dice_descriptions.append(
                 f"【{kind_word}·{disp_name}·{skill_name}（{difficulty}），结果仅你（KP）可见，"
-                f"绝不可直接把成败告诉玩家】：{result.description}"
+                f"绝不可直接把成败告诉玩家】：达成 {tier_cn}；{result.description}"
             )
         else:
             dice_content = (
-                f"{disp_name}｜{skill_name} 检定（{difficulty}）：{result.description}"
+                f"{disp_name}｜{skill_name} 检定（{difficulty}）：{tier_cn}（{result.description}）"
             )
             dice_meta = {
                 "skill": skill_name,
@@ -1026,10 +1119,13 @@ async def _process_commands(
                 "roll": result.roll,
                 "target": result.target,
                 "outcome": result.outcome,
+                "tier": result.tier,
                 "actor": disp_name,
             }
             dice_descriptions.append(
-                f"{disp_name} {skill_name}（{difficulty}）：{result.description}"
+                f"{disp_name} {skill_name}（{difficulty}），达成 {tier_cn}"
+                + (f"（针对：{source}）" if source else "")
+                + f"：{result.description}"
             )
 
         ev = session_service.add_event(

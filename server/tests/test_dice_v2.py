@@ -43,14 +43,18 @@ def _seed(db):
     return module, hero, [ally], session
 
 
-def _dice(chunks):
+def _of_type(chunks, t):
     out = []
     for c in chunks:
         if c.startswith("data: "):
             d = json.loads(c[6:])
-            if d.get("type") == "dice":
+            if d.get("type") == t:
                 out.append(d)
     return out
+
+
+def _dice(chunks):
+    return _of_type(chunks, "dice")
 
 
 def _run(db, module, hero, teammates, session, kp_text, monkeypatch):
@@ -80,35 +84,58 @@ def test_parse_tag_kv_and_resolve_actor(db_factory):
         "skill": "侦查", "char": "守墓人", "visibility": "blind",
     }
     # 主角
-    cd, name, is_npc = chat_service._resolve_check_actor("", "侦查", hero, teammates, module)
-    assert name == "主角" and is_npc is False and cd["skills"]["侦查"] == 60
+    cd, name, is_npc, cid = chat_service._resolve_check_actor("", "侦查", hero, teammates, module)
+    assert name == "主角" and is_npc is False and cd["skills"]["侦查"] == 60 and cid == hero.id
     # 队友
-    cd, name, is_npc = chat_service._resolve_check_actor("阿尔法", "图书馆使用", hero, teammates, module)
-    assert name == "阿尔法" and is_npc is False
+    cd, name, is_npc, cid = chat_service._resolve_check_actor("阿尔法", "图书馆使用", hero, teammates, module)
+    assert name == "阿尔法" and is_npc is False and cid == teammates[0].id
     # NPC + 缺失技能用基线兜底
-    cd, name, is_npc = chat_service._resolve_check_actor("守墓人", "聆听", hero, teammates, module)
-    assert name == "守墓人" and is_npc is True
+    cd, name, is_npc, cid = chat_service._resolve_check_actor("守墓人", "聆听", hero, teammates, module)
+    assert name == "守墓人" and is_npc is True and cid is None
     assert cd["skills"]["聆听"] == chat_service.DEFAULT_NPC_SKILL  # 兜底
     assert cd["skills"]["潜行"] == 70                              # 卡上的保留
 
 
-def test_player_and_teammate_open_check(db_factory, monkeypatch):
+def test_player_check_pends_for_manual_roll(db_factory, monkeypatch):
+    """真人主角的明骰检定 → 不自动掷，挂成「待玩家投骰」并给出提示。"""
     db = db_factory()
     module, hero, teammates, session = _seed(db)
     chunks = _run(
         db, module, hero, teammates, session,
-        "你仔细搜索。\n[DICE_CHECK: skill=侦查, difficulty=normal]", monkeypatch,
+        "你仔细搜索。\n[DICE_CHECK: skill=侦查, difficulty=hard]", monkeypatch,
     )
-    dice = _dice(chunks)
-    assert len(dice) == 1
-    assert dice[0]["metadata"]["actor"] == "主角"
-    assert "blind" not in dice[0]["metadata"]
+    assert _dice(chunks) == []                     # 不自动掷
+    reqs = _of_type(chunks, "check_request")
+    assert len(reqs) == 1
+    assert reqs[0]["metadata"]["skill"] == "侦查"
+    assert reqs[0]["metadata"]["difficulty"] == "hard"
+    assert "困难" in reqs[0]["content"] and "侦查" in reqs[0]["content"]
+    # 待定检定已登记，等 /roll
+    db.expire_all()
+    pending = (db.get(GameSession, session.id).world_state or {}).get("pending_checks") or {}
+    assert any(c["skill"] == "侦查" for c in pending.values())
 
+
+def test_ai_teammate_check_auto_rolls(db_factory, monkeypatch):
+    """AI 队友（非真人控制）的检定仍由系统自动掷。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
     chunks = _run(
         db, module, hero, teammates, session,
         "[DICE_CHECK: skill=图书馆使用, char=阿尔法]", monkeypatch,
     )
-    assert _dice(chunks)[0]["metadata"]["actor"] == "阿尔法"
+    dice = _dice(chunks)
+    assert len(dice) == 1 and dice[0]["metadata"]["actor"] == "阿尔法"
+    assert dice[0]["metadata"]["tier"] in (
+        "critical", "extreme", "hard", "regular", "fail", "fumble",
+    )
+
+
+def test_check_prompt_phrasing():
+    """req 1：普通难度不带难度词；困难/极难带难度词。"""
+    assert chat_service._check_prompt_text("张三", "侦查", "normal") == "请 张三 进行一次「侦查」检定"
+    assert "困难" in chat_service._check_prompt_text("张三", "侦查", "hard")
+    assert "极难" in chat_service._check_prompt_text("张三", "图书馆使用", "extreme")
 
 
 def test_blind_player_and_npc(db_factory, monkeypatch):
@@ -129,13 +156,17 @@ def test_blind_player_and_npc(db_factory, monkeypatch):
     assert "暗骰" in d["content"]
 
 
-def test_run_check_generation_rolls_for_actor(db_factory, monkeypatch):
-    """玩家主动检定：run_check_generation 对其角色掷骰并落 dice 事件，再交 KP 续写。"""
+def test_roll_generation_rolls_pending_check(db_factory, monkeypatch):
+    """玩家点投骰：run_roll_generation 取出待定检定、掷骰落 dice 事件（含达成等级），再交 KP 续写。"""
     import app.database as database
     from app.services.room_hub import room_hub
 
     db = db_factory()
     module, hero, teammates, session = _seed(db)  # hero 有 侦查=60
+    session_service.add_pending_check(db, session.id, {
+        "id": "chk1", "skill": "侦查", "difficulty": "normal",
+        "char_ref": "", "char_id": hero.id, "actor_name": hero.name, "source": "",
+    })
 
     monkeypatch.setattr(database, "SessionLocal", db_factory)
     monkeypatch.setattr(chat_service, "get_llm", lambda: None)
@@ -150,14 +181,21 @@ def test_run_check_generation_rolls_for_actor(db_factory, monkeypatch):
     monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
 
     import asyncio as _asyncio
-    _asyncio.run(chat_service.run_check_generation(session.id, hero.id, "侦查", "normal"))
+    _asyncio.run(chat_service.run_roll_generation(session.id, "chk1"))
 
-    dice = [e for e in session_service.get_session_events(db_factory(), session.id)
+    fresh = db_factory()
+    dice = [e for e in session_service.get_session_events(fresh, session.id)
             if e.event_type == "dice"]
     assert len(dice) == 1
     assert dice[0].metadata_["actor"] == hero.name
     assert dice[0].metadata_["skill"] == "侦查"
     assert dice[0].metadata_["skill_value"] == 60
+    assert dice[0].metadata_["tier"] in (
+        "critical", "extreme", "hard", "regular", "fail", "fumble",
+    )
+    # 待定检定已被消费
+    pending = (fresh.get(GameSession, session.id).world_state or {}).get("pending_checks") or {}
+    assert "chk1" not in pending
 
 
 def test_dice_continuation_fires_followup_san_check(db_factory, monkeypatch):
@@ -184,8 +222,9 @@ def test_dice_continuation_fires_followup_san_check(db_factory, monkeypatch):
     monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
 
     async def go():
+        # 用 NPC 检定触发自动掷→续写链（真人主角检定改为待手动投骰，不会即时续写）
         return [c async for c in chat_service._process_commands(
-            db, session.id, "你凝视着铭文……\n[DICE_CHECK: skill=侦查]",
+            db, session.id, "守墓人凝视着铭文……\n[DICE_CHECK: skill=侦查, char=守墓人]",
             module, hero, session, None, teammates=teammates,
         )]
 

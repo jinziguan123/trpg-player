@@ -369,6 +369,56 @@ def get_party_members(
     return out
 
 
+def is_human_controlled(db: Session, session_id: str, char_id: str | None) -> bool:
+    """该角色是否由真人控制（用于决定检定是「待玩家投骰」还是系统自动掷）。
+
+    有 human 席位认领该角色即真人；找不到席位时，主角默认按真人处理（兼容未建席位的旧会话）。
+    """
+    if not char_id:
+        return False
+    part = (
+        db.query(SessionParticipant)
+        .filter(
+            SessionParticipant.session_id == session_id,
+            SessionParticipant.character_id == char_id,
+        )
+        .first()
+    )
+    if part is not None:
+        return part.role == "human"
+    sess = db.get(GameSession, session_id)
+    return bool(sess and sess.player_character_id == char_id)
+
+
+def add_pending_check(db: Session, session_id: str, check: dict) -> None:
+    """登记一个「待玩家投骰」的检定（world_state.pending_checks，按 check_id 存）。"""
+    session = db.get(GameSession, session_id)
+    if not session:
+        return
+    ws = dict(session.world_state or {})
+    pending = dict(ws.get("pending_checks") or {})
+    pending[check["id"]] = check
+    ws["pending_checks"] = pending
+    session.world_state = ws
+    db.commit()
+
+
+def pop_pending_check(db: Session, session_id: str, check_id: str) -> dict | None:
+    """取出并移除一个待定检定；不存在返回 None。"""
+    session = db.get(GameSession, session_id)
+    if not session:
+        return None
+    ws = dict(session.world_state or {})
+    pending = dict(ws.get("pending_checks") or {})
+    check = pending.pop(check_id, None)
+    if check is None:
+        return None
+    ws["pending_checks"] = pending
+    session.world_state = ws
+    db.commit()
+    return check
+
+
 def get_ai_teammates(db: Session, session_id: str) -> list[Character]:
     """返回会话内所有 AI 队友角色，按席位顺序。"""
     parts = (

@@ -4,13 +4,14 @@ from sqlalchemy.orm import Session
 from app.api.deps import player_token
 from app.database import get_db
 from app.models.session import GameSession
-from app.schemas.event import ChatRequest, CheckRequest
+from app.schemas.event import ChatRequest, CheckRequest, RollRequest
 from app.services import session_service
 from app.services.chat_service import (
     _make_chunk,
     event_to_chunk,
     run_chat_generation,
-    run_check_generation,
+    run_check_request_generation,
+    run_roll_generation,
     split_ooc,
     split_speech_action,
 )
@@ -108,7 +109,9 @@ async def check(
     db: Session = Depends(get_db),
     token: str | None = Depends(player_token),
 ):
-    """玩家主动发起技能检定：校验后掷骰，结果交 KP 据此续写（fire-and-forget）。"""
+    """玩家『申请』技能检定（不指定难度）：交 KP 裁定是否需要、用什么难度。
+
+    KP 判定需要时会挂出「待玩家投骰」的提示，玩家再调 /roll 投骰。"""
     game_session = db.get(GameSession, session_id)
     if not game_session:
         raise HTTPException(404, "会话不存在")
@@ -129,6 +132,32 @@ async def check(
     room_hub.broadcast(session_id, _make_chunk("generating"))
     generation_manager.start(
         session_id,
-        run_check_generation(session_id, actor.id, data.skill.strip(), data.difficulty),
+        run_check_request_generation(session_id, actor.id, data.skill.strip()),
+    )
+    return {"ok": True}
+
+
+@router.post("/{session_id}/roll")
+async def roll(
+    session_id: str,
+    data: RollRequest,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """玩家点『投骰』：对一个待定检定掷骰，结果交 KP 据达成等级续写（fire-and-forget）。"""
+    game_session = db.get(GameSession, session_id)
+    if not game_session:
+        raise HTTPException(404, "会话不存在")
+    if game_session.status != "active":
+        raise HTTPException(400, "会话未处于活跃状态")
+    if generation_manager.is_generating(session_id):
+        raise HTTPException(409, "KP 正在叙事，请稍候")
+    if not data.check_id.strip():
+        raise HTTPException(400, "未指定检定")
+
+    room_hub.broadcast(session_id, _make_chunk("generating"))
+    generation_manager.start(
+        session_id,
+        run_roll_generation(session_id, data.check_id.strip()),
     )
     return {"ok": True}
