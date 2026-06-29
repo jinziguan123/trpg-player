@@ -4,8 +4,9 @@ import { toast } from 'sonner'
 import { api } from '../api/client'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiReturnArrow, GiScrollUnfurled, GiPadlock } from 'react-icons/gi'
-import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText } from 'lucide-react'
+import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch } from 'lucide-react'
 import { ModuleGraph } from '../components/module/ModuleGraph'
+import { ModuleTimeline } from '../components/module/ModuleTimeline'
 
 interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string }
 interface NpcState { when?: string[]; personality?: string; initial_location?: string; alive?: boolean }
@@ -62,7 +63,7 @@ export function ModuleDetailPage() {
   const isNew = !id
   const [data, setData] = useState<ModuleData>(BLANK)
   const [edit, setEdit] = useState(isNew)
-  const [graph, setGraph] = useState(false)
+  const [view, setView] = useState<'detail' | 'graph' | 'timeline'>('detail')
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
 
@@ -126,7 +127,11 @@ export function ModuleDetailPage() {
 
   const tagsText = Array.isArray(data.world_setting.tags) ? (data.world_setting.tags as string[]).join('、') : wsStr(data.world_setting, 'tags')
 
+  const graph = view === 'graph'
   const wide = graph && !edit
+  const tabBtn = (v: 'detail' | 'graph' | 'timeline', icon: React.ReactNode, label: string) => (
+    <button onClick={() => setView(v)} className="flex items-center gap-1 px-2 py-1" style={view === v ? { background: 'var(--color-accent)', color: '#fff' } : { color: 'var(--color-text-secondary)' }}>{icon} {label}</button>
+  )
   return (
     <div className={wide ? 'max-w-6xl' : 'max-w-3xl'}>
       <div className="flex items-center gap-3 mb-4">
@@ -137,11 +142,12 @@ export function ModuleDetailPage() {
         <div className="ml-auto flex gap-2 items-center">
           {!edit && !isNew && (
             <div className="flex rounded overflow-hidden text-sm" style={{ border: '1px solid var(--color-border)' }}>
-              <button onClick={() => setGraph(false)} className="flex items-center gap-1 px-2 py-1" style={!graph ? { background: 'var(--color-accent)', color: '#fff' } : { color: 'var(--color-text-secondary)' }}><FileText size={14} /> 详情</button>
-              <button onClick={() => setGraph(true)} className="flex items-center gap-1 px-2 py-1" style={graph ? { background: 'var(--color-accent)', color: '#fff' } : { color: 'var(--color-text-secondary)' }}><Network size={14} /> 关系图</button>
+              {tabBtn('detail', <FileText size={14} />, '详情')}
+              {tabBtn('graph', <Network size={14} />, '关系图')}
+              {tabBtn('timeline', <GitBranch size={14} />, '时间线')}
             </div>
           )}
-          {!isNew && !edit && !graph && (
+          {!isNew && !edit && view === 'detail' && (
             <button onClick={() => setEdit(true)} className="btn-secondary flex items-center gap-1 text-sm"><Pencil size={14} /> 编辑</button>
           )}
           {edit && (
@@ -155,12 +161,14 @@ export function ModuleDetailPage() {
 
       {!edit && (
         <div className="card mb-4 flex items-center gap-2 text-sm" style={{ borderColor: 'var(--color-danger)', color: 'var(--color-danger)' }}>
-          <Eye size={15} /> 剧透警告：{graph ? '关系图含线索归属等剧情结构' : '以下含 NPC 秘密、线索与真相'}。若你打算亲自游玩本模组，请勿继续阅读。
+          <Eye size={15} /> 剧透警告：{view === 'graph' ? '关系图含线索归属等剧情结构' : view === 'timeline' ? '时间线含剧情推进与 NPC 生死等结构' : '以下含 NPC 秘密、线索与真相'}。若你打算亲自游玩本模组，请勿继续阅读。
         </div>
       )}
 
-      {graph && !edit ? (
+      {view === 'graph' && !edit ? (
         <ModuleGraph scenes={data.scenes} npcs={data.npcs} clues={data.clues} />
+      ) : view === 'timeline' && !edit ? (
+        <ModuleTimeline scenes={data.scenes} npcs={data.npcs} triggers={data.triggers} />
       ) : (
       <>
       {/* 基本信息 */}
