@@ -82,6 +82,23 @@ def test_player_adjacent_quote_not_extracted():
     assert not any('"npc_dialogue"' in c for c in chunks)
 
 
+def test_narrative_colon_not_treated_as_speaker():
+    """以冒号收尾的叙述句（「他指了指墙上的四个门：」）不能把名词短语当成说话人；
+    台词应归给最近行动的 NPC（诺特），而非「墙上的四个门」。"""
+    text = (
+        "诺特站起身，从口袋里掏出一把小钥匙。"
+        "他指了指墙上的四个门：“你们说去图书馆或档案馆——都可以。”"
+    )
+    npcs = [{"name": "史蒂芬·诺特"}]
+    result = ["", "", []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    speakers = [name for name, _ in result[2]]
+    assert "墙上的四个门" not in speakers  # 名词短语不会被当成名字
+    assert speakers == ["史蒂芬·诺特"]     # 归给最近行动的 NPC
+
+
 def test_written_text_near_player_stays_in_narration():
     """书写/刻字内容（如笔记封面字母）即便用引号包裹，靠近玩家角色名时也留在旁白。"""
     text = (

@@ -431,6 +431,11 @@ async def _stream_narration_filtered(
         # 交由「最近 NPC 主语」判定真正的说话人（玩家方角色会被那里排除→抑制）。
         if name[0] in "他她它我你咱其这那您" or any(v in name for v in "说道问答开口喊叫笑声"):
             return None
+        # 仅当该泛称是「独立称呼」——紧贴小句边界（句首/标点/换行后）才认作说话人；
+        # 否则像「他指了指墙上的四个门：」这种以冒号收尾的叙述会把「墙上的四个门」误当名字。
+        start = m.start(1)
+        if start > 0 and s[start - 1] not in _SUBJECT_BOUNDARY:
+            return None
         return name
 
     def _recent_npc_subject(s: str) -> str | None:
