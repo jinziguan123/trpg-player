@@ -3,8 +3,9 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import player_token
 from app.database import get_db
+from app.models.module import Module
 from app.models.session import GameSession
-from app.schemas.event import ChatRequest, CheckRequest, RollRequest
+from app.schemas.event import ChatRequest, CheckRequest, RollRequest, TravelRequest
 from app.services import map_service, session_service
 from app.services.chat_service import (
     _make_chunk,
@@ -12,6 +13,7 @@ from app.services.chat_service import (
     run_chat_generation,
     run_check_request_generation,
     run_roll_generation,
+    run_travel_generation,
     split_ooc,
     split_speech_action,
 )
@@ -167,9 +169,61 @@ async def roll(
 
 
 @router.get("/{session_id}/scene-map")
-def scene_map(session_id: str, db: Session = Depends(get_db)):
-    """当前场景的（按剧情 flags 解析后的）像素地图 + 实体位置，供游戏内地图面板渲染。"""
+def scene_map(session_id: str, char_id: str | None = None, db: Session = Depends(get_db)):
+    """某角色所在场景的（按剧情 flags 解析后的）像素地图 + 实体位置，供游戏内地图面板渲染。
+
+    char_id 给定时（前端传当前用户角色）地图跟随该角色所在场景——分头行动时各看各的。
+    """
     game_session = db.get(GameSession, session_id)
     if not game_session:
         raise HTTPException(404, "会话不存在")
-    return map_service.current_scene_map(db, game_session)
+    return map_service.current_scene_map(db, game_session, char_id=char_id)
+
+
+@router.get("/{session_id}/locations")
+def locations(session_id: str, char_id: str | None = None, db: Session = Depends(get_db)):
+    """大地图：已知地点列表（已访问 ∪ 与之相连的场景；未探索的不显示），含当前所在标记。"""
+    game_session = db.get(GameSession, session_id)
+    if not game_session:
+        raise HTTPException(404, "会话不存在")
+    module = db.get(Module, game_session.module_id)
+    if not module:
+        raise HTTPException(404, "模组不存在")
+    return {"locations": session_service.list_known_locations(module, game_session, char_id=char_id)}
+
+
+@router.post("/{session_id}/travel")
+async def travel(
+    session_id: str,
+    data: TravelRequest,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """玩家经大地图『前往』某已知地点：确定性切换该玩家所在场景，再由 KP 叙述抵达见闻。
+
+    场景切换由玩家显式发起（而非 KP 据只言片语臆测），杜绝「说句话就被自动搬走」。
+    """
+    game_session = db.get(GameSession, session_id)
+    if not game_session:
+        raise HTTPException(404, "会话不存在")
+    if game_session.status != "active":
+        raise HTTPException(400, "会话未处于活跃状态")
+    if generation_manager.is_generating(session_id):
+        raise HTTPException(409, "KP 正在叙事，请稍候")
+    try:
+        actor = session_service.resolve_actor(db, session_id, token, data.acting_character_id)
+    except ValueError as e:
+        raise HTTPException(403, str(e))
+
+    module = db.get(Module, game_session.module_id)
+    scene_id = (data.scene_id or "").strip()
+    known = session_service.known_scene_ids(module, game_session) if module else set()
+    if scene_id not in known:
+        raise HTTPException(400, "该地点尚未知晓或不可前往")
+    if session_service.get_char_location(game_session, actor.id) == scene_id:
+        raise HTTPException(400, "你已身处该地点")
+
+    generation_manager.start(
+        session_id, run_travel_generation(session_id, actor.id, scene_id),
+    )
+    return {"ok": True}

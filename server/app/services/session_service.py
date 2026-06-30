@@ -590,6 +590,76 @@ def set_position(db: Session, session_id: str, scene_id: str, actor: str, x: int
     db.commit()
 
 
+# ── 按角色位置 / 已知地点（分头行动地图跟随 + 大地图前往）──────────────────
+
+def get_party_locations(session: GameSession) -> dict:
+    """world_state.party_locations：{角色 id: 所在场景 id}。缺省时按需回落到当前场景。"""
+    return dict((session.world_state or {}).get("party_locations") or {})
+
+
+def get_char_location(session: GameSession, char_id: str | None) -> str | None:
+    """某角色当前所在场景；无显式记录则回落到会话当前场景（向后兼容）。"""
+    if not char_id:
+        return session.current_scene_id
+    return get_party_locations(session).get(char_id) or session.current_scene_id
+
+
+def set_char_location(db: Session, session_id: str, char_id: str, scene_id: str) -> None:
+    """把某角色移动到某场景（玩家经大地图前往 / AI 队友分头时的落点）。
+
+    主角移动时一并更新 current_scene_id（地图面板、NPC 上下文等仍以它为锚）。目的地记入已访问。
+    """
+    if not (char_id and scene_id):
+        return
+    session = db.get(GameSession, session_id)
+    if not session:
+        return
+    ws = dict(session.world_state or {})
+    locs = dict(ws.get("party_locations") or {})
+    locs[char_id] = scene_id
+    ws["party_locations"] = locs
+    visited = list(ws.get("visited_scenes") or [])
+    if scene_id not in visited:
+        visited.append(scene_id)
+    ws["visited_scenes"] = visited
+    session.world_state = ws
+    if char_id == session.player_character_id:
+        session.current_scene_id = scene_id
+    db.commit()
+
+
+def known_scene_ids(module, session: GameSession) -> set:
+    """已知地点 = 已访问场景 ∪ 与之直接相连（connections）的场景。未探索且不相连的不显示。"""
+    by_id = {s.get("id"): s for s in (module.scenes or []) if s.get("id")}
+    visited = set((session.world_state or {}).get("visited_scenes") or [])
+    if session.current_scene_id:
+        visited.add(session.current_scene_id)
+    known = set(visited)
+    for sid in list(visited):
+        for nb in (by_id.get(sid, {}) or {}).get("connections") or []:
+            if nb in by_id:
+                known.add(nb)
+    return {sid for sid in known if sid in by_id}
+
+
+def list_known_locations(module, session: GameSession, char_id: str | None = None) -> list[dict]:
+    """供「大地图」渲染：已知地点列表（当前所在高亮、已访问标记）。"""
+    by_id = {s.get("id"): s for s in (module.scenes or []) if s.get("id")}
+    visited = set((session.world_state or {}).get("visited_scenes") or [])
+    cur = get_char_location(session, char_id)
+    out = []
+    for sid in known_scene_ids(module, session):
+        s = by_id[sid]
+        out.append({
+            "id": sid,
+            "name": s.get("title") or s.get("name") or sid,
+            "current": sid == cur,
+            "visited": sid in visited,
+        })
+    out.sort(key=lambda x: (not x["current"], not x["visited"], x["id"]))
+    return out
+
+
 def set_flag(db: Session, session_id: str, flag: str, value: bool = True) -> None:
     """置/清剧情标志（world_state.flags）。KP 通过 [SET_FLAG]/[CLEAR_FLAG] 推进剧情状态，
     场景/NPC 的状态变体据此切换。flag 名做轻量规范化（去空白），value=False 即清除该标志。"""

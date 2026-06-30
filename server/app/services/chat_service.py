@@ -1317,6 +1317,49 @@ async def run_opening_generation(session_id: str) -> None:
         db.close()
 
 
+async def run_travel_generation(session_id: str, actor_id: str, scene_id: str) -> None:
+    """玩家经大地图『前往』某地：确定性切换该角色所在场景，落「前往」行动，再由 KP 叙述抵达。
+
+    场景切换是后端据玩家显式选择执行的（非 KP 臆测），从根上杜绝「说句话就被自动搬走」。
+    """
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        game_session = db.get(GameSession, session_id)
+        module = db.get(Module, game_session.module_id)
+        player_char = db.get(Character, game_session.player_character_id)
+        actor = db.get(Character, actor_id) or player_char
+        party_others = session_service.get_party_members(
+            db, session_id, exclude_id=game_session.player_character_id,
+        )
+        scene = next((s for s in (module.scenes or []) if s.get("id") == scene_id), None)
+        scene_name = (scene or {}).get("title") or (scene or {}).get("name") or scene_id
+
+        room_hub.broadcast(session_id, _make_chunk("generating"))
+        # 确定性切换该角色位置（主角则一并更新 current_scene_id），并落一条「前往」行动
+        session_service.set_char_location(db, session_id, actor.id, scene_id)
+        ev = session_service.add_event(
+            db, session_id, "action", f"（前往：{scene_name}）",
+            actor_id=actor.id, actor_name=actor.name,
+        )
+        room_hub.broadcast(session_id, event_to_chunk(ev))
+
+        prompt = (
+            f"{actor.name} 抵达了【{scene_name}】。请描述此地此刻的见闻与气氛，自然承接前文；"
+            "不要触发任何检定，也不要替其他玩家角色行动或代言。"
+        )
+        await _run_kp_turn(db, session_id, game_session, module, player_char, party_others, prompt)
+    except asyncio.CancelledError:
+        logger.info("前往生成被取消: session=%s", session_id)
+    except Exception:
+        logger.exception("前往生成失败: session=%s", session_id)
+        _persist_error_notice(db, session_id, "（前往生成中断，请重试）")
+        room_hub.broadcast(session_id, _make_chunk("done"))
+    finally:
+        db.close()
+
+
 def _update_character_stat(db: Session, char: Character, path: str, value) -> None:
     """更新角色 system_data 中的嵌套字段并持久化"""
     sd = dict(char.system_data or {})

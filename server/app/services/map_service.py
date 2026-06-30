@@ -295,14 +295,15 @@ def _resolve_anchor(m: dict, name: str, tracked: dict) -> tuple[int, int] | None
     return None
 
 
-def _resolved_scene_map(db: Session, session: GameSession):
-    """(scene, resolved_map) —— 按当前 flags 解析当前场景及其（可能的变体）地图。"""
+def _resolved_scene_map(db: Session, session: GameSession, scene_id: str | None = None):
+    """(scene, resolved_map) —— 按当前 flags 解析指定场景（默认会话当前场景）及其变体地图。"""
     from app.ai.context import _active_flags, _resolve_state
 
     module = db.get(Module, session.module_id)
     scenes = (module.scenes if module else []) or []
+    target_id = scene_id or session.current_scene_id
     scene = next(
-        (s for s in scenes if s.get("id") == session.current_scene_id),
+        (s for s in scenes if s.get("id") == target_id),
         scenes[0] if scenes else None,
     )
     if not scene:
@@ -329,14 +330,16 @@ def apply_move(db: Session, session: GameSession, actor: str, target: str) -> No
     session_service.set_position(db, session.id, scene_id, actor, x, y)
 
 
-def current_scene_map(db: Session, session: GameSession) -> dict:
-    """运行时：按当前 flags 解析当前场景，返回地图 + 全员实体位置（玩家/队友/NPC 实际走位）。
+def current_scene_map(db: Session, session: GameSession, char_id: str | None = None) -> dict:
+    """运行时：返回某角色所在场景的地图 + 同场景实体位置（玩家/队友/NPC 实际走位）。
 
-    位置优先取 world_state.positions（KP 经 [MOVE] 更新的实际走位），无记录则回落默认：
-    玩家与队友落在入口附近（互不重叠），NPC 落在地图 npc_pos。NPC 改由 entities 下发并
-    带上 asset_id，故返回的 map 去掉 npc_pos 避免前端重复渲染。
+    ``char_id`` 给定时（前端按当前用户拉取）取该角色所在场景——分头行动时各人看到的是
+    自己所处场景的地图；缺省时取会话当前场景。只摆放与该场景同处的队伍成员（按 party_locations
+    过滤），免得分头后别处的队友错误地出现在这张图上。
+    位置优先取 world_state.positions（[MOVE] 实际走位），无记录则回落入口附近 / npc_pos。
     """
-    scene, m = _resolved_scene_map(db, session)
+    view_scene_id = session_service.get_char_location(session, char_id)
+    scene, m = _resolved_scene_map(db, session, scene_id=view_scene_id)
     if not scene:
         return {"scene_id": None, "scene_name": None, "map": None, "entities": []}
     entities: list[dict] = []
@@ -344,6 +347,11 @@ def current_scene_map(db: Session, session: GameSession) -> dict:
         scene_id = scene.get("id")
         tracked = dict((session.world_state or {}).get("positions", {}).get(scene_id) or {})
         occupied: set[tuple[int, int]] = set()
+        locations = session_service.get_party_locations(session)
+
+        def here(cid: str) -> bool:
+            # 无位置记录的成员，回落视作在会话当前场景（向后兼容旧存档）
+            return locations.get(cid, session.current_scene_id) == scene_id
 
         def place(name: str, kind: str, default_xy: tuple[int, int], asset_id=None):
             if name in tracked and len(tracked[name]) == 2:
@@ -361,9 +369,11 @@ def current_scene_map(db: Session, session: GameSession) -> dict:
 
         sx, sy = _spawn_pos(m)
         pc = db.get(Character, session.player_character_id)
-        place(pc.name if pc else "玩家", "player", (sx, sy))
+        if pc and here(pc.id):
+            place(pc.name, "player", (sx, sy))
         for t in session_service.get_party_members(db, session.id, exclude_id=session.player_character_id):
-            place(t.name, "ally", (sx, sy))
+            if here(t.id):
+                place(t.name, "ally", (sx, sy))
         for n in m.get("npc_pos") or []:
             nm = str(n.get("name", "")).strip()
             if not nm:
