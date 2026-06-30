@@ -109,6 +109,32 @@ def test_npc_dialogue_still_extracted():
     assert "托马斯·金博尔" in speakers
 
 
+def test_persisted_order_interleaves_narration_and_dialogue(db_factory):
+    """落库要保留「旁白/对话交错」的原始顺序（与流式渲染一致），而非旁白全在前、对话全在后。"""
+    npcs = [{"name": "史蒂芬·诺特"}]
+    text = (
+        "诺特先生走上前来。\n\n"
+        "“万幸你们来了。”\n\n"
+        "他压低声音，凑近了些。\n\n"
+        "“房子就在彻斯特街。”\n\n"
+        "他递来一把铜钥匙。"
+    )
+    result = ["", "", [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+
+    db = db_factory()
+    session_id = _seed_session(db)
+    chat_service._persist_narration(db, session_id, result)
+
+    evs = session_service.get_session_events(db_factory(), session_id)
+    kinds = [e.event_type for e in evs]
+    # 交错：旁白 → 对话 → 旁白 → 对话 → 旁白（而非 narration*1 + dialogue*2）
+    assert kinds == ["narration", "dialogue", "narration", "dialogue", "narration"]
+    assert [e.actor_name for e in evs if e.event_type == "dialogue"] == ["史蒂芬·诺特", "史蒂芬·诺特"]
+
+
 def test_split_speech_action_quote_convention():
     """引号约定：引号内=台词(dialogue)，引号外=行动(action)，保序；无引号整条按行动。"""
     f = chat_service.split_speech_action

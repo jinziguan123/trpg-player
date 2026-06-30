@@ -343,6 +343,14 @@ async def _stream_narration_filtered(
                 break
         npc_matchers.append((_name, _parts, bool(_n.get("is_player"))))
     extracted = result[2]
+    # 记录每段对话插入时的旁白偏移 (offset_in_narration, name, text)，持久化时据此
+    # 把整段旁白按偏移切开、与对话交错还原——使「生成结束后从 DB 对齐」的渲染顺序与
+    # 流式时一致（旁白/对话交错），而非旁白全在前、对话全在后。
+    dialogue_marks: list = result[3] if len(result) > 3 else []
+
+    def _mark_dlg(name: str, text: str) -> None:
+        dialogue_marks.append((len(narration), name, text))
+
     last_speaker: str | None = None
     bracket_speaker: str | None = None
     bracket_dialogue_buf = ""
@@ -376,6 +384,7 @@ async def _stream_narration_filtered(
         if dialogue_text and bracket_speaker:
             last_speaker = bracket_speaker
             extracted.append((bracket_speaker, dialogue_text))
+            _mark_dlg(bracket_speaker, dialogue_text)
             result_chunk = _make_chunk(
                 "npc_dialogue", dialogue_text,
                 actor_name=bracket_speaker,
@@ -466,6 +475,7 @@ async def _stream_narration_filtered(
                     if best_canonical:
                         last_speaker = best_canonical
                         extracted.append((best_canonical, dialogue_text))
+                        _mark_dlg(best_canonical, dialogue_text)
                         yield _make_chunk(
                             "npc_dialogue", dialogue_text,
                             actor_name=best_canonical,
@@ -557,6 +567,8 @@ async def _stream_narration_filtered(
     result[1] = full_response
     if len(result) > 2:
         result[2] = extracted
+    if len(result) > 3:
+        result[3] = dialogue_marks
 
 
 MAX_TEAMMATES_PER_TURN = 4
@@ -672,11 +684,34 @@ def _persist_error_notice(db: Session, session_id: str, text: str) -> None:
 
 
 def _persist_narration(db: Session, session_id: str, result: list) -> None:
-    narration_text = result[0].rstrip()
-    if narration_text:
-        session_service.add_event(
-            db, session_id, "narration", narration_text, actor_name="KP",
-        )
+    """落库 KP 这一轮产物，保留旁白与对话的交错顺序（与流式渲染一致）。
+
+    用 result[3] 里记录的「对话插入偏移」把整段旁白切开、与对话交错落库；
+    没有偏移信息（旧调用）时回退为「旁白整段在前、对话在后」。
+    """
+    narration = result[0]
+    marks = result[3] if len(result) > 3 else None
+
+    def _add_narr(text: str) -> None:
+        t = text.rstrip()
+        if t:
+            session_service.add_event(db, session_id, "narration", t, actor_name="KP")
+
+    if marks is not None:
+        pos = 0
+        for off, npc_name, dialogue_text in sorted(marks, key=lambda m: m[0]):
+            off = max(pos, min(off, len(narration)))
+            _add_narr(narration[pos:off])
+            if dialogue_text:
+                session_service.add_event(
+                    db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
+                )
+            pos = off
+        _add_narr(narration[pos:])
+        return
+
+    # 回退：无交错信息
+    _add_narr(narration)
     for npc_name, dialogue_text in result[2]:
         session_service.add_event(
             db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
@@ -701,7 +736,7 @@ async def _run_generation(
         rules_lookup_enabled=rules_enabled,
     )
 
-    result = ["", "", []]
+    result = ["", "", [], []]
     # 取消（硬取消 task）或流式中途报错（如供应商抖动断流）时，已生成的叙事都要落库，
     # 否则客户端在收到 done 后 resync 会拉到空历史，造成「生成到一半聊天全部消失」。
     matcher_npcs = _matcher_npcs(module, teammates)
@@ -776,7 +811,7 @@ async def _run_kp_turn(
     messages.append({"role": "user", "content": user_prompt})
 
     kp = KPAgent(llm)
-    res = ["", "", []]
+    res = ["", "", [], []]
     try:
         async for chunk in _stream_narration_filtered(
             kp, messages, res, npcs=_matcher_npcs(module, party_others),
@@ -1162,7 +1197,7 @@ async def _process_commands(
         messages.append({"role": "user", "content": continuation_prompt})
 
         kp = KPAgent(llm)
-        cont_result = ["", "", []]
+        cont_result = ["", "", [], []]
         try:
             async for chunk in _stream_narration_filtered(
                 kp, messages, cont_result, npcs=_matcher_npcs(module, teammates),
@@ -1268,7 +1303,7 @@ async def _handle_rule_lookup(
     messages.append({"role": "user", "content": continuation})
 
     kp = KPAgent(llm)
-    cont_result = ["", "", []]
+    cont_result = ["", "", [], []]
     try:
         async for chunk in _stream_narration_filtered(
             kp, messages, cont_result, npcs=_matcher_npcs(module, teammates),
