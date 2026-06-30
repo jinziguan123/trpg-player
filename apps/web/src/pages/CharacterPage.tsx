@@ -35,6 +35,7 @@ interface OccupationDef {
   skill_formula: string
   skills: string[]
   choices: number
+  category?: string
 }
 
 const ATTR_LABELS: Record<string, string> = {
@@ -146,6 +147,8 @@ export function CharacterPage() {
   const [occPoints, setOccPoints] = useState(0)
   const [intPoints, setIntPoints] = useState(0)
   const [occSearch, setOccSearch] = useState('')
+  const [occCat, setOccCat] = useState('')               // 选中的职业大类（空=全部）
+  const [occCategories, setOccCategories] = useState<string[]>([])
 
   // Step 2: 幸运值
   const [luck, setLuck] = useState(0)
@@ -180,6 +183,7 @@ export function CharacterPage() {
     loadCharacters()
     fetchModules()
     api.get<OccupationDef[]>('/rules/coc/occupations').then(setOccupations)
+    api.get<string[]>('/rules/coc/occupation-categories').then(setOccCategories).catch(() => {})
   }, [fetchModules])
 
   const loadCharacters = async () => {
@@ -266,13 +270,12 @@ export function CharacterPage() {
     }
   }
 
-  const filteredOccs = occSearch.trim()
-    ? occupations.filter((o) => {
-        const q = occSearch.trim().toLowerCase()
-        return o.name.toLowerCase().includes(q)
-          || o.skills.some((s) => s.toLowerCase().includes(q))
-      })
-    : occupations
+  const filteredOccs = occupations.filter((o) => {
+    if (occCat && (o.category || '其他') !== occCat) return false
+    const q = occSearch.trim().toLowerCase()
+    if (!q) return true
+    return o.name.toLowerCase().includes(q) || o.skills.some((s) => s.toLowerCase().includes(q))
+  })
 
   // ---- 技能 ----
   const goToSkills = async () => {
@@ -904,6 +907,26 @@ export function CharacterPage() {
                     <div className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
                       也可从下方列表选择系统内置职业替换
                     </div>
+                  </div>
+                )}
+                {/* 职业大类：先选大类，再在类下挑选 */}
+                {occCategories.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    {['', ...occCategories].map((c) => {
+                      const active = occCat === c
+                      return (
+                        <button
+                          key={c || 'all'}
+                          onClick={() => setOccCat(c)}
+                          className="text-xs px-2 py-1 rounded border transition-colors"
+                          style={{
+                            borderColor: active ? 'var(--color-accent)' : 'var(--color-border)',
+                            background: active ? 'var(--color-accent)' : 'var(--color-bg-tertiary)',
+                            color: active ? '#fff' : 'var(--color-text-primary)',
+                          }}
+                        >{c || '全部'}</button>
+                      )
+                    })}
                   </div>
                 )}
                 <input

@@ -1,9 +1,16 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { GiCancel } from 'react-icons/gi'
 import { useWeapons, type WeaponDef } from './useCocData'
 
-/** 从 CoC 武器表中挑选一件武器，回填到角色武器行。 */
+// 武器使用技能基名 → 大类标签
+const CAT_LABEL: Record<string, string> = {
+  格斗: '近战格斗', 射击: '射击', 投掷: '投掷', 爆破: '爆破', 炮术: '炮术',
+}
+const CAT_ORDER = ['格斗', '射击', '投掷', '爆破', '炮术']
+const catOf = (skill: string) => (skill || '').split('(')[0] || '其他'
+
+/** 从 CoC 武器表中挑选一件武器：先选大类，再在类下搜索/挑选。 */
 export function WeaponPickerDialog({
   open, onOpenChange, onPick,
 }: {
@@ -12,11 +19,30 @@ export function WeaponPickerDialog({
   onPick: (w: WeaponDef) => void
 }) {
   const weapons = useWeapons()
+  const [cat, setCat] = useState<string>('')   // 选中的大类（空=全部）
   const [q, setQ] = useState('')
+
+  // 按武器表里实际出现的类别排序：预设顺序在前，其余按字母
+  const cats = useMemo(() => {
+    const present = [...new Set((weapons || []).map((w) => catOf(w.skill)))]
+    return present.sort((a, b) => {
+      const ia = CAT_ORDER.indexOf(a), ib = CAT_ORDER.indexOf(b)
+      if (ia !== ib) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
+      return a.localeCompare(b, 'zh')
+    })
+  }, [weapons])
+
   const kw = q.trim()
-  const list = (weapons || []).filter(
-    (w) => !kw || w.name.includes(kw) || w.skill.includes(kw),
-  )
+  const list = (weapons || []).filter((w) => {
+    if (cat && catOf(w.skill) !== cat) return false
+    return !kw || w.name.includes(kw) || w.skill.includes(kw)
+  })
+
+  const chip = (active: boolean) => ({
+    borderColor: active ? 'var(--color-success)' : 'var(--color-border)',
+    background: active ? 'var(--color-success)' : 'var(--color-bg-tertiary)',
+    color: active ? '#fff' : 'var(--color-text-primary)',
+  })
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -24,6 +50,17 @@ export function WeaponPickerDialog({
         <DialogHeader>
           <DialogTitle>从武器表选择</DialogTitle>
         </DialogHeader>
+
+        {/* 大类筛选 */}
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          <button onClick={() => setCat('')} className="text-xs px-2 py-1 rounded border" style={chip(cat === '')}>全部</button>
+          {cats.map((c) => (
+            <button key={c} onClick={() => setCat(c)} className="text-xs px-2 py-1 rounded border" style={chip(cat === c)}>
+              {CAT_LABEL[c] || c}
+            </button>
+          ))}
+        </div>
+
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -31,7 +68,7 @@ export function WeaponPickerDialog({
           className="w-full px-2 py-1 rounded text-sm mb-2"
           style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}
         />
-        <div className="flex-1 overflow-y-auto space-y-1" style={{ maxHeight: '58vh' }}>
+        <div className="flex-1 overflow-y-auto space-y-1" style={{ maxHeight: '52vh' }}>
           {weapons === null && <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>加载中…</p>}
           {list.map((w, i) => (
             <button

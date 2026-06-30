@@ -16,6 +16,8 @@ from app.schemas.character import (
 from app.rules.coc.equipment import get_available_equipment
 from app.rules.coc.occupations import (
     COC_OCCUPATIONS,
+    OCCUPATION_CATEGORY,
+    OCCUPATION_CATEGORY_ORDER,
     calc_interest_points,
     calc_occupation_points,
 )
@@ -45,9 +47,18 @@ def get_occupations(rule_system: str):
             "skill_formula": o.skill_formula,
             "skills": o.skills,
             "choices": o.choices,
+            "category": OCCUPATION_CATEGORY.get(o.name, "其他"),
         }
         for o in COC_OCCUPATIONS
     ]
+
+
+@router.get("/rules/{rule_system}/occupation-categories")
+def get_occupation_categories(rule_system: str):
+    """职业大类的展示顺序（前端两级选择用）。"""
+    if rule_system != "coc":
+        raise HTTPException(400, f"暂不支持 {rule_system}")
+    return OCCUPATION_CATEGORY_ORDER
 
 
 class SkillPointsRequest(BaseModel):

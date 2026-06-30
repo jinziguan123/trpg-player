@@ -25,7 +25,7 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 const DialogContent = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+>(({ className, children, style, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay onClick={(e) => e.stopPropagation()} />
     <DialogPrimitive.Content
@@ -39,11 +39,13 @@ const DialogContent = React.forwardRef<
         'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
         className,
       )}
+      // 默认在前、调用方 style 在后合并——避免调用方传 style（如 maxHeight）把背景色覆盖没了
       style={{
         background: 'var(--color-bg-primary)',
         borderColor: 'var(--color-border)',
         color: 'var(--color-text-primary)',
         fontFamily: 'var(--font-body)',
+        ...style,
       }}
       {...props}
     >
