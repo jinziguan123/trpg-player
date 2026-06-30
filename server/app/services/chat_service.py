@@ -57,6 +57,23 @@ MOVE_RE = re.compile(r"\[MOVE:([^\]]*)\]")
 # 分头行动：KP 在每个分组/场景内容前标 [GROUP: scene=<场景标签>]，后续内容归该组，前端据此分栏。内联剔除。
 GROUP_RE = re.compile(r"\[GROUP:([^\]]*)\]")
 
+# 书写/标识语境：其后引号是书写/标识内容（非台词），留旁白。允许标识名词与引号间夹分隔符。
+_WRITTEN_TEXT_RE = re.compile(
+    r"(写着|写道|写有|刻着|刻有|记着|记载|标着|印着|贴着|挂着|题写|题着|题为|落款|显示|显现|上书|"
+    r"字牌|牌子|招牌|门牌|标牌|标签|标题|铭牌|告示|名为|名叫|写作)[：:，,、\s—\-]*$"
+)
+# 感知/指称语境：其后引号是被提及/被听到的词语（非台词），留旁白。
+_REFERENCE_BEFORE_RE = re.compile(
+    r"(听到|听见|听过|想起|想到|提到|提及|讲到|说到|读到|看到|见到|记得|念及|称为|称作|叫做|叫作|唤作|所谓|对于|关于)[：:，,、\s]*$"
+)
+# 显式说话前缀：行尾「X说道：」「X：」（X 为 2-6 个中文名/称呼），用于把紧邻引号判为台词。
+_SAY_PREFIX_RE = re.compile(
+    r"([一-龥·]{2,6})(?:说道|说|问道|问|答道|答|开口道|开口|低声道|低声|喊道|叫道|笑道|沉声道|轻声道|道|：|:)[：:，,]?\s*$"
+)
+# 句首/小句边界后充当「主语·动作」的 NPC 名（如「诺特点点头」「史蒂芬转过身」），用于
+# 在说话人以代词「他/她」承接、附近又有玩家名时，仍能把台词归给真正在行动的 NPC。
+_SUBJECT_BOUNDARY = "。！？!?\n　 ”」』）)】"
+
 CMD_TAG_PREFIXES = (
     "DICE_CHECK:", "OPPOSED_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:",
     "SCENE_CHANGE:", "RULE_LOOKUP:", "SET_FLAG:", "CLEAR_FLAG:",
@@ -345,14 +362,16 @@ async def _stream_narration_filtered(
     kp: KPAgent, messages: list[dict], result: list,
     npcs: list[dict] | None = None,
 ) -> AsyncIterator[str]:
-    """流式输出 KP 旁白，并按**显式标记**抽取 NPC 台词。
+    """流式输出 KP 旁白，并把 NPC 台词抽成对话气泡。
 
-    NPC 台词只认显式标记 ``[SAY: who=<名字>]台词[/SAY]``（who 也可写成 ``[SAY: 名字]``）；
-    其余所有引号（“”/「」）一律当普通旁白文本，绝不当台词抽取——彻底规避「被提及的词语/
-    门牌标识/书写内容」被误判为对话的问题。命令标签（[DICE_CHECK] 等）仍会终止本次流；
-    [MOVE]/[GROUP] 为内联标记，剔除但不终止。
+    台词识别两条路：
+    1. 显式 ``[SAY: who=<名字>]台词[/SAY]``（最可靠，用于消歧/无名角色/代词承接的说话人）。
+    2. 自然引号台词（“”/「」）：据上下文判定说话人——书写/标识/被提及语境一律留旁白；
+       否则按「紧邻说话前缀 → 当前说话人(承接) → 最近作为主语行动的 NPC」归属，
+       都判不出且附近只有玩家名时，留旁白（不瞎猜）。
 
-    *result* = ``[narration_text, full_response, extracted_dialogues, dialogue_marks, group_marks]``，原地修改。
+    命令标签（[DICE_CHECK] 等）仍终止本次流；[MOVE]/[GROUP] 内联剔除不终止。
+    *result* = [narration, full_response, extracted, dialogue_marks, group_marks]。
     """
     full_response = ""
     narration = ""
@@ -365,34 +384,92 @@ async def _stream_narration_filtered(
     say_speaker = ""
     say_buf = ""
 
-    # NPC 名归一：[SAY] 里若写了局部名（如「史蒂芬」）则归一到全名（「史蒂芬·诺特」）。
-    npc_matchers: list[tuple[str, list[str]]] = []
+    in_quote = False
+    quote_open = ""
+    quote_buf = ""
+    pending_speaker: str | None = None   # 本引号判定出的说话人（None=留旁白）
+    pending_weak = False                 # 该说话人是否弱信号（仅靠最近主语推断）
+    last_speaker: str | None = None
+
+    def _looks_like_speech(text: str) -> bool:
+        """像台词：有句末标点 / 口语标记 / 够长——用于过滤门牌、招牌等短名词标签。"""
+        if len(text) >= 10:
+            return True
+        return (text and text[-1] in "。！？…?!.~～") or any(
+            c in text for c in "你我吗呢吧啊呀嘛！？!?，,"
+        )
+
+    npc_matchers: list[tuple[str, list[str], bool]] = []
     for _n in (npcs or []):
         _name = _n.get("name", "")
-        if not _name or _n.get("is_player"):
+        if not _name:
             continue
         _parts = [_name]
         for _sep in ("·", "·", " ", "-"):
             if _sep in _name:
                 _parts.extend(p.strip() for p in _name.split(_sep) if len(p.strip()) >= 2)
                 break
-        npc_matchers.append((_name, _parts))
+        npc_matchers.append((_name, _parts, bool(_n.get("is_player"))))
 
     def _canon(name: str) -> str:
         name = (name or "").strip()
-        for canonical, parts in npc_matchers:
+        for canonical, parts, _ in npc_matchers:
             if name == canonical or name in parts:
                 return canonical
         return name
 
+    def _prefix_speaker(s: str) -> str | None:
+        """行尾「X说道：」「X：」→ 说话人（命中已知 NPC 局部名则归一；玩家方角色返回 None 抑制）。"""
+        m = _SAY_PREFIX_RE.search(s)
+        if not m:
+            return None
+        name = m.group(1)
+        for canonical, parts, is_player in npc_matchers:
+            if name == canonical or name in parts or name in canonical:
+                return None if is_player else canonical
+        # 泛称（护工/老板…）：但排除代词起头与动词短语（如「他开口」），它们不是名字，
+        # 交由「最近 NPC 主语」判定真正的说话人（玩家方角色会被那里排除→抑制）。
+        if name[0] in "他她它我你咱其这那您" or any(v in name for v in "说道问答开口喊叫笑声"):
+            return None
+        return name
+
+    def _recent_npc_subject(s: str) -> str | None:
+        """最近作为「小句主语」出现的非玩家 NPC（名字紧跟在句首/句末标点后）→ 其后台词的说话人。"""
+        recent = s[-200:]
+        best_pos, best = -1, None
+        for canonical, parts, is_player in npc_matchers:
+            if is_player:
+                continue
+            for part in parts:
+                start = 0
+                while True:
+                    p = recent.find(part, start)
+                    if p < 0:
+                        break
+                    if p == 0 or recent[p - 1] in _SUBJECT_BOUNDARY:
+                        if p > best_pos:
+                            best_pos, best = p, canonical
+                    start = p + 1
+        return best
+
+    def _resolve_speaker(pre: str) -> tuple[str | None, bool]:
+        """返回 (说话人, 是否弱信号)。弱信号（仅靠最近 NPC 主语推断）下，仅当引号文本
+        「像台词」才抽取，避免把门牌/招牌等短名词标签误判为台词。"""
+        s = pre.rstrip()
+        if _WRITTEN_TEXT_RE.search(s) or _REFERENCE_BEFORE_RE.search(s):
+            return None, False                # 书写/标识/被提及 → 留旁白
+        spk = _prefix_speaker(s)
+        if spk:
+            return spk, False                 # 强：显式说话前缀
+        if last_speaker:
+            return last_speaker, False        # 强：承接当前说话人
+        return _recent_npc_subject(s), True   # 弱：最近行动的 NPC 主语
+
     extracted = result[2]
-    # 对话插入时的旁白偏移 (offset, name, text)：持久化时据此把旁白按序与对话交错还原。
     dialogue_marks: list = result[3] if len(result) > 3 else []
-    # 分头行动分组标记 (offset, label)：持久化时据此给各段/对话打 group。
     group_marks: list = result[4] if len(result) > 4 else []
 
     def _flush_pending() -> str | None:
-        """把累积的旁白并入 narration，返回需要广播的文本（纯空白则 None）。"""
         nonlocal pending, narration
         if not pending:
             return None
@@ -403,14 +480,14 @@ async def _stream_narration_filtered(
         return out
 
     def _emit_say():
-        """收尾当前 [SAY]：产出一条 npc_dialogue（空台词则忽略）。"""
-        nonlocal in_say, say_speaker, say_buf
+        nonlocal in_say, say_speaker, say_buf, last_speaker
         text = say_buf.strip()
         speaker = _canon(say_speaker)
         in_say = False
         say_buf = ""
         say_speaker = ""
         if text and speaker:
+            last_speaker = speaker
             extracted.append((speaker, text))
             dialogue_marks.append((len(narration), speaker, text))
             return _make_chunk("npc_dialogue", text, actor_name=speaker)
@@ -428,7 +505,6 @@ async def _stream_narration_filtered(
                     if chunk:
                         yield chunk
                 elif say_buf.endswith("\n\n"):
-                    # KP 漏写结束标签：到段落边界即收尾
                     say_buf = say_buf[:-2]
                     chunk = _emit_say()
                     if chunk:
@@ -442,7 +518,7 @@ async def _stream_narration_filtered(
                     bracket_buf = ""
                     in_bracket = False
                     if inner_s.startswith("MOVE:"):
-                        continue  # 走位标记：留 full_response 供 _process_commands 解析，旁白里剔除
+                        continue
                     if inner_s.startswith("GROUP:"):
                         kv = _parse_tag_kv(inner_s[len("GROUP:"):])
                         label = (kv.get("scene") or kv.get("group") or kv.get("name") or "").strip()
@@ -461,13 +537,39 @@ async def _stream_narration_filtered(
                     if any(inner_s.startswith(p) for p in CMD_TAG_PREFIXES):
                         tag_found = True
                         break
-                    # 其它方括号：原样保留为旁白文本
                     pending += "[" + inner_s + "]"
             elif ch == "[":
                 in_bracket = True
                 bracket_buf = ""
+            elif (ch in "“「『") and not in_quote:
+                # 开引号：先判说话人（基于引号前文），冲掉旁白，进入引号收集
+                pending_speaker, pending_weak = _resolve_speaker(pending)
+                out = _flush_pending()
+                if out:
+                    yield _make_chunk("narration", out, actor_name="KP")
+                in_quote = True
+                quote_open = ch
+                quote_buf = ""
+            elif (ch in "”」』") and in_quote:
+                in_quote = False
+                text = quote_buf.strip()
+                # 弱信号下要求「像台词」，否则按标签/名词留旁白（门牌、招牌等）
+                ok = bool(text and pending_speaker) and (not pending_weak or _looks_like_speech(text))
+                if ok:
+                    last_speaker = pending_speaker
+                    extracted.append((pending_speaker, text))
+                    dialogue_marks.append((len(narration), pending_speaker, text))
+                    yield _make_chunk("npc_dialogue", text, actor_name=pending_speaker)
+                else:
+                    pending += quote_open + quote_buf + ch  # 非台词：原样留旁白
+                quote_buf = ""
+                pending_speaker = None
+                pending_weak = False
             else:
-                pending += ch
+                if in_quote:
+                    quote_buf += ch
+                else:
+                    pending += ch
 
         if tag_found:
             out = _flush_pending()
@@ -475,8 +577,7 @@ async def _stream_narration_filtered(
                 yield _make_chunk("narration", out, actor_name="KP")
             break
 
-        if not in_bracket and not in_say and pending:
-            # 段落边界 \n\n 处分块输出旁白
+        if not in_bracket and not in_say and not in_quote and pending:
             while "\n\n" in pending:
                 idx = pending.index("\n\n") + 2
                 chunk = pending[:idx]
@@ -485,7 +586,6 @@ async def _stream_narration_filtered(
                 result[0] = narration
                 if chunk.strip():
                     yield _make_chunk("narration", chunk, actor_name="KP")
-            # 长缓冲按句末分块，避免单段过久不出字
             if len(pending) > 150:
                 last_b = -1
                 for _i, _ch in enumerate(pending):
@@ -501,11 +601,13 @@ async def _stream_narration_filtered(
 
     if not tag_found:
         if in_say:
-            chunk = _emit_say()  # 未闭合的 SAY：收尾
+            chunk = _emit_say()
             if chunk:
                 yield chunk
+        if in_quote:
+            pending += quote_open + quote_buf   # 未闭合引号：留旁白
         if in_bracket:
-            pending += "[" + bracket_buf  # 未闭合方括号：原样留旁白
+            pending += "[" + bracket_buf
         out = _flush_pending()
         if out:
             yield _make_chunk("narration", out, actor_name="KP")
@@ -518,7 +620,6 @@ async def _stream_narration_filtered(
         result[3] = dialogue_marks
     if len(result) > 4:
         result[4] = group_marks
-
 
 MAX_TEAMMATES_PER_TURN = 4
 
