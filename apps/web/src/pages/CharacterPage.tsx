@@ -8,6 +8,10 @@ import { CharacterEditModal } from '../components/character/CharacterEditModal'
 import { SpecializationDialog } from '../components/character/SpecializationDialog'
 import { WeaponsEditor } from '../components/character/WeaponsEditor'
 import { useSpecializations, normalizeWeapon, type CharWeapon } from '../components/character/useCocData'
+import {
+  AssetsPanel, MythosEditor, RelationsEditor, ModuleHistoryEditor,
+  type AssetsInfo, type Mythos, type Relation, type ModuleExperience,
+} from '../components/character/CharacterExtraEditors'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiDiceSixFacesSix, GiCharacter, GiReturnArrow, GiUpCard, GiPadlock } from 'react-icons/gi'
@@ -167,6 +171,11 @@ export function CharacterPage() {
   // Step 5: 物品
   const [equipText, setEquipText] = useState('')                           // 随身物品自由文本，以、分隔
   const [weapons, setWeapons] = useState<CharWeapon[]>([])
+  // 资产 / 克苏鲁神话 / 人际关系 / 模组经历
+  const [assetsInfo, setAssetsInfo] = useState<AssetsInfo>({ cash: 0, spendingLevel: 0, assets: '' })
+  const [mythos, setMythos] = useState<Mythos>({ spells: [], tomes: [], encounters: [] })
+  const [relations, setRelations] = useState<Relation[]>([])
+  const [moduleHistory, setModuleHistory] = useState<ModuleExperience[]>([])
 
   // Step 5: 结构化背景故事
   const [personalDesc, setPersonalDesc] = useState('')
@@ -366,6 +375,21 @@ export function CharacterPage() {
     const equip = equipText.split(/[、,，]/).map((e) => e.trim()).filter(Boolean)
     if (equip.length > 0) sd.equipment = equip
     if (weapons.length > 0) sd.weapons = weapons
+    // 资产（现金/消费水平/资产情况）
+    if (assetsInfo.cash) sd.cash = assetsInfo.cash
+    if (assetsInfo.spendingLevel) sd.spendingLevel = assetsInfo.spendingLevel
+    if (assetsInfo.assets.trim()) sd.assets = assetsInfo.assets
+    // 克苏鲁神话
+    const mythosClean = {
+      spells: mythos.spells.map((s) => s.trim()).filter(Boolean),
+      tomes: mythos.tomes.map((s) => s.trim()).filter(Boolean),
+      encounters: mythos.encounters.map((s) => s.trim()).filter(Boolean),
+    }
+    if (mythosClean.spells.length || mythosClean.tomes.length || mythosClean.encounters.length) sd.mythos = mythosClean
+    const rels = relations.filter((r) => r.name.trim() || r.relation.trim())
+    if (rels.length) sd.relations = rels
+    const hist = moduleHistory.filter((m) => m.module.trim() || m.experience.trim())
+    if (hist.length) sd.moduleHistory = hist
     return sd
   }
 
@@ -447,6 +471,10 @@ export function CharacterPage() {
     setSpecBaseVals({})
     setEquipText('')
     setWeapons([])
+    setAssetsInfo({ cash: 0, spendingLevel: 0, assets: '' })
+    setMythos({ spells: [], tomes: [], encounters: [] })
+    setRelations([])
+    setModuleHistory([])
     setPersonalDesc('')
     setIdeologyBeliefs('')
     setSignificantPeople('')
@@ -1169,6 +1197,30 @@ export function CharacterPage() {
                       rows={2} className="input w-full" style={{ resize: 'vertical' }}
                     />
                   </div>
+                </div>
+
+                {/* 资产信息（按信用评级换算，可手改） */}
+                <div className="border-t pt-3 mb-3" style={{ borderColor: 'var(--color-border)' }}>
+                  <h4 className="text-sm font-semibold mb-2" style={{ color: 'var(--color-text-accent)' }}>资产信息</h4>
+                  <AssetsPanel creditRating={creditRating} value={assetsInfo} onChange={setAssetsInfo} />
+                </div>
+
+                {/* 克苏鲁神话 */}
+                <div className="border-t pt-3 mb-3" style={{ borderColor: 'var(--color-border)' }}>
+                  <h4 className="text-sm font-semibold mb-2" style={{ color: 'var(--color-text-accent)' }}>克苏鲁神话</h4>
+                  <MythosEditor value={mythos} onChange={setMythos} />
+                </div>
+
+                {/* 人际关系 */}
+                <div className="border-t pt-3 mb-3" style={{ borderColor: 'var(--color-border)' }}>
+                  <h4 className="text-sm font-semibold mb-2" style={{ color: 'var(--color-text-accent)' }}>人际关系</h4>
+                  <RelationsEditor value={relations} onChange={setRelations} />
+                </div>
+
+                {/* 模组经历 */}
+                <div className="border-t pt-3 mb-3" style={{ borderColor: 'var(--color-border)' }}>
+                  <h4 className="text-sm font-semibold mb-2" style={{ color: 'var(--color-text-accent)' }}>模组经历</h4>
+                  <ModuleHistoryEditor value={moduleHistory} onChange={setModuleHistory} />
                 </div>
 
                 <div className="flex gap-2">

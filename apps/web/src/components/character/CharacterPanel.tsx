@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { RadarChart } from './RadarChart'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ConfirmDialog } from '../ui/confirm-dialog'
@@ -41,7 +41,15 @@ const ATTR_LABELS: Record<string, string> = {
 const RADAR_KEYS = ['STR', 'DEX', 'POW', 'CON', 'APP', 'EDU', 'SIZ', 'INT', 'LUK']
 const RADAR_LABELS = ['力量', '敏捷', '意志', '体质', '外貌', '教育', '体型', '智力', '幸运']
 
-const TAB_KEYS = ['基本信息', '技能', '道具'] as const
+const TAB_KEYS = ['基本信息', '技能', '道具', '档案'] as const
+
+const STATUS_LABEL: Record<string, string> = {
+  active: '正常', major_wound: '重伤', unconscious: '昏迷', dead: '死亡',
+  temporary_insanity: '临时疯狂', indefinite_insanity: '不定期疯狂', permanent_insanity: '永久疯狂',
+  incapacitated: '重伤',
+}
+// 非正常状态用醒目色
+const STATUS_DANGER = new Set(['major_wound', 'unconscious', 'dead', 'temporary_insanity', 'indefinite_insanity', 'permanent_insanity', 'incapacitated'])
 
 const BACKSTORY_SECTIONS: { key: string; label: string }[] = [
   { key: 'personalDescription', label: '个人描述' },
@@ -124,6 +132,19 @@ function BasicInfoTab({ character }: { character: CharacterData }) {
           {gender && <span>{gender}</span>}
           {age > 0 && <span>{age}岁</span>}
         </div>
+        {character.status && character.status !== 'active' && (
+          <div className="mt-1">
+            <span
+              className="text-xs px-2 py-0.5 rounded"
+              style={{
+                background: STATUS_DANGER.has(character.status) ? 'var(--color-danger)' : 'var(--color-bg-tertiary)',
+                color: STATUS_DANGER.has(character.status) ? '#fff' : 'var(--color-text-secondary)',
+              }}
+            >
+              {STATUS_LABEL[character.status] || character.status}
+            </span>
+          </div>
+        )}
       </div>
 
       {hp && <StatBar label="HP" current={hp.current} max={hp.max} />}
@@ -342,6 +363,84 @@ function InventoryTab({ character }: { character: CharacterData }) {
   )
 }
 
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div>
+      <h4 className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>{title}</h4>
+      {children}
+    </div>
+  )
+}
+
+// 资产 / 克苏鲁神话 / 人际关系 / 模组经历
+function ProfileTab({ character }: { character: CharacterData }) {
+  const sd = character.system_data || {}
+  const creditRating = (sd.creditRating as number) ?? character.skills?.['信用评级'] ?? 0
+  const cash = sd.cash as number | undefined
+  const spendingLevel = sd.spendingLevel as number | undefined
+  const assets = sd.assets as string | undefined
+  const mythos = (sd.mythos || {}) as { spells?: string[]; tomes?: string[]; encounters?: string[] }
+  const relations = (Array.isArray(sd.relations) ? sd.relations : []) as { name: string; relation: string }[]
+  const history = (Array.isArray(sd.moduleHistory) ? sd.moduleHistory : []) as { module: string; experience: string }[]
+
+  const fmt = (n?: number) => (n != null ? `$${n.toLocaleString()}` : '—')
+  const hasMythos = (mythos.spells?.length || mythos.tomes?.length || mythos.encounters?.length)
+  const empty = !hasMythos && relations.length === 0 && history.length === 0 && cash == null && spendingLevel == null && !assets
+
+  return (
+    <div className="space-y-3">
+      <Section title="资产">
+        <div className="rounded p-2 space-y-0.5" style={{ background: 'var(--color-bg-tertiary)' }}>
+          <InfoRow label="信用评级" value={creditRating} />
+          <InfoRow label="现金" value={fmt(cash)} />
+          <InfoRow label="消费水平" value={fmt(spendingLevel)} />
+          {assets && (
+            <div className="text-xs pt-1" style={{ color: 'var(--color-text-secondary)' }}>资产：{assets}</div>
+          )}
+        </div>
+      </Section>
+
+      {hasMythos ? (
+        <Section title="克苏鲁神话">
+          <div className="space-y-1 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+            {mythos.spells?.length ? <div>法术：{mythos.spells.join('、')}</div> : null}
+            {mythos.tomes?.length ? <div>魔法物品与典籍：{mythos.tomes.join('、')}</div> : null}
+            {mythos.encounters?.length ? <div>第三类接触：{mythos.encounters.join('、')}</div> : null}
+          </div>
+        </Section>
+      ) : null}
+
+      {relations.length > 0 && (
+        <Section title="人际关系">
+          <div className="space-y-0.5">
+            {relations.map((r, i) => (
+              <div key={i} className="flex justify-between text-xs">
+                <span>{r.name}</span>
+                <span style={{ color: 'var(--color-text-secondary)' }}>{r.relation}</span>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {history.length > 0 && (
+        <Section title="模组经历">
+          <div className="space-y-1.5">
+            {history.map((m, i) => (
+              <div key={i} className="text-xs rounded p-1.5" style={{ background: 'var(--color-bg-tertiary)' }}>
+                <div className="font-semibold" style={{ color: 'var(--color-text-accent)' }}>{m.module}</div>
+                {m.experience && <div className="mt-0.5 leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>{m.experience}</div>}
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {empty && <p className="text-xs text-center py-4" style={{ color: 'var(--color-text-secondary)' }}>暂无档案信息</p>}
+    </div>
+  )
+}
+
 export function CharacterPanel({ character, onSkillCheck }: CharacterPanelProps) {
   return (
     <Tabs defaultValue="基本信息" className="flex flex-col h-full">
@@ -358,6 +457,9 @@ export function CharacterPanel({ character, onSkillCheck }: CharacterPanelProps)
       </TabsContent>
       <TabsContent value="道具">
         <InventoryTab character={character} />
+      </TabsContent>
+      <TabsContent value="档案">
+        <ProfileTab character={character} />
       </TabsContent>
     </Tabs>
   )

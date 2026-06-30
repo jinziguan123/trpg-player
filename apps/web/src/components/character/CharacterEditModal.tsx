@@ -7,6 +7,11 @@ import { GiCancel, GiCheckMark } from 'react-icons/gi'
 import { SpecializationDialog } from './SpecializationDialog'
 import { WeaponsEditor } from './WeaponsEditor'
 import { useSpecializations, normalizeWeapon, type CharWeapon } from './useCocData'
+import {
+  AssetsPanel, MythosEditor, RelationsEditor, ModuleHistoryEditor,
+  readAssets, readMythos, readRelations, readModuleHistory,
+  type AssetsInfo, type Mythos, type Relation, type ModuleExperience,
+} from './CharacterExtraEditors'
 
 interface CharacterData {
   id: string
@@ -137,6 +142,10 @@ export function CharacterEditModal({
     for (const s of BACKSTORY_SECTIONS) o[s.key] = (sd[s.key] as string) || ''
     return o
   })
+  const [assetsInfo, setAssetsInfo] = useState<AssetsInfo>(() => readAssets(sd))
+  const [mythos, setMythos] = useState<Mythos>(() => readMythos(sd))
+  const [relations, setRelations] = useState<Relation[]>(() => readRelations(sd))
+  const [moduleHistory, setModuleHistory] = useState<ModuleExperience[]>(() => readModuleHistory(sd))
   const [saving, setSaving] = useState(false)
 
   // 按使用技能取当前成功率（用于武器自动填成功率）
@@ -144,6 +153,8 @@ export function CharacterEditModal({
     const hit = skills.find(([k]) => k === skillKey)
     return hit ? hit[1] : 0
   }
+  // 信用评级取自「信用评级」技能（回退到旧的 system_data.creditRating）
+  const creditRating = skillValueOf('信用评级') || Number(scalars.creditRating) || 0
 
   // 选中专精 → 落为「基名(专精)」技能；母语值=EDU，其余用专精 init
   const addSpecialization = (base: string, specName: string, init: number) => {
@@ -170,6 +181,18 @@ export function CharacterEditModal({
     newSd.weapons = weapons
       .filter((w) => w.name.trim())
       .map((w) => ({ ...w, name: w.name.trim() }))
+    // 资产 / 克苏鲁神话 / 人际关系 / 模组经历
+    newSd.cash = assetsInfo.cash
+    newSd.spendingLevel = assetsInfo.spendingLevel
+    newSd.assets = assetsInfo.assets
+    newSd.creditRating = creditRating
+    newSd.mythos = {
+      spells: mythos.spells.map((s) => s.trim()).filter(Boolean),
+      tomes: mythos.tomes.map((s) => s.trim()).filter(Boolean),
+      encounters: mythos.encounters.map((s) => s.trim()).filter(Boolean),
+    }
+    newSd.relations = relations.filter((r) => r.name.trim() || r.relation.trim())
+    newSd.moduleHistory = moduleHistory.filter((m) => m.module.trim() || m.experience.trim())
     const payload = {
       name: name.trim(),
       status,
@@ -199,7 +222,7 @@ export function CharacterEditModal({
 
         <Tabs defaultValue="基本" className="flex-1 min-h-0 flex flex-col">
           <TabsList>
-            {['基本', '属性', '技能', '道具', '背景'].map((t) => (
+            {['基本', '属性', '技能', '资产', '道具', '神话', '关系', '经历', '背景'].map((t) => (
               <TabsTrigger key={t} value={t}>{t}</TabsTrigger>
             ))}
           </TabsList>
@@ -303,6 +326,11 @@ export function CharacterEditModal({
               </div>
             </TabsContent>
 
+            {/* 资产：信用评级 + 现金/消费水平/资产情况 */}
+            <TabsContent value="资产">
+              <AssetsPanel creditRating={creditRating} value={assetsInfo} onChange={setAssetsInfo} />
+            </TabsContent>
+
             {/* 道具：武器（规范字段）+ 随身物品（自由文本） */}
             <TabsContent value="道具">
               <div className="space-y-4">
@@ -323,6 +351,21 @@ export function CharacterEditModal({
                   />
                 </div>
               </div>
+            </TabsContent>
+
+            {/* 克苏鲁神话：法术 / 魔法物品与典籍 / 第三类接触 */}
+            <TabsContent value="神话">
+              <MythosEditor value={mythos} onChange={setMythos} />
+            </TabsContent>
+
+            {/* 人际关系 */}
+            <TabsContent value="关系">
+              <RelationsEditor value={relations} onChange={setRelations} />
+            </TabsContent>
+
+            {/* 模组经历 */}
+            <TabsContent value="经历">
+              <ModuleHistoryEditor value={moduleHistory} onChange={setModuleHistory} />
             </TabsContent>
 
             {/* 背景：分项 + 纯文本 */}

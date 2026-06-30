@@ -82,6 +82,33 @@ export function useWeapons() {
   return data
 }
 
+// ---- 资产：按信用评级换算现金/消费水平/资产（CoC 7 版标准表，1920s 美元） ----
+export interface DerivedAssets {
+  tier: string          // 财富等级
+  spendingLevel: number // 消费水平 $
+  cash: number          // 现金 $
+  assets: number        // 资产 $
+}
+
+export function assetTier(cr: number): string {
+  if (cr <= 0) return '一贫如洗'
+  if (cr <= 9) return '贫穷'
+  if (cr <= 49) return '普通'
+  if (cr <= 89) return '富裕'
+  if (cr <= 98) return '富有'
+  return '巨富'
+}
+
+export function deriveAssets(cr: number): DerivedAssets {
+  const tier = assetTier(cr)
+  if (cr <= 0) return { tier, spendingLevel: 0.5, cash: 0.5, assets: 0 }
+  if (cr <= 9) return { tier, spendingLevel: 2, cash: cr * 2, assets: cr * 10 }
+  if (cr <= 49) return { tier, spendingLevel: 10, cash: cr * 20, assets: cr * 50 }
+  if (cr <= 89) return { tier, spendingLevel: 50, cash: cr * 50, assets: cr * 500 }
+  if (cr <= 98) return { tier, spendingLevel: 250, cash: cr * 100, assets: cr * 2000 }
+  return { tier, spendingLevel: 5000, cash: 50000, assets: 5000000 }
+}
+
 /** 把技能键拆成基名与专精，如 "格斗(斗殴)" → ["格斗","斗殴"]；无专精则 spec 为空。 */
 export function splitSkill(key: string): [string, string] {
   const m = key.match(/^(.+?)\((.+)\)$/)
