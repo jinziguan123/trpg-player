@@ -102,9 +102,17 @@ class OpenAICompatProvider(LLMProvider):
                 data_str = line[6:]
                 if data_str == "[DONE]":
                     break
-                chunk = json.loads(data_str)
-                delta = chunk["choices"][0].get("delta", {})
-                content = delta.get("content", "")
+                try:
+                    chunk = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue  # 忽略心跳/非 JSON 行
+                # 有些 OpenAI 兼容服务会发 choices=[] 的块（usage 统计 / 内容过滤 /
+                # keep-alive），不能用 choices[0] 硬取，否则 IndexError 整段断流。
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                content = delta.get("content")
                 if content:
                     yield content
 
