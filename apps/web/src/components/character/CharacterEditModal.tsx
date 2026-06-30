@@ -47,6 +47,30 @@ const VITAL_FIELDS: { key: string; label: string }[] = [
   { key: 'magicPoints', label: 'MP' },
 ]
 
+interface WeaponItem {
+  name: string
+  skill?: string
+  damage?: string
+  range?: string
+  attacks?: number
+  ammo?: string
+}
+
+// 装备历史上可能是字符串数组或对象数组，统一取名字
+function equipmentName(item: unknown): string {
+  if (typeof item === 'string') return item
+  if (item && typeof item === 'object' && 'name' in item) return String((item as { name: unknown }).name ?? '')
+  return ''
+}
+
+const WEAPON_FIELDS: { key: keyof WeaponItem; label: string; type: 'number' | 'text' }[] = [
+  { key: 'skill', label: '技能', type: 'text' },
+  { key: 'damage', label: '伤害', type: 'text' },
+  { key: 'range', label: '射程', type: 'text' },
+  { key: 'attacks', label: '攻击次数', type: 'number' },
+  { key: 'ammo', label: '弹药', type: 'text' },
+]
+
 const BACKSTORY_SECTIONS: { key: string; label: string }[] = [
   { key: 'personalDescription', label: '个人描述' },
   { key: 'ideologyBeliefs', label: '思想/信念' },
@@ -102,6 +126,13 @@ export function CharacterEditModal({
     }
     return o
   })
+  const [equipment, setEquipment] = useState<string[]>(
+    (Array.isArray(sd.equipment) ? sd.equipment : []).map(equipmentName).filter(Boolean),
+  )
+  const [newEquip, setNewEquip] = useState('')
+  const [weapons, setWeapons] = useState<WeaponItem[]>(
+    (Array.isArray(sd.weapons) ? sd.weapons : []) as WeaponItem[],
+  )
   const [backstory, setBackstory] = useState(character.backstory || '')
   const [sections, setSections] = useState<Record<string, string>>(() => {
     const o: Record<string, string> = {}
@@ -121,6 +152,10 @@ export function CharacterEditModal({
       if (sections[s.key].trim()) newSd[s.key] = sections[s.key]
       else delete newSd[s.key]
     }
+    newSd.equipment = equipment.map((e) => e.trim()).filter(Boolean)
+    newSd.weapons = weapons
+      .filter((w) => w.name.trim())
+      .map((w) => ({ ...w, name: w.name.trim() }))
     const payload = {
       name: name.trim(),
       status,
@@ -150,7 +185,7 @@ export function CharacterEditModal({
 
         <Tabs defaultValue="基本" className="flex-1 min-h-0 flex flex-col">
           <TabsList>
-            {['基本', '属性', '技能', '背景'].map((t) => (
+            {['基本', '属性', '技能', '道具', '背景'].map((t) => (
               <TabsTrigger key={t} value={t}>{t}</TabsTrigger>
             ))}
           </TabsList>
@@ -238,6 +273,98 @@ export function CharacterEditModal({
                     onClick={() => { if (newSkill.trim()) { setSkills([...skills, [newSkill.trim(), 0]]); setNewSkill('') } }}
                     className="btn-secondary text-sm"
                   >添加</button>
+                </div>
+              </div>
+            </TabsContent>
+
+            {/* 道具：武器 + 随身物品 */}
+            <TabsContent value="道具">
+              <div className="space-y-4">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <h4 className="text-sm font-semibold" style={{ color: 'var(--color-text-accent)' }}>武器</h4>
+                    <button
+                      onClick={() => setWeapons([...weapons, { name: '' }])}
+                      className="btn-secondary text-xs"
+                    >添加武器</button>
+                  </div>
+                  <div className="space-y-2">
+                    {weapons.map((w, i) => (
+                      <div key={i} className="p-2 rounded space-y-2" style={{ background: 'var(--color-bg-tertiary)' }}>
+                        <div className="flex items-center gap-2">
+                          <input
+                            value={w.name}
+                            onChange={(e) => { const next = [...weapons]; next[i] = { ...w, name: e.target.value }; setWeapons(next) }}
+                            placeholder="武器名"
+                            className={inputCls + ' flex-1'}
+                            style={inputStyle}
+                          />
+                          <button
+                            onClick={() => setWeapons(weapons.filter((_, j) => j !== i))}
+                            className="text-xs px-2 py-1 rounded hover:bg-[var(--color-danger)] hover:text-white transition-colors"
+                            style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}
+                          >删除</button>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          {WEAPON_FIELDS.map((f) => (
+                            <label key={f.key} className="text-xs">
+                              <span className="block mb-0.5" style={{ color: 'var(--color-text-secondary)' }}>{f.label}</span>
+                              {f.type === 'number' ? (
+                                <NumInput
+                                  value={Number(w[f.key]) || 0}
+                                  onChange={(n) => { const next = [...weapons]; next[i] = { ...w, [f.key]: n }; setWeapons(next) }}
+                                />
+                              ) : (
+                                <input
+                                  value={String(w[f.key] ?? '')}
+                                  onChange={(e) => { const next = [...weapons]; next[i] = { ...w, [f.key]: e.target.value }; setWeapons(next) }}
+                                  className={inputCls}
+                                  style={inputStyle}
+                                />
+                              )}
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    {weapons.length === 0 && (
+                      <p className="text-xs" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>暂无武器</p>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="text-sm font-semibold mb-1.5" style={{ color: 'var(--color-text-accent)' }}>随身物品</h4>
+                  <div className="space-y-1.5">
+                    {equipment.map((item, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <input
+                          value={item}
+                          onChange={(e) => { const next = [...equipment]; next[i] = e.target.value; setEquipment(next) }}
+                          className={inputCls + ' flex-1'}
+                          style={inputStyle}
+                        />
+                        <button
+                          onClick={() => setEquipment(equipment.filter((_, j) => j !== i))}
+                          className="text-xs px-2 py-1 rounded hover:bg-[var(--color-danger)] hover:text-white transition-colors"
+                          style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}
+                        >删除</button>
+                      </div>
+                    ))}
+                    <div className="flex items-center gap-2 pt-1">
+                      <input
+                        value={newEquip}
+                        onChange={(e) => setNewEquip(e.target.value)}
+                        placeholder="新增物品…"
+                        className={inputCls + ' flex-1'}
+                        style={inputStyle}
+                      />
+                      <button
+                        onClick={() => { if (newEquip.trim()) { setEquipment([...equipment, newEquip.trim()]); setNewEquip('') } }}
+                        className="btn-secondary text-sm"
+                      >添加</button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </TabsContent>
