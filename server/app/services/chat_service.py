@@ -43,7 +43,7 @@ NPC_ACT_RE = re.compile(
     r"\[NPC_ACT:\s*npc_id=([^,\]]+),?\s*trigger=([^\]]+)\]"
 )
 SCENE_CHANGE_RE = re.compile(
-    r"\[SCENE_CHANGE:\s*scene_id=([^\]]+)\]"
+    r"\[SCENE_CHANGE:\s*(?:scene_id=)?([^\]]+)\]"  # 容忍漏写 scene_id= 的形式
 )
 RULE_LOOKUP_RE = re.compile(
     r"\[RULE_LOOKUP:\s*query=([^\]]+)\]"
@@ -136,6 +136,41 @@ def _parse_tag_kv(inner: str) -> dict[str, str]:
             k, v = part.split("=", 1)
             out[k.strip()] = v.strip()
     return out
+
+
+def _resolve_scene_ref(module: Module, ref: str) -> str | None:
+    """把 SCENE_CHANGE 的引用（场景 id 或场景名，KP 有时会写错/写名字）解析成真实场景 id。
+
+    依次尝试：精确 id → 精确名 → 名字互含 → id 互含。都不中返回 None（调用方据此不改场景，
+    避免写入脏 id 后地图回退到第一个场景）。
+    """
+    ref = (ref or "").strip()
+    scenes = (module.scenes if module else []) or []
+    if not ref or not scenes:
+        return None
+    for s in scenes:
+        if s.get("id") == ref:
+            return ref
+    for s in scenes:
+        nm = (s.get("name") or s.get("title") or "").strip()
+        if nm and nm == ref:
+            return s.get("id")
+    for s in scenes:
+        nm = (s.get("name") or s.get("title") or "").strip()
+        if nm and (nm in ref or ref in nm):
+            return s.get("id")
+    for s in scenes:
+        sid = s.get("id") or ""
+        if sid and (sid in ref or ref in sid):
+            return sid
+    return None
+
+
+def _scene_name(module: Module, scene_id: str) -> str:
+    for s in (module.scenes if module else []) or []:
+        if s.get("id") == scene_id:
+            return s.get("name") or s.get("title") or scene_id
+    return scene_id
 
 
 def _resolve_check_actor(
@@ -1150,9 +1185,16 @@ async def _process_commands(
                 yield chunk
 
     for match in SCENE_CHANGE_RE.finditer(kp_text):
-        new_scene_id = match.group(1).strip()
-        session_service.update_scene(db, session_id, new_scene_id)
-        yield _make_chunk("system", f"场景切换至：{new_scene_id}")
+        ref = match.group(1).strip()
+        sid = _resolve_scene_ref(module, ref)
+        # 只接受能对应到真实场景的 id/名字；解析不到就不动 current_scene_id，
+        # 避免写入脏值后地图回退到「第一个场景」造成「玩家换图了地图却没切」。
+        if sid and sid != game_session.current_scene_id:
+            session_service.update_scene(db, session_id, sid)
+            db.refresh(game_session)
+            yield _make_chunk("system", f"场景切换至：{_scene_name(module, sid)}")
+        elif not sid:
+            logger.warning("SCENE_CHANGE 无法解析场景引用：%r（保持当前场景）", ref)
 
     # 剧情状态推进：置/清标志后，刷新内存里的 game_session.world_state，使本次生成的后续
     # 处理（续写、NPC 行动）与下一轮上下文都能看到最新状态。

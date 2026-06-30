@@ -97,6 +97,20 @@ def test_written_text_near_player_stays_in_narration():
     assert "S. KANA" in result[0]  # 字母留在旁白文本里
 
 
+def test_resolve_scene_ref_id_or_name():
+    """SCENE_CHANGE 的引用按 id 或场景名稳健解析；解析不到返回 None（不乱改当前场景）。"""
+    mod = Module(title="t", rule_system="coc", scenes=[
+        {"id": "scene_1", "name": "诺特的办公室"},
+        {"id": "scene_2", "name": "圣玛丽疗养院"},
+    ])
+    r = chat_service._resolve_scene_ref
+    assert r(mod, "scene_2") == "scene_2"        # 精确 id
+    assert r(mod, "圣玛丽疗养院") == "scene_2"     # 精确名
+    assert r(mod, "疗养院") == "scene_2"           # 名字互含（KP 写简称）
+    assert r(mod, "不存在的地方") is None          # 解析不到 → None
+    assert chat_service._scene_name(mod, "scene_1") == "诺特的办公室"
+
+
 def test_say_marker_extracts_dialogue():
     """显式 [SAY] 标记把 NPC 台词抽成对话（局部名归一到全名）。"""
     text = "托马斯·金博尔露出和蔼的微笑。[SAY: who=托马斯]下午好，年轻人。[/SAY]他望向门口。"
