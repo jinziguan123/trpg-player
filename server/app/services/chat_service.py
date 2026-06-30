@@ -399,6 +399,9 @@ async def _stream_narration_filtered(
     pending_speaker: str | None = None   # 本引号判定出的说话人（None=留旁白）
     pending_weak = False                 # 该说话人是否弱信号（仅靠最近主语推断）
     last_speaker: str | None = None
+    written_run = False                  # 处于「一串书写标识引号」中（门牌列表等），后续相邻引号同样留旁白
+    gap_since_quote = ""                 # 上一处闭引号至今累计的旁白文本（判断引号是否相邻成串）
+    _LIST_SEPS = " 　\t\n、,，;；/和与及·"
 
     def _looks_like_speech(text: str) -> bool:
         """像台词：有句末标点 / 口语标记 / 够长——用于过滤门牌、招牌等短名词标签。"""
@@ -466,19 +469,20 @@ async def _stream_narration_filtered(
                     start = p + 1
         return best
 
-    def _resolve_speaker(pre: str) -> tuple[str | None, bool, bool]:
-        """返回 (说话人, 是否弱信号, 是否来自显式前缀)。弱信号（仅靠最近 NPC 主语推断）下，
-        仅当引号文本「像台词」才抽取，避免把门牌/招牌等短名词标签误判为台词。
-        from_prefix=True 时，调用方需把「X：」前缀从旁白里抹掉，免得说话人名重复显示。"""
+    def _resolve_speaker(pre: str) -> tuple[str | None, bool, bool, bool]:
+        """返回 (说话人, 是否弱信号, 是否来自显式前缀, 是否书写内容)。弱信号（仅靠最近 NPC
+        主语推断）下，仅当引号文本「像台词」才抽取，避免把门牌/招牌等短名词标签误判为台词。
+        from_prefix=True 时，调用方需把「X：」前缀从旁白里抹掉，免得说话人名重复显示。
+        is_written=True 表示该引号是书写/标识内容（门牌、招牌、刻字…），留旁白。"""
         s = pre.rstrip()
         if _WRITTEN_TEXT_RE.search(s) or _REFERENCE_BEFORE_RE.search(s):
-            return None, False, False         # 书写/标识/被提及 → 留旁白
+            return None, False, False, True   # 书写/标识/被提及 → 留旁白
         spk = _prefix_speaker(s)
         if spk:
-            return spk, False, True           # 强：显式说话前缀
+            return spk, False, True, False    # 强：显式说话前缀
         if last_speaker:
-            return last_speaker, False, False  # 强：承接当前说话人（段落分隔后会被释放）
-        return _recent_npc_subject(s), True, False  # 弱：最近行动的 NPC 主语
+            return last_speaker, False, False, False  # 强：承接当前说话人（段落分隔后会被释放）
+        return _recent_npc_subject(s), True, False, False  # 弱：最近行动的 NPC 主语
 
     extracted = result[2]
     dialogue_marks: list = result[3] if len(result) > 3 else []
@@ -571,7 +575,16 @@ async def _stream_narration_filtered(
                 # 开引号：先判说话人（基于引号前文），冲掉旁白，进入引号收集。
                 # 用 narration+pending 作前文：台词常另起一段，此时前文主语（如「诺特」）
                 # 已被 flush 进 narration，只看 pending 会漏掉说话人。
-                pending_speaker, pending_weak, from_prefix = _resolve_speaker(narration + pending)
+                # 「相邻成串」判断：上一处闭引号至今只有分隔符 → 与上一引号同属一串。
+                adjacent = gap_since_quote.strip(_LIST_SEPS) == ""
+                if not adjacent:
+                    written_run = False
+                if written_run and adjacent:
+                    # 续接书写标识串（如门牌列表）：整串都按书写内容留旁白，不抽台词。
+                    pending_speaker, pending_weak, from_prefix = None, False, False
+                else:
+                    pending_speaker, pending_weak, from_prefix, is_written = _resolve_speaker(narration + pending)
+                    written_run = is_written
                 # 经显式前缀（「史蒂芬·诺特：」）判定说话人时，把该前缀从旁白里抹掉——
                 # 否则说话人名会既作旁白文字、又作气泡署名，重复显示。
                 if pending_speaker and from_prefix:
@@ -584,6 +597,7 @@ async def _stream_narration_filtered(
                 quote_buf = ""
             elif (ch in "”」』") and in_quote:
                 in_quote = False
+                gap_since_quote = ""        # 闭引号：重置「相邻成串」计数
                 text = quote_buf.strip()
                 # 弱信号下要求「像台词」，否则按标签/名词留旁白（门牌、招牌等）
                 ok = bool(text and pending_speaker) and (not pending_weak or _looks_like_speech(text))
@@ -602,10 +616,13 @@ async def _stream_narration_filtered(
                     quote_buf += ch
                 else:
                     pending += ch
+                    gap_since_quote += ch
                     # 段落分隔＝说话的「话筒」交还：清掉 last_speaker，避免上一位说话人
-                    # 跨段把后文（如另一场景里读到的报纸短讯）也吸成自己的台词。
-                    if last_speaker and pending.endswith("\n\n"):
+                    # 跨段把后文（如另一场景里读到的报纸短讯）也吸成自己的台词；
+                    # 书写标识串也在段落处中断。
+                    if pending.endswith("\n\n"):
                         last_speaker = None
+                        written_run = False
 
         if tag_found:
             out = _flush_pending()

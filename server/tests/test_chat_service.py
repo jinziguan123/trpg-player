@@ -149,6 +149,24 @@ def test_last_speaker_released_after_paragraph_break():
     assert "北区老宅传响" in result[0]               # 它留在旁白
 
 
+def test_quoted_label_list_all_stay_in_narration():
+    """一串书写标识引号（门牌列表）：首个被「铭牌：」判为书写后，相邻的同串引号一律
+    留旁白——即便末项较长、附近又有 NPC 名（诺特），也不会被误抽成台词。"""
+    text = (
+        "诺特先生清了清嗓子，声音里带着一丝焦虑：他停顿了一下。\n\n"
+        "他把信封放在书桌上。房间北墙有四扇门，门上的铭牌："
+        "“波士顿环球报社”“中央图书馆”“市立档案馆”“科比特老宅——14号麦瑟街”。"
+    )
+    npcs = [{"name": "史蒂芬·诺特"}]
+    result = ["", "", [], [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    assert result[2] == []  # 门牌列表无一被抽成台词
+    for label in ("波士顿环球报社", "中央图书馆", "市立档案馆", "科比特老宅——14号麦瑟街"):
+        assert label in result[0]
+
+
 def test_written_text_near_player_stays_in_narration():
     """书写/刻字内容（如笔记封面字母）即便用引号包裹，靠近玩家角色名时也留在旁白。"""
     text = (
