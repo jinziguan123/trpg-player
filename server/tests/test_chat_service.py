@@ -99,6 +99,24 @@ def test_narrative_colon_not_treated_as_speaker():
     assert speakers == ["史蒂芬·诺特"]     # 归给最近行动的 NPC
 
 
+def test_dialogue_after_paragraph_break_still_attributed():
+    """台词另起一段时，前文主语（诺特）已被 flush 进 narration；说话人解析需基于
+    narration+pending，否则会漏判说话人、台词被错留在旁白。"""
+    text = (
+        "诺特听完了你们的讨论，微微颔首，似乎对你们的谨慎态度表示赞许。"
+        "他站起身，从口袋里掏出一把小钥匙，走到房间北墙边，打开柜子，"
+        "翻了翻，找出几张纸，走回来递给亨利和约翰。\n\n"
+        "“这是我从遗产律师那儿拿到的一些零散文件，里面有科比特当年的遗嘱摘要。”"
+    )
+    npcs = [{"name": "史蒂芬·诺特"}]
+    result = ["", "", []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    speakers = [name for name, _ in result[2]]
+    assert speakers == ["史蒂芬·诺特"]  # 跨段落仍能归到诺特
+
+
 def test_written_text_near_player_stays_in_narration():
     """书写/刻字内容（如笔记封面字母）即便用引号包裹，靠近玩家角色名时也留在旁白。"""
     text = (

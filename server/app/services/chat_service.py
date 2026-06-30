@@ -547,8 +547,10 @@ async def _stream_narration_filtered(
                 in_bracket = True
                 bracket_buf = ""
             elif (ch in "“「『") and not in_quote:
-                # 开引号：先判说话人（基于引号前文），冲掉旁白，进入引号收集
-                pending_speaker, pending_weak = _resolve_speaker(pending)
+                # 开引号：先判说话人（基于引号前文），冲掉旁白，进入引号收集。
+                # 用 narration+pending 作前文：台词常另起一段，此时前文主语（如「诺特」）
+                # 已被 flush 进 narration，只看 pending 会漏掉说话人。
+                pending_speaker, pending_weak = _resolve_speaker(narration + pending)
                 out = _flush_pending()
                 if out:
                     yield _make_chunk("narration", out, actor_name="KP")
