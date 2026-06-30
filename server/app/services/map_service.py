@@ -15,6 +15,7 @@ from app.ai.llm_factory import get_llm
 from app.models.character import Character
 from app.models.module import Module
 from app.models.session import GameSession
+from app.services import session_service
 
 logger = logging.getLogger(__name__)
 
@@ -247,12 +248,55 @@ def _spawn_pos(m: dict) -> tuple[int, int]:
     return 0, 0
 
 
-def current_scene_map(db: Session, session: GameSession) -> dict:
-    """运行时：按当前 flags 解析当前场景，返回其地图 + 实体位置（v1：玩家 token 落在入口）。
+def _is_floor(m: dict, x: int, y: int) -> bool:
+    tiles = m.get("tiles") or []
+    if 0 <= y < len(tiles) and 0 <= x < len(tiles[y]):
+        return tiles[y][x] in "."
+    return False
 
-    地图随剧情变化复用场景 states——若某变体带了 `map` 字段，解析后即用该变体地图
-    （打破墙壁→新房间等只需在变体里给新地图）。
-    """
+
+def _nearest_floor(m: dict, x: int, y: int, occupied: set[tuple[int, int]]) -> tuple[int, int]:
+    """从 (x,y) 起向外找最近的、未被占用的地板格；找不到就退回 (x,y)。"""
+    if _is_floor(m, x, y) and (x, y) not in occupied:
+        return x, y
+    w, h = m.get("w", 0), m.get("h", 0)
+    for r in range(1, max(w, h) + 1):
+        for dy in range(-r, r + 1):
+            for dx in range(-r, r + 1):
+                if max(abs(dx), abs(dy)) != r:
+                    continue
+                nx, ny = x + dx, y + dy
+                if _is_floor(m, nx, ny) and (nx, ny) not in occupied:
+                    return nx, ny
+    return x, y
+
+
+def _resolve_anchor(m: dict, name: str, tracked: dict) -> tuple[int, int] | None:
+    """把 [MOVE] 的 to=<锚点> 解析为坐标：支持 已追踪角色名 / 出口 / 物体 / npc_pos 名 / "x,y"。"""
+    name = (name or "").strip()
+    if not name:
+        return None
+    # 已追踪的其他角色/NPC
+    if name in tracked and isinstance(tracked[name], (list, tuple)) and len(tracked[name]) == 2:
+        return int(tracked[name][0]), int(tracked[name][1])
+    # 地图上的命名锚点（出口/物体/npc_pos）
+    for grp in ("entrances", "objects", "npc_pos"):
+        for it in m.get(grp) or []:
+            nm = str(it.get("name", ""))
+            if nm and (nm == name or name in nm or nm in name) and isinstance(it.get("x"), int):
+                return it["x"], it.get("y", 0)
+    # "x,y" 字面量
+    if "," in name:
+        parts = name.replace("，", ",").split(",")
+        try:
+            return int(parts[0]), int(parts[1])
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+def _resolved_scene_map(db: Session, session: GameSession):
+    """(scene, resolved_map) —— 按当前 flags 解析当前场景及其（可能的变体）地图。"""
     from app.ai.context import _active_flags, _resolve_state
 
     module = db.get(Module, session.module_id)
@@ -262,14 +306,71 @@ def current_scene_map(db: Session, session: GameSession) -> dict:
         scenes[0] if scenes else None,
     )
     if not scene:
-        return {"scene_id": None, "scene_name": None, "map": None, "entities": []}
+        return None, None
     resolved = _resolve_state(scene, _active_flags(session))
-    m = resolved.get("map")
+    return scene, resolved.get("map")
+
+
+def apply_move(db: Session, session: GameSession, actor: str, target: str) -> None:
+    """处理 KP 的 [MOVE: actor, to]：把锚点解析成坐标、贴最近空地板，落库到 world_state.positions。"""
+    actor = (actor or "").strip()
+    scene, m = _resolved_scene_map(db, session)
+    if not (actor and scene and m):
+        return
+    scene_id = scene.get("id")
+    ws = session.world_state or {}
+    tracked = dict((ws.get("positions") or {}).get(scene_id) or {})
+    anchor = _resolve_anchor(m, target, tracked)
+    if anchor is None:
+        return
+    occupied = {(int(p[0]), int(p[1])) for p in tracked.values()
+                if isinstance(p, (list, tuple)) and len(p) == 2 and p != tracked.get(actor)}
+    x, y = _nearest_floor(m, anchor[0], anchor[1], occupied)
+    session_service.set_position(db, session.id, scene_id, actor, x, y)
+
+
+def current_scene_map(db: Session, session: GameSession) -> dict:
+    """运行时：按当前 flags 解析当前场景，返回地图 + 全员实体位置（玩家/队友/NPC 实际走位）。
+
+    位置优先取 world_state.positions（KP 经 [MOVE] 更新的实际走位），无记录则回落默认：
+    玩家与队友落在入口附近（互不重叠），NPC 落在地图 npc_pos。NPC 改由 entities 下发并
+    带上 asset_id，故返回的 map 去掉 npc_pos 避免前端重复渲染。
+    """
+    scene, m = _resolved_scene_map(db, session)
+    if not scene:
+        return {"scene_id": None, "scene_name": None, "map": None, "entities": []}
     entities: list[dict] = []
     if m:
+        scene_id = scene.get("id")
+        tracked = dict((session.world_state or {}).get("positions", {}).get(scene_id) or {})
+        occupied: set[tuple[int, int]] = set()
+
+        def place(name: str, kind: str, default_xy: tuple[int, int], asset_id=None):
+            if name in tracked and len(tracked[name]) == 2:
+                x, y = int(tracked[name][0]), int(tracked[name][1])
+            elif tuple(default_xy) not in occupied:
+                # 默认落点（入口门/npc_pos）未被占用就照用；门口本就是合理站位
+                x, y = int(default_xy[0]), int(default_xy[1])
+            else:
+                x, y = _nearest_floor(m, default_xy[0], default_xy[1], occupied)
+            occupied.add((x, y))
+            ent = {"name": name, "x": x, "y": y, "kind": kind}
+            if asset_id:
+                ent["asset_id"] = asset_id
+            entities.append(ent)
+
         sx, sy = _spawn_pos(m)
         pc = db.get(Character, session.player_character_id)
-        entities.append({"name": pc.name if pc else "玩家", "x": sx, "y": sy, "kind": "player"})
+        place(pc.name if pc else "玩家", "player", (sx, sy))
+        for t in session_service.get_party_members(db, session.id, exclude_id=session.player_character_id):
+            place(t.name, "ally", (sx, sy))
+        for n in m.get("npc_pos") or []:
+            nm = str(n.get("name", "")).strip()
+            if not nm:
+                continue
+            kind = "enemy" if n.get("hostile") else "npc"
+            place(nm, kind, (int(n.get("x", sx)), int(n.get("y", sy))), n.get("asset_id"))
+        m = {**m, "npc_pos": []}  # NPC 已并入 entities，避免前端按 npc_pos 重复画
     return {
         "scene_id": scene.get("id"),
         "scene_name": scene.get("name") or scene.get("title") or scene.get("id"),

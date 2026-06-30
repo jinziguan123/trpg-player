@@ -9,6 +9,7 @@ from app.models.session import GameSession
 from app.ai.prompts.kp_system import (
     KP_SYSTEM_PROMPT,
     KP_OPENING_PROMPT,
+    MOVE_INSTRUCTION,
     RULE_LOOKUP_INSTRUCTION,
     PLOT_FLAG_INSTRUCTION,
 )
@@ -422,6 +423,10 @@ def build_kp_context(
     # 仅当模组确有「随剧情改变」的场景/NPC 时，且非开场，才广告 [SET_FLAG]/[CLEAR_FLAG] 推进能力。
     if not is_opening and _has_plot_state(module):
         system_content += PLOT_FLAG_INSTRUCTION
+
+    # 仅当前场景有地图时，广告 [MOVE] 走位能力（让地图反映玩家/NPC 实际位置）。
+    if current_scene and current_scene.get("map"):
+        system_content += MOVE_INSTRUCTION
 
     party_char_ids = {player_char.id} | {t.id for t in teammates}
 

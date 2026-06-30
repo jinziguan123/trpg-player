@@ -552,6 +552,27 @@ def update_scene(db: Session, session_id: str, scene_id: str) -> None:
     db.commit()
 
 
+def set_position(db: Session, session_id: str, scene_id: str, actor: str, x: int, y: int) -> None:
+    """记录某角色/NPC 在某场景内的实际走位（world_state.positions[scene][name]=[x,y]）。
+
+    按场景与显示名分桶；进入新场景时无记录即回落到出生点/默认 npc_pos（见 current_scene_map）。
+    """
+    actor = (actor or "").strip()
+    if not (scene_id and actor):
+        return
+    session = db.get(GameSession, session_id)
+    if not session:
+        return
+    ws = dict(session.world_state or {})
+    positions = dict(ws.get("positions") or {})
+    scene_pos = dict(positions.get(scene_id) or {})
+    scene_pos[actor] = [int(x), int(y)]
+    positions[scene_id] = scene_pos
+    ws["positions"] = positions
+    session.world_state = ws
+    db.commit()
+
+
 def set_flag(db: Session, session_id: str, flag: str, value: bool = True) -> None:
     """置/清剧情标志（world_state.flags）。KP 通过 [SET_FLAG]/[CLEAR_FLAG] 推进剧情状态，
     场景/NPC 的状态变体据此切换。flag 名做轻量规范化（去空白），value=False 即清除该标志。"""

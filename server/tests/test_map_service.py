@@ -147,6 +147,36 @@ def test_current_scene_map_resolves_and_places_player(db_factory):
     assert out2["map"]["tiles"] == alt_map["tiles"]
 
 
+def test_map_renders_npcs_and_reflects_move(db_factory):
+    """地图把场景内 NPC 一并下发为实体；[MOVE] 后实际走位落库并反映到位置。"""
+    db = db_factory()
+    base_map = {
+        "w": 5, "h": 3, "tiles": ["#####", "+...#", "#####"],
+        "entrances": [{"name": "门", "x": 0, "y": 1}],
+        "objects": [{"name": "书桌", "x": 3, "y": 1, "kind": "furniture"}],
+        "npc_pos": [{"name": "管家", "x": 2, "y": 1, "hostile": False}],
+    }
+    scene = {"id": "s1", "name": "前厅", "map": base_map, "states": []}
+    mod = Module(title="t", rule_system="coc", scenes=[scene], npcs=[], clues=[])
+    hero = Character(name="阿强", rule_system="coc", is_player=True)
+    db.add_all([mod, hero]); db.commit()
+    sess = GameSession(module_id=mod.id, player_character_id=hero.id, status="active",
+                       current_scene_id="s1", world_state={"flags": {}})
+    db.add(sess); db.commit()
+
+    out = map_service.current_scene_map(db, sess)
+    by_name = {e["name"]: e for e in out["entities"]}
+    assert by_name["阿强"]["kind"] == "player"
+    assert by_name["管家"]["kind"] == "npc" and (by_name["管家"]["x"], by_name["管家"]["y"]) == (2, 1)
+    assert out["map"]["npc_pos"] == []  # NPC 改由 entities 下发，避免前端重复画
+
+    # KP 让管家走到书桌(3,1) → 落库并反映
+    map_service.apply_move(db, sess, "管家", "书桌")
+    out2 = map_service.current_scene_map(db, sess)
+    butler = {e["name"]: e for e in out2["entities"]}["管家"]
+    assert (butler["x"], butler["y"]) == (3, 1)
+
+
 def test_provider_vision_flag():
     """显式 vision 开关覆盖模型名启发式。"""
     from app.ai.llm_factory import OpenAICompatProvider

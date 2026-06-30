@@ -14,7 +14,7 @@ export interface TileMap {
 }
 
 /** 运行时叠加的实体（玩家/NPC/敌人/物品当前位置）；不传则只渲染地图自带的物体/NPC/出口。 */
-export interface MapEntity { name: string; x: number; y: number; kind: 'player' | 'npc' | 'enemy' | 'item' }
+export interface MapEntity { name: string; x: number; y: number; kind: 'player' | 'ally' | 'npc' | 'enemy' | 'item'; asset_id?: string }
 
 /** 素材库条目（精简）：地图按「类型默认素材 / 显式 asset_id」引用其 image_url 渲染。 */
 export interface AssetLite { id: string; kind: string; image_url: string; name?: string }
@@ -176,8 +176,8 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
     ? tok(n.x, n.y, n.name, 'var(--color-danger)', Crosshair, `n${n.x},${n.y},${n.name}`, 'enemy', n.asset_id)
     : tok(n.x, n.y, n.name, '#3b6ea5', User, `n${n.x},${n.y},${n.name}`, 'npc', n.asset_id)
   for (const en of entities || []) {
-    const m = { player: ['var(--color-accent)', Crosshair], npc: ['#3b6ea5', User], enemy: ['var(--color-danger)', Crosshair], item: ['#b8860b', Box] }[en.kind] as [string, IconT]
-    tok(en.x, en.y, en.name, m[0], m[1], `en${en.x},${en.y},${en.name}`, en.kind)
+    const m = { player: ['var(--color-accent)', Crosshair], ally: ['#2d7d46', User], npc: ['#3b6ea5', User], enemy: ['var(--color-danger)', Crosshair], item: ['#b8860b', Box] }[en.kind] as [string, IconT]
+    tok(en.x, en.y, en.name, m[0], m[1], `en${en.x},${en.y},${en.name}`, en.kind, en.asset_id)
   }
   stand.sort((a, b) => a.y - b.y)
 

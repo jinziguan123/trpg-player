@@ -23,7 +23,7 @@ from app.models.character import Character
 from app.models.module import Module
 from app.models.session import GameSession
 from app.rules.registry import get_engine
-from app.services import rulebook_service, session_service
+from app.services import map_service, rulebook_service, session_service
 from app.services.room_hub import room_hub
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,8 @@ RULE_LOOKUP_RE = re.compile(
 # 场景/NPC 的状态变体据此切换（如「地下室进水后变致命」「危险消退」）。是内部控制标签，不展示给玩家。
 SET_FLAG_RE = re.compile(r"\[SET_FLAG:\s*flag=([^\]]+)\]")
 CLEAR_FLAG_RE = re.compile(r"\[CLEAR_FLAG:\s*flag=([^\]]+)\]")
+# 走位：KP 在叙述里就地标记角色移动到某锚点（物体/出口/NPC/其他角色/坐标）。内联剔除、不打断叙述。
+MOVE_RE = re.compile(r"\[MOVE:([^\]]*)\]")
 
 CMD_TAG_PREFIXES = (
     "DICE_CHECK:", "OPPOSED_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:",
@@ -401,6 +403,11 @@ async def _stream_narration_filtered(
                 bracket_buf += ch
                 if ch == "]":
                     inner = bracket_buf[:-1]
+                    if inner.strip().startswith("MOVE:"):
+                        # 内联走位标记：从旁白剔除、不终止流（仍留在 full_response 供 _process_commands 解析）
+                        bracket_buf = ""
+                        in_bracket = False
+                        continue
                     if any(
                         inner.strip().startswith(p) for p in CMD_TAG_PREFIXES
                     ):
@@ -1239,6 +1246,17 @@ async def _process_commands(
         session_service.set_flag(db, session_id, flag, False)
         db.refresh(game_session)
         yield _make_chunk("system", f"剧情状态解除：{flag}")
+
+    # 走位：把 [MOVE: actor, to] 解析成场景内坐标并落库（地图随 refreshTick 重新拉取反映）
+    for match in MOVE_RE.finditer(kp_text):
+        kv = _parse_tag_kv(match.group(1))
+        actor = (kv.get("actor") or kv.get("char") or "").strip()
+        target = (kv.get("to") or kv.get("target") or "").strip()
+        if actor and target:
+            try:
+                map_service.apply_move(db, game_session, actor, target)
+            except Exception:
+                logger.exception("走位更新失败: actor=%s to=%s", actor, target)
 
     for match in NPC_ACT_RE.finditer(kp_text):
         npc_id = match.group(1).strip()
