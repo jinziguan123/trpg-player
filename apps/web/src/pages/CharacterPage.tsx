@@ -126,6 +126,11 @@ export function CharacterPage() {
   const [creating, setCreating] = useState(false)
   const [selectedChar, setSelectedChar] = useState<Character | null>(null)
   const [editingChar, setEditingChar] = useState<Character | null>(null)
+  // 默认只展示列表；点「创建角色」进入创建流程
+  const [inCreateFlow, setInCreateFlow] = useState(false)
+  const [charQuery, setCharQuery] = useState('')
+  const [charPage, setCharPage] = useState(1)
+  const CHAR_PAGE_SIZE = 8
 
   // Step 1: 基本信息
   const [name, setName] = useState('')
@@ -444,6 +449,7 @@ export function CharacterPage() {
       await loadCharacters()
       toast.success(`角色「${name}」创建成功`)
       resetForm()
+      setInCreateFlow(false)   // 创建完成回到列表
     } catch {
       toast.error('角色创建失败')
     } finally {
@@ -629,6 +635,17 @@ export function CharacterPage() {
 
   const stepIndex = STEPS.indexOf(step)
 
+  // 角色列表：条件查询（名/职业/规则）+ 分页
+  const charFiltered = characters.filter((c) => {
+    const q = charQuery.trim().toLowerCase()
+    if (!q) return true
+    const occ = String((c.system_data as Record<string, unknown>)?.occupation ?? '').toLowerCase()
+    return c.name.toLowerCase().includes(q) || occ.includes(q) || c.rule_system.toLowerCase().includes(q)
+  })
+  const charTotalPages = Math.max(1, Math.ceil(charFiltered.length / CHAR_PAGE_SIZE))
+  const pageClamped = Math.min(charPage, charTotalPages)
+  const charPageItems = charFiltered.slice((pageClamped - 1) * CHAR_PAGE_SIZE, pageClamped * CHAR_PAGE_SIZE)
+
   const allSkillNames = [...new Set([
     ...Object.keys(defaultSkills),
     ...extraSkills,
@@ -649,8 +666,18 @@ export function CharacterPage() {
               <GiReturnArrow /> 返回
             </button>
             <h2 className="page-title !mb-0">角色管理</h2>
+            {inCreateFlow ? (
+              <button onClick={() => { setInCreateFlow(false); resetForm() }} className="ml-auto btn-secondary flex items-center gap-1 text-sm">
+                <GiReturnArrow /> 返回列表
+              </button>
+            ) : (
+              <button onClick={() => { resetForm(); setInCreateFlow(true) }} className="ml-auto btn-primary flex items-center gap-1 text-sm">
+                <GiUpCard /> 创建角色
+              </button>
+            )}
           </div>
 
+          {inCreateFlow && (
           <div className="card mb-8">
             <h3 className="card-title flex items-center gap-2">
               <GiCharacter /> 创建角色（CoC 七版）
@@ -1298,9 +1325,29 @@ export function CharacterPage() {
             )}
           </div>
 
-          {/* 已有角色列表 */}
+          )}
+
+          {/* 角色列表（默认视图）：条件查询 + 分页 */}
+          {!inCreateFlow && (
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <input
+                value={charQuery}
+                onChange={(e) => { setCharQuery(e.target.value); setCharPage(1) }}
+                placeholder="搜索角色名 / 职业 / 规则…"
+                className="input flex-1"
+              />
+              <span className="text-xs whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
+                {charFiltered.length} 个角色
+              </span>
+            </div>
           <div className="space-y-3">
-            {characters.map((c) => {
+            {charPageItems.length === 0 && (
+              <p className="text-sm py-6 text-center" style={{ color: 'var(--color-text-secondary)' }}>
+                {characters.length === 0 ? '暂无角色，点右上角「创建角色」开始' : '没有匹配的角色'}
+              </p>
+            )}
+            {charPageItems.map((c) => {
               const hp = (c.system_data?.hitPoints as { current: number; max: number }) || { current: 0, max: 0 }
               const san = (c.system_data?.sanity as { current: number; max: number }) || { current: 0, max: 0 }
               const occ = (c.system_data?.occupation as string) || ''
@@ -1361,6 +1408,24 @@ export function CharacterPage() {
               )
             })}
           </div>
+
+          {charTotalPages > 1 && (
+            <div className="flex items-center justify-center gap-2 mt-4 text-sm">
+              <button
+                onClick={() => setCharPage((p) => Math.max(1, p - 1))}
+                disabled={pageClamped <= 1}
+                className="btn-secondary !px-2 !py-1 disabled:opacity-40"
+              >上一页</button>
+              <span style={{ color: 'var(--color-text-secondary)' }}>{pageClamped} / {charTotalPages}</span>
+              <button
+                onClick={() => setCharPage((p) => Math.min(charTotalPages, p + 1))}
+                disabled={pageClamped >= charTotalPages}
+                className="btn-secondary !px-2 !py-1 disabled:opacity-40"
+              >下一页</button>
+            </div>
+          )}
+          </div>
+          )}
         </div>
       </div>
 

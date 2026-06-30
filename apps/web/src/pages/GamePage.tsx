@@ -8,7 +8,7 @@ import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { SeatIcon } from '../components/game/SeatIcon'
 import { GiReturnArrow } from 'react-icons/gi'
-import { Sparkles, Search } from 'lucide-react'
+import { Sparkles, Search, Plus } from 'lucide-react'
 import { MODULE_DIFFICULTIES } from '../lib/module'
 
 interface Character {
@@ -53,10 +53,13 @@ export function GamePage() {
   const [joinCode, setJoinCode] = useState('')
   const [hostAddr, setHostAddr] = useState(getServerUrl())
 
-  // 模组检索：模糊查询 + 条件筛选（人数/年代/难度/地区）
+  // 默认只看「我的房间」；点「新增游戏」才展开 新游戏 / 加入房间
+  const [showNew, setShowNew] = useState(false)
+  // 模组检索：模糊查询 + 条件筛选（人数上下限/年代/难度/地区）
   const [query, setQuery] = useState('')
-  const [fPlayers, setFPlayers] = useState('')   // 玩家人数（空=不限）
-  const [fEra, setFEra] = useState('')           // ''=全部
+  const [fPlayerMin, setFPlayerMin] = useState('')  // 玩家人数下限（空=不限）
+  const [fPlayerMax, setFPlayerMax] = useState('')  // 玩家人数上限（空=不限）
+  const [fEra, setFEra] = useState('')              // ''=全部
   const [fDifficulty, setFDifficulty] = useState('')
   const [fRegion, setFRegion] = useState('')
 
@@ -68,8 +71,15 @@ export function GamePage() {
     if (fEra && String(ws.era ?? '') !== fEra) return false
     if (fRegion && String(ws.region ?? '') !== fRegion) return false
     if (fDifficulty && String(ws.difficulty ?? '') !== fDifficulty) return false
-    const n = parseInt(fPlayers, 10)
-    if (n > 0) { const r = parsePlayerRange(ws); if (n < r.min || n > r.max) return false }
+    // 人数上下限：保留「推荐区间」与「用户区间」有交集的模组
+    const lo = parseInt(fPlayerMin, 10)
+    const hi = parseInt(fPlayerMax, 10)
+    if (!Number.isNaN(lo) || !Number.isNaN(hi)) {
+      const r = parsePlayerRange(ws)
+      const userLo = Number.isNaN(lo) ? 1 : lo
+      const userHi = Number.isNaN(hi) ? Infinity : hi
+      if (r.max < userLo || r.min > userHi) return false
+    }
     const q = query.trim().toLowerCase()
     if (q) {
       const tags = Array.isArray(ws.tags) ? (ws.tags as unknown[]) : []
@@ -79,8 +89,8 @@ export function GamePage() {
     }
     return true
   })
-  const hasFilter = !!(query.trim() || fPlayers || fEra || fDifficulty || fRegion)
-  const resetFilters = () => { setQuery(''); setFPlayers(''); setFEra(''); setFDifficulty(''); setFRegion('') }
+  const hasFilter = !!(query.trim() || fPlayerMin || fPlayerMax || fEra || fDifficulty || fRegion)
+  const resetFilters = () => { setQuery(''); setFPlayerMin(''); setFPlayerMax(''); setFEra(''); setFDifficulty(''); setFRegion('') }
 
   const selectedModule = modules.find((m) => m.id === moduleId)
   const range = parsePlayerRange(selectedModule?.world_setting)
@@ -251,8 +261,12 @@ export function GamePage() {
           <GiReturnArrow /> 返回
         </button>
         <h2 className="page-title !mb-0">开始游戏</h2>
+        <button onClick={() => setShowNew((v) => !v)} className="ml-auto btn-primary flex items-center gap-1 text-sm">
+          <Plus size={14} /> {showNew ? '收起' : '新增游戏'}
+        </button>
       </div>
 
+      {showNew && (<>
       <div className="card mb-6">
         <h3 className="card-title">新游戏</h3>
 
@@ -268,13 +282,19 @@ export function GamePage() {
             />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="number" min={1} value={fPlayers}
-              onChange={(e) => setFPlayers(e.target.value)}
-              placeholder="玩家人数"
-              className="input !w-28"
-              title="按玩家人数筛选：保留推荐人数区间覆盖该人数的模组"
-            />
+            <div className="flex items-center gap-1" title="按玩家人数上下限筛选：保留推荐人数区间与该范围有交集的模组">
+              <input
+                type="number" min={1} value={fPlayerMin}
+                onChange={(e) => setFPlayerMin(e.target.value)}
+                placeholder="人数≥" className="input !w-20"
+              />
+              <span style={{ color: 'var(--color-text-secondary)' }}>–</span>
+              <input
+                type="number" min={1} value={fPlayerMax}
+                onChange={(e) => setFPlayerMax(e.target.value)}
+                placeholder="人数≤" className="input !w-20"
+              />
+            </div>
             <Select value={fEra || '__all'} onValueChange={(v) => setFEra(v === '__all' ? '' : v)}>
               <SelectTrigger className="!w-28"><SelectValue placeholder="年代" /></SelectTrigger>
               <SelectContent>
@@ -439,10 +459,17 @@ export function GamePage() {
           <button onClick={joinRoom} disabled={!joinCode.trim()} className="btn-primary">加入</button>
         </div>
       </div>
+      </>)}
 
-      {activeSessions.length > 0 && (
-        <div>
-          <h3 className="card-title">我的房间</h3>
+      <div>
+        <h3 className="card-title">我的房间</h3>
+        {activeSessions.length === 0 && (
+          <p className="text-sm mb-2" style={{ color: 'var(--color-text-secondary)' }}>
+            暂无进行中的房间。点右上角「新增游戏」开新局或加入房间。
+          </p>
+        )}
+        {activeSessions.length > 0 && (
+          <div>
           {activeSessions.map((s) => (
             <div
               key={s.id}
@@ -485,8 +512,9 @@ export function GamePage() {
               </div>
             </div>
           ))}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
