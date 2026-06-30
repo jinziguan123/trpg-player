@@ -69,6 +69,54 @@ def _extract_pdf_images(content: bytes, max_images: int = 8) -> list[tuple[bytes
     return _select_pdf_images(PdfReader(io.BytesIO(content)), max_images=max_images)
 
 
+def _convert_doc_to_text(content: bytes) -> str | None:
+    """把旧版二进制 Word(.doc) 转成纯文本。
+
+    .doc 是 OLE 复合格式，python-docx 读不了；这里复用系统现成转换器（不引入重依赖）：
+    优先 macOS 自带 textutil，其次 LibreOffice(soffice/libreoffice)。都没有则返回 None。
+    """
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "in.doc")
+        with open(src, "wb") as f:
+            f.write(content)
+
+        # macOS：textutil 直接转纯文本到 stdout
+        if shutil.which("textutil"):
+            try:
+                out = subprocess.run(
+                    ["textutil", "-convert", "txt", "-stdout", src],
+                    capture_output=True, timeout=60,
+                )
+                if out.returncode == 0 and out.stdout.strip():
+                    return out.stdout.decode("utf-8", errors="replace")
+            except (subprocess.SubprocessError, OSError):
+                pass
+
+        # 跨平台：LibreOffice headless 转 txt 文件再读
+        soffice = shutil.which("soffice") or shutil.which("libreoffice")
+        if soffice:
+            try:
+                subprocess.run(
+                    [soffice, "--headless", "--convert-to", "txt:Text", "--outdir", tmp, src],
+                    capture_output=True, timeout=120,
+                )
+                txt = os.path.join(tmp, "in.txt")
+                if os.path.exists(txt):
+                    with open(txt, "rb") as f:
+                        data = f.read()
+                    if data.strip():
+                        return _decode_text(data)
+            except (subprocess.SubprocessError, OSError, HTTPException):
+                pass
+
+    return None
+
+
 def _extract_doc_text(content: bytes, filename: str) -> str:
     """docx / 旧版 doc / 纯文本（含 GBK 等）解码。PDF 由调用方单独处理。"""
     fn = filename.lower()
@@ -79,7 +127,14 @@ def _extract_doc_text(content: bytes, filename: str) -> str:
         doc = Document(io.BytesIO(content))
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
     if fn.endswith(".doc"):
-        raise HTTPException(422, f"「{filename}」是旧版 Word(.doc)，暂不支持；请另存为 .docx 或 PDF 后上传")
+        text = _convert_doc_to_text(content)
+        if text and text.strip():
+            return text
+        raise HTTPException(
+            422,
+            f"「{filename}」是旧版 Word(.doc)，本机未找到可用的转换器（macOS 自带 textutil "
+            "或安装 LibreOffice）。请另存为 .docx / PDF 后上传，或安装 LibreOffice 后重试",
+        )
     try:
         return _decode_text(content)
     except HTTPException as e:

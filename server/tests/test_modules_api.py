@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.api.modules import _decode_text, _select_pdf_images
+from app.api.modules import _convert_doc_to_text, _decode_text, _extract_doc_text, _select_pdf_images
 from app.database import get_db
 from app.main import app
 from app.models import Base, Module  # noqa: F401 注册表
@@ -59,6 +59,32 @@ def test_select_pdf_images_filters_and_sorts():
     assert [len(d) for d, _ in out] == [9000, 5000]             # 降序，剔除了 100 字节的
     assert out[0][1] == "image/jpeg" and out[1][1] == "image/png"
     assert _select_pdf_images(_Reader([_Page([])])) == []       # 无图
+
+
+def test_doc_converted_via_textutil(monkeypatch):
+    """.doc：调用系统转换器（macOS textutil）取正文。"""
+    import shutil
+    import subprocess
+
+    monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/textutil" if n == "textutil" else None)
+
+    class _R:
+        returncode = 0
+        stdout = "古宅调查·模组正文".encode("utf-8")
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _R())
+    out = _convert_doc_to_text(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1doc")  # OLE 头
+    assert out and "古宅调查·模组正文" in out
+
+
+def test_doc_without_converter_raises(monkeypatch):
+    """.doc 且本机无任何转换器：报友好 422，而非 500。"""
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda n: None)
+    with pytest.raises(Exception) as ei:
+        _extract_doc_text(b"\xd0\xcf\x11\xe0", "古宅.doc")
+    assert getattr(ei.value, "status_code", None) == 422
 
 
 def test_decode_text_handles_non_utf8():

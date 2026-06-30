@@ -7,7 +7,7 @@ import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiUpCard, GiScrollUnfurled, GiReturnArrow } from 'react-icons/gi'
 
-const ALLOWED_EXTS = ['txt', 'md', 'pdf', 'docx', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']
+const ALLOWED_EXTS = ['txt', 'md', 'pdf', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']
 
 export function ModulePage() {
   const { modules, loading, fetchModules, uploadModule } = useModuleStore()
@@ -104,7 +104,7 @@ export function ModulePage() {
           <input
             ref={fileRef}
             type="file"
-            accept=".txt,.md,.pdf,.docx,.png,.jpg,.jpeg,.webp,.gif,.bmp,image/*"
+            accept=".txt,.md,.pdf,.docx,.doc,.png,.jpg,.jpeg,.webp,.gif,.bmp,image/*"
             multiple
             className="hidden"
             onChange={(e) => {
@@ -128,7 +128,7 @@ export function ModulePage() {
                 拖拽文件到此处，或点击选择（可多选）
               </p>
               <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>
-                支持 .txt、.md、.pdf、.docx、图片(png/jpg…) · 多个文件视为同一模组（图片走视觉模型识别）
+                支持 .txt、.md、.pdf、.docx、.doc、图片(png/jpg…) · 多个文件视为同一模组（图片走视觉模型识别）
               </p>
             </div>
           )}
