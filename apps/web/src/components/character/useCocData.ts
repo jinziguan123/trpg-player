@@ -19,6 +19,12 @@ export interface WeaponDef {
   price: string
   err: string       // 故障率
   time: string
+  category: string  // 大类：常规/手枪/半自动步枪/…/其他
+}
+
+export interface WeaponData {
+  weapons: WeaponDef[]
+  categories: string[]   // 大类展示顺序
 }
 
 // 角色携带的武器（规范字段；兼容历史 damage/attacks/ammo）
@@ -50,7 +56,7 @@ export function normalizeWeapon(w: Record<string, unknown>): CharWeapon {
 }
 
 let _specCache: Specializations | null = null
-let _weaponCache: WeaponDef[] | null = null
+let _weaponCache: WeaponData | null = null
 
 /** 专精类别（母语/外语/格斗/射击/科学/生存/技艺/驾驶），进程内缓存。 */
 export function useSpecializations() {
@@ -64,14 +70,14 @@ export function useSpecializations() {
   return data
 }
 
-/** CoC 武器表，进程内缓存。 */
+/** CoC 武器表 + 大类顺序，进程内缓存。 */
 export function useWeapons() {
-  const [data, setData] = useState<WeaponDef[] | null>(_weaponCache)
+  const [data, setData] = useState<WeaponData | null>(_weaponCache)
   useEffect(() => {
     if (_weaponCache) return
-    api.get<WeaponDef[]>('/rules/coc/weapons')
+    api.get<WeaponData>('/rules/coc/weapons')
       .then((d) => { _weaponCache = d; setData(d) })
-      .catch(() => setData([]))
+      .catch(() => setData({ weapons: [], categories: [] }))
   }, [])
   return data
 }

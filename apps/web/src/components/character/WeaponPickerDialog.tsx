@@ -1,14 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { GiCancel } from 'react-icons/gi'
 import { useWeapons, type WeaponDef } from './useCocData'
-
-// 武器使用技能基名 → 大类标签
-const CAT_LABEL: Record<string, string> = {
-  格斗: '近战格斗', 射击: '射击', 投掷: '投掷', 爆破: '爆破', 炮术: '炮术',
-}
-const CAT_ORDER = ['格斗', '射击', '投掷', '爆破', '炮术']
-const catOf = (skill: string) => (skill || '').split('(')[0] || '其他'
 
 /** 从 CoC 武器表中挑选一件武器：先选大类，再在类下搜索/挑选。 */
 export function WeaponPickerDialog({
@@ -18,23 +11,15 @@ export function WeaponPickerDialog({
   onOpenChange: (v: boolean) => void
   onPick: (w: WeaponDef) => void
 }) {
-  const weapons = useWeapons()
+  const data = useWeapons()
+  const weapons = data?.weapons ?? null
+  const cats = data?.categories ?? []
   const [cat, setCat] = useState<string>('')   // 选中的大类（空=全部）
   const [q, setQ] = useState('')
 
-  // 按武器表里实际出现的类别排序：预设顺序在前，其余按字母
-  const cats = useMemo(() => {
-    const present = [...new Set((weapons || []).map((w) => catOf(w.skill)))]
-    return present.sort((a, b) => {
-      const ia = CAT_ORDER.indexOf(a), ib = CAT_ORDER.indexOf(b)
-      if (ia !== ib) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
-      return a.localeCompare(b, 'zh')
-    })
-  }, [weapons])
-
   const kw = q.trim()
   const list = (weapons || []).filter((w) => {
-    if (cat && catOf(w.skill) !== cat) return false
+    if (cat && w.category !== cat) return false
     return !kw || w.name.includes(kw) || w.skill.includes(kw)
   })
 
@@ -56,7 +41,7 @@ export function WeaponPickerDialog({
           <button onClick={() => setCat('')} className="text-xs px-2 py-1 rounded border" style={chip(cat === '')}>全部</button>
           {cats.map((c) => (
             <button key={c} onClick={() => setCat(c)} className="text-xs px-2 py-1 rounded border" style={chip(cat === c)}>
-              {CAT_LABEL[c] || c}
+              {c}
             </button>
           ))}
         </div>

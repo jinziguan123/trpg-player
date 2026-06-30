@@ -85,11 +85,11 @@ def get_equipment(rule_system: str, era: str = "1920s", credit_rating: int = 0):
 
 @router.get("/rules/{rule_system}/weapons")
 def get_weapons(rule_system: str):
-    """CoC 武器表，供武器选择器使用。"""
+    """CoC 武器表 + 大类展示顺序，供武器选择器两级筛选使用。"""
     if rule_system != "coc":
         raise HTTPException(400, f"暂不支持 {rule_system} 的武器表")
-    from app.rules.coc.weapons import COC_WEAPONS
-    return COC_WEAPONS
+    from app.rules.coc.weapons import COC_WEAPONS, WEAPON_CATEGORY_ORDER
+    return {"weapons": COC_WEAPONS, "categories": WEAPON_CATEGORY_ORDER}
 
 
 @router.get("/rules/{rule_system}/specializations")
