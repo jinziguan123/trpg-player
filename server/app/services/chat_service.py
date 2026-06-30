@@ -60,7 +60,10 @@ GROUP_RE = re.compile(r"\[GROUP:([^\]]*)\]")
 # 书写/标识语境：其后引号是书写/标识内容（非台词），留旁白。允许标识名词与引号间夹分隔符。
 _WRITTEN_TEXT_RE = re.compile(
     r"(写着|写道|写有|刻着|刻有|记着|记载|标着|印着|贴着|挂着|题写|题着|题为|落款|显示|显现|上书|"
-    r"字牌|牌子|招牌|门牌|标牌|标签|标题|铭牌|告示|名为|名叫|写作)[：:，,、\s—\-]*$"
+    r"字牌|牌子|招牌|门牌|标牌|标签|标题|铭牌|告示|名为|名叫|写作|条目|卡片|抽出一张|一行字)"
+    # 线索/书写内容常带 markdown 标记或换行（如「写着：> **」「记载：\n# 」），
+    # 容忍这些标点/标记夹在提示词与引号之间，避免书写内容被误抽成台词。
+    r"[：:，,、\s—\-*>＞#`～~。.]*$"
 )
 # 感知/指称语境：其后引号是被提及/被听到的词语（非台词），留旁白。
 _REFERENCE_BEFORE_RE = re.compile(
@@ -834,13 +837,18 @@ async def _plan_groups(
     """
     party = [player_char.name] + [t.name for t in teammates if t.name]
     turn = _current_turn_events(events)
+    actors = [
+        e.actor_name for e in turn
+        if getattr(e, "event_type", None) in ("action", "dialogue") and (e.content or "").strip()
+    ]
+    acting = [m for m in party if any(m == a or m in a or a in m for a in actors)]
     lines = [
         f"- {e.actor_name}：{e.content}"
         for e in turn
         if getattr(e, "event_type", None) in ("action", "dialogue") and (e.content or "").strip()
     ]
     # 本回合行动者不足两人，谈不上分头
-    if len({e.actor_name for e in turn if getattr(e, "event_type", None) in ("action", "dialogue")}) < 2:
+    if len(acting) < 2:
         return []
 
     sys_p = "你是 TRPG 跑团的场景编排助手，只输出 JSON，不要任何解释。"
@@ -851,7 +859,8 @@ async def _plan_groups(
         '全队在一起 → 回 {\"split\": false}\n'
         '分头 → 回 {\"split\": true, \"groups\": '
         '[{\"label\": \"该组所在地点简称\", \"members\": [\"成员全名\", ...]}, ...]}\n'
-        "每个成员只属于一个分组；label 用其所在地点的简短名（如「图书馆」「档案馆」）。"
+        "规则：①每个有行动的成员都必须恰好出现在一个分组里，不得遗漏；"
+        "②在同一地点的成员归入同一分组；③label 用其所在地点的简短名（如「图书馆」「档案馆」）。"
     )
     try:
         raw = await llm.complete(
@@ -890,6 +899,11 @@ async def _plan_groups(
                 claimed.add(canon)
         if label and members:
             groups.append({"label": label, "members": members})
+    # 兜底：本回合有行动却被规划遗漏的成员，各自单列，绝不丢人（否则该成员「没有输出」）。
+    for m in acting:
+        if m not in claimed:
+            groups.append({"label": m, "members": [m]})
+            claimed.add(m)
     # 至少两组才算分头；否则回退整队
     return groups if len(groups) >= 2 else []
 
@@ -956,6 +970,39 @@ async def _run_generation(
     room_hub.broadcast(session_id, _make_chunk("done"))
 
 
+def _tag_turn_events_by_group(db: Session, turn_events: list, groups: list[dict]) -> None:
+    """把本回合各角色的事件按其所在分组补打 group 标签（玩家行动随其场景列同列）。
+
+    掷骰事件（actor=系统）按其内容里的领头角色名（「亨利·卡特｜…」）归组。
+    """
+    name_to_group: dict[str, str] = {}
+    for g in groups:
+        for m in g["members"]:
+            name_to_group[m] = g["label"]
+
+    def _match(name: str) -> str | None:
+        name = (name or "").strip()
+        if not name:
+            return None
+        if name in name_to_group:
+            return name_to_group[name]
+        for full, label in name_to_group.items():
+            if name in full or full in name:
+                return label
+        return None
+
+    for e in turn_events:
+        etype = getattr(e, "event_type", None)
+        if etype not in ("action", "dialogue", "dice"):
+            continue
+        label = _match(e.actor_name or "")
+        if not label and etype == "dice":
+            head = re.split(r"[｜|]", e.content or "", 1)[0]
+            label = _match(head)
+        if label:
+            session_service.set_event_group(db, e, label)
+
+
 async def _run_split_generation(
     db: Session,
     session_id: str,
@@ -976,6 +1023,10 @@ async def _run_split_generation(
     前端实时/重连都能稳定分栏，不靠模型自觉打 [GROUP]。
     命令（检定/HP/旗标/场景）在所有分组叙事完成后，对合并文本统一处理一次。
     """
+    # 先把本回合各角色的行动/对话/掷骰也归入其所在场景列：这样每一列＝该场景里
+    # 「玩家行动 + KP 叙事」自成一体（而非行动全挤在主线、叙事另起一列）。
+    _tag_turn_events_by_group(db, _current_turn_events(events), groups)
+
     combined: list[str] = []
     for grp in groups:
         label = grp["label"]

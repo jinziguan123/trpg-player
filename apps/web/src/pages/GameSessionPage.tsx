@@ -396,13 +396,14 @@ export function GameSessionPage() {
     return <div className="flex items-center justify-center h-full text-sm" style={{ color: 'var(--color-text-secondary)' }}>加载中...</div>
   }
 
-  // 分头行动：消息按 metadata.group 分组；出现 ≥2 个分组时才提供分栏
-  const chatGroups: string[] = []
+  // 分头行动：带 metadata.group 的消息属于某个场景列，无组的是共享主线（全宽）。
+  // 出现 ≥2 个场景组时提供分栏（各场景并排，主线内容按时间顺序穿插其间）。
+  const sceneGroups: string[] = []
   for (const m of messages) {
-    const g = String(m.metadata?.group || '').trim() || '主线'
-    if (!chatGroups.includes(g)) chatGroups.push(g)
+    const g = String(m.metadata?.group || '').trim()
+    if (g && !sceneGroups.includes(g)) sceneGroups.push(g)
   }
-  const splitAvailable = chatGroups.length >= 2
+  const splitAvailable = sceneGroups.length >= 2
   const toggleGroup = (g: string) => setHiddenGroups((prev) => {
     const next = new Set(prev)
     if (next.has(g)) next.delete(g); else next.add(g)
@@ -484,7 +485,7 @@ export function GameSessionPage() {
               className="px-2 py-0.5 rounded border"
               style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-accent)' }}
             >{splitView ? '合并为单列' : '分栏显示'}</button>
-            {splitView && chatGroups.map((g) => {
+            {splitView && sceneGroups.map((g) => {
               const on = !hiddenGroups.has(g)
               return (
                 <button key={g} onClick={() => toggleGroup(g)} className="px-2 py-0.5 rounded border"
@@ -608,28 +609,41 @@ export function GameSessionPage() {
               </div>
             )
           }
-          // 分头行动：按 metadata.group 分栏；无组归「主线」。仅当出现 ≥2 个分组才分栏。
-          const groupOf = (m: ChatMessage) => (String(m.metadata?.group || '').trim() || '主线')
-          const allGroups: string[] = []
-          for (const m of messages) { const g = groupOf(m); if (!allGroups.includes(g)) allGroups.push(g) }
-          if (!splitView || allGroups.length < 2) {
+          // 分头行动：带 group 的消息进入场景列，无组消息是共享主线（全宽）。
+          // 按时间顺序把消息切成「主线段（全宽）」与「分栏段（连续的场景组并排）」，
+          // 这样每个场景列＝该场景的「玩家行动 + KP 叙事」自成一体，主线穿插其间保序。
+          const sceneOf = (m: ChatMessage) => String(m.metadata?.group || '').trim()
+          if (!splitView || sceneGroups.length < 2) {
             return messages.map(renderOne)
           }
-          const shown = allGroups.filter((g) => !hiddenGroups.has(g))
-          return (
-            <div className="flex gap-3 overflow-x-auto items-start">
-              {shown.map((g) => (
-                <div key={g} className="flex-1 min-w-[300px]"
-                  style={{ borderLeft: g === '主线' ? 'none' : '2px solid var(--color-border)', paddingLeft: g === '主线' ? 0 : 10 }}>
-                  <div className="text-xs font-semibold mb-1 sticky top-0 z-10 py-1"
-                    style={{ color: 'var(--color-text-accent)', background: 'var(--color-bg-primary)' }}>
-                    {g}
+          type Seg = { split: boolean; msgs: ChatMessage[] }
+          const segments: Seg[] = []
+          for (const m of messages) {
+            const isSplit = !!sceneOf(m)
+            const last = segments[segments.length - 1]
+            if (!last || last.split !== isSplit) segments.push({ split: isSplit, msgs: [m] })
+            else last.msgs.push(m)
+          }
+          return segments.map((seg, i) => {
+            if (!seg.split) return <div key={`s${i}`}>{seg.msgs.map(renderOne)}</div>
+            const labels: string[] = []
+            for (const m of seg.msgs) { const g = sceneOf(m); if (!labels.includes(g)) labels.push(g) }
+            const shown = labels.filter((g) => !hiddenGroups.has(g))
+            return (
+              <div key={`c${i}`} className="flex gap-3 overflow-x-auto items-start my-1">
+                {shown.map((g) => (
+                  <div key={g} className="flex-1 min-w-[280px]"
+                    style={{ borderLeft: '2px solid var(--color-border)', paddingLeft: 10 }}>
+                    <div className="text-xs font-semibold mb-1 sticky top-0 z-10 py-1"
+                      style={{ color: 'var(--color-text-accent)', background: 'var(--color-bg-primary)' }}>
+                      {g}
+                    </div>
+                    {seg.msgs.filter((m) => sceneOf(m) === g).map(renderOne)}
                   </div>
-                  {messages.filter((m) => groupOf(m) === g).map(renderOne)}
-                </div>
-              ))}
-            </div>
-          )
+                ))}
+              </div>
+            )
+          })
           })()}
           {streaming && (
             <div className="chat-loading flex items-center gap-2">

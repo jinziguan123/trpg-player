@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.character import Character
 from app.models.event_log import EventLog
@@ -530,6 +531,18 @@ def add_event(
     db.commit()
     db.refresh(event)
     return event
+
+
+def set_event_group(db: Session, event: EventLog, group: str) -> None:
+    """给已落库的事件补打分组标签（分头行动：把本回合各角色行动归入其所在场景列）。"""
+    meta = dict(event.metadata_ or {})
+    if meta.get("group") == group:
+        return
+    meta["group"] = group
+    event.metadata_ = meta
+    flag_modified(event, "metadata_")  # JSON 列原地改字典不会被脏检测，需显式标记
+    db.add(event)
+    db.commit()
 
 
 def delete_session(db: Session, session_id: str) -> bool:

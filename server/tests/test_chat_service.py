@@ -266,6 +266,61 @@ def test_plan_groups_detects_split():
     assert {m for g in groups for m in g["members"]} == {"约翰·卡特", "亨利·卡特"}
 
 
+def test_plan_groups_covers_dropped_member():
+    """规划遗漏了有行动的成员时，兜底给其单列，绝不丢人。"""
+    class _FakeLLM:
+        async def complete(self, messages, temperature=0.7, **kw):
+            # 故意只规划莫妮卡和亨利，漏掉约翰
+            return '{"split": true, "groups": [{"label":"疗养院","members":["莫妮卡·卡佩尔"]},{"label":"档案馆","members":["亨利·卡特"]}]}'
+
+    class _Ev:
+        def __init__(self, t, a, c):
+            self.event_type, self.actor_name, self.content = t, a, c
+
+    player = Character(name="莫妮卡·卡佩尔", rule_system="coc")
+    t1 = Character(name="亨利·卡特", rule_system="coc")
+    t2 = Character(name="约翰·卡特", rule_system="coc")
+    events = [
+        _Ev("narration", "KP", "上一段旁白"),
+        _Ev("action", "莫妮卡·卡佩尔", "我走进疗养院"),
+        _Ev("action", "亨利·卡特", "亨利去档案馆"),
+        _Ev("action", "约翰·卡特", "约翰去图书馆"),
+    ]
+    groups = asyncio.run(chat_service._plan_groups(_FakeLLM(), player, [t1, t2], events))
+    members = {m for g in groups for m in g["members"]}
+    assert members == {"莫妮卡·卡佩尔", "亨利·卡特", "约翰·卡特"}  # 约翰被兜底补上
+
+
+def test_tag_turn_events_by_group(db_factory):
+    """本回合各角色的行动/对话/掷骰按其所在分组补打 group 标签（玩家行动随场景列同列）。"""
+    db = db_factory()
+    session_id = _seed_session(db)
+    e_player = session_service.add_event(db, session_id, "action", "我走进疗养院", actor_name="莫妮卡·卡佩尔")
+    e_henry = session_service.add_event(db, session_id, "dialogue", "亨利问管理员", actor_name="亨利·卡特")
+    e_dice = session_service.add_event(db, session_id, "dice", "亨利·卡特｜图书馆使用 检定：失败", actor_name="系统")
+    groups = [
+        {"label": "疗养院", "members": ["莫妮卡·卡佩尔"]},
+        {"label": "档案馆", "members": ["亨利·卡特"]},
+    ]
+    chat_service._tag_turn_events_by_group(db, [e_player, e_henry, e_dice], groups)
+    by_id = {e.id: (e.metadata_ or {}).get("group")
+             for e in session_service.get_session_events(db_factory(), session_id)}
+    assert by_id[e_player.id] == "疗养院"
+    assert by_id[e_henry.id] == "档案馆"
+    assert by_id[e_dice.id] == "档案馆"  # 掷骰按内容领头角色名归组
+
+
+def test_written_card_text_with_markdown_not_extracted():
+    """书写内容前夹着 markdown 标记（写着：> **「…」**）时仍判为书写、不抽成台词。"""
+    text = "亨利抽出一张卡片，上面写着：> **「特里蒙特地产信托公司——成立于1903年」**"
+    npcs = [{"name": "沃尔特·科比特"}]
+    result = ["", "", [], [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    assert result[2] == []  # 卡片书写内容不被当成对话
+
+
 def test_plan_groups_no_split_when_single_actor():
     """本回合只有一人行动时不算分头，直接回退整队（不调用 LLM）。"""
     class _BoomLLM:
