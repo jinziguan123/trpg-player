@@ -23,10 +23,14 @@ class GenerationManager:
         task = self._tasks.get(room_id)
         return task is not None and not task.done()
 
-    def start(self, room_id: str, coro) -> asyncio.Task:
+    def start(self, room_id: str, coro, prelude: list[str] | None = None) -> asyncio.Task:
         if self.is_generating(room_id):
             raise ValueError("该房间正在生成中")
         room_hub.begin_generation(room_id)
+        # prelude（如玩家本轮行动事件 + generating）在 begin_generation 之后广播，
+        # 从而进入 in-flight buffer：断线重连时可被重放，避免玩家消息「被吞」。
+        for chunk in (prelude or []):
+            room_hub.broadcast(room_id, chunk)
         task = asyncio.create_task(coro)
         self._tasks[room_id] = task
         task.add_done_callback(lambda _: self._on_done(room_id))

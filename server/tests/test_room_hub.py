@@ -38,6 +38,26 @@ def test_inflight_replay_for_midstream_join():
     assert later.empty()
 
 
+def test_generation_prelude_is_buffered():
+    """start 的 prelude（玩家事件 + generating）在 begin_generation 之后广播，进入 buffer，
+    断线重连可重放——避免「点了发送但自己消息没显示、只剩思考中」的吞消息问题。"""
+    from app.services.generation_manager import GenerationManager
+    from app.services.room_hub import room_hub
+
+    async def _noop():
+        await asyncio.sleep(0.01)
+
+    async def run():
+        gm = GenerationManager()
+        task = gm.start("r_prelude", _noop(), prelude=["player-evt", "data: gen"])
+        late = room_hub.subscribe("r_prelude")  # 中途接入：应重放 prelude
+        got = [late.get_nowait(), late.get_nowait()]
+        await task
+        return got
+
+    assert asyncio.run(run()) == ["player-evt", "data: gen"]
+
+
 def test_unsubscribe_removes():
     hub = RoomHub()
     a = hub.subscribe("r1")
