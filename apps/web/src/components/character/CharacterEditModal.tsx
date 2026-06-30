@@ -27,11 +27,18 @@ const ATTR_LABELS: Record<string, string> = {
 // 专精基名（与后端 SPECIALIZATIONS 对齐）
 const SPEC_BASES = ['母语', '外语', '格斗', '射击', '科学', '生存', '技艺', '驾驶']
 
+// 与后端 app/rules/coc/status.py 对齐
 const STATUS_OPTIONS: { value: string; label: string }[] = [
-  { value: 'active', label: '存活' },
+  { value: 'active', label: '正常' },
+  { value: 'major_wound', label: '重伤' },
+  { value: 'unconscious', label: '昏迷' },
   { value: 'dead', label: '死亡' },
-  { value: 'incapacitated', label: '失能' },
+  { value: 'temporary_insanity', label: '临时疯狂' },
+  { value: 'indefinite_insanity', label: '不定期疯狂' },
+  { value: 'permanent_insanity', label: '永久疯狂' },
 ]
+// 兼容历史 incapacitated（旧义≈重伤）
+const STATUS_FALLBACK: Record<string, string> = { incapacitated: 'major_wound' }
 
 // 派生数值（system_data 顶层标量字段）
 const SCALAR_FIELDS: { key: string; label: string; type: 'number' | 'text' }[] = [
@@ -95,7 +102,7 @@ export function CharacterEditModal({
   const sd = character.system_data || {}
   const spec = useSpecializations()
   const [name, setName] = useState(character.name)
-  const [status, setStatus] = useState(character.status || 'active')
+  const [status, setStatus] = useState(STATUS_FALLBACK[character.status] || character.status || 'active')
   const [attrs, setAttrs] = useState<Record<string, number>>({ ...character.base_attributes })
   const [skills, setSkills] = useState<[string, number][]>(
     Object.entries(character.skills || {}).sort((a, b) => b[1] - a[1]),

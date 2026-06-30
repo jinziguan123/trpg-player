@@ -61,6 +61,15 @@ def get_occupation_categories(rule_system: str):
     return OCCUPATION_CATEGORY_ORDER
 
 
+@router.get("/rules/{rule_system}/statuses")
+def get_statuses(rule_system: str):
+    """角色状态可选项（正常/重伤/昏迷/死亡/临时·不定期·永久疯狂）。"""
+    if rule_system != "coc":
+        raise HTTPException(400, f"暂不支持 {rule_system}")
+    from app.rules.coc.status import CHARACTER_STATUSES
+    return CHARACTER_STATUSES
+
+
 class SkillPointsRequest(BaseModel):
     occupation: str
     base_attributes: dict[str, int]

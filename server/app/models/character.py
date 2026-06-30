@@ -19,7 +19,6 @@ class Character(Base, UUIDMixin, TimestampMixin):
     skills: Mapped[dict] = mapped_column(JSON, default=dict)
     system_data: Mapped[dict] = mapped_column(JSON, default=dict)
     backstory: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[str] = mapped_column(
-        Enum("active", "dead", "incapacitated", name="character_status"),
-        default="active",
-    )
+    # 角色状态（应用层概念，取值见 app/rules/coc/status.py）：正常/重伤/昏迷/死亡/
+    # 临时疯狂/不定期疯狂/永久疯狂。用普通字符串，避免 DB 枚举 CHECK 约束阻挡新增状态。
+    status: Mapped[str] = mapped_column(Text, default="active")
