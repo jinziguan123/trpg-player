@@ -109,6 +109,32 @@ def test_npc_dialogue_still_extracted():
     assert "托马斯·金博尔" in speakers
 
 
+def test_unnamed_npc_uses_role_label_not_named_npc():
+    """无名 NPC（护工）的台词归到其身份，不被硬塞给在场的有名 NPC。"""
+    npcs = [{"name": "史蒂芬·诺特"}]
+    text = (
+        "史蒂芬说道：“你们去疗养院吧。”\n\n"
+        "一位路过的护工微笑致意：护工：“您是来找海恩斯院长的吧？请上二楼。”"
+    )
+    result = ["", "", [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    assert [n for n, _ in result[2]] == ["史蒂芬·诺特", "护工"], result[2]
+
+
+def test_written_text_stays_in_narration():
+    """『写着：「…」』是书写内容而非台词，应留在旁白、不抽成对话气泡。"""
+    npcs = [{"name": "史蒂芬·诺特"}]
+    text = '史蒂芬说道：“看这个。”\n\n照片角落写着：“1899年，圣玛丽疗养院全体人员。”'
+    result = ["", "", [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    assert [n for n, _ in result[2]] == ["史蒂芬·诺特"], result[2]
+    assert "1899年" in result[0]
+
+
 def test_speaker_not_hijacked_by_mentioned_npc():
     """当前说话人的台词不被『仅在旁白里被提及』的其他 NPC（如历史人物）夺走。"""
     npcs = [{"name": "史蒂芬·诺特"}, {"name": "沃尔特·科比特"}]

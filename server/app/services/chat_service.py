@@ -55,6 +55,25 @@ CLEAR_FLAG_RE = re.compile(r"\[CLEAR_FLAG:\s*flag=([^\]]+)\]")
 # 走位：KP 在叙述里就地标记角色移动到某锚点（物体/出口/NPC/其他角色/坐标）。内联剔除、不打断叙述。
 MOVE_RE = re.compile(r"\[MOVE:([^\]]*)\]")
 
+# 无名/泛称 NPC 的说话人前缀识别（如「护工：」「一位医生说道：」），用于把其台词正确
+# 归到该身份名下，而不是硬塞给某个有名有姓的 NPC。
+# A：带说话动词（动词消歧，较安全，可内联）；B：裸「X：」仅当独立成标签（前为句末/冒号/换行/引号）。
+_SPEAKER_VERB_RE = re.compile(
+    r"([一-龥·]{2,5})(?:说道|说|问道|问|答道|答|开口道|低声道|喊道|叫道|笑道|沉声道|轻声道)[：:，,]\s*$"
+)
+_SPEAKER_LABEL_RE = re.compile(
+    r"(?:^|[。！？!?\n：:」』])\s*([一-龥·]{2,5})[：:]\s*$"
+)
+# 书写/铭刻类语境：其后引号是「书写内容」而非台词，应留在旁白、绝不抽成对话气泡。
+_WRITTEN_TEXT_RE = re.compile(
+    r"(写着|写道|写有|刻着|刻有|记着|记载|标着|印着|贴着|挂着|题写|题着|落款|显示|显现|上书)[：:，,]?\s*$"
+)
+# 易误判为说话人的旁白连接词/状语（裸「X：」分支用），出现则不当作说话人。
+_NON_SPEAKER = {
+    "这时", "此时", "随后", "接着", "然后", "突然", "忽然", "紧接", "与此", "另一",
+    "其中", "只见", "声音", "众人", "大家", "对方", "他们", "她们", "它们", "远处", "身后",
+}
+
 # 「在说话」的动词线索：角色名紧随其后才认定为说话人，区别于「仅被提及」。
 _SPEAK_CUES = (
     "说", "道", "问", "答", "开口", "低声", "嘀咕", "喊", "叫", "吼", "沉吟",
@@ -332,6 +351,7 @@ async def _stream_narration_filtered(
 
     in_quote = False
     quote_buf = ""
+    quote_written = False  # 当前引号是否为「书写内容」（写着：/刻着：…）→ 留旁白不抽对话
     # Build (canonical_name, [searchable_parts]) for partial matching.
     # E.g. "托马斯·金博尔" → ["托马斯·金博尔", "托马斯", "金博尔"]
     # (canonical, [searchable_parts], is_player)。玩家方角色（真人/AI 队友）只用于
@@ -376,6 +396,7 @@ async def _stream_narration_filtered(
         s = text.rstrip()
         if not s:
             return text, None
+        # 1) 已知 NPC 名前缀优先（归一到 canonical）
         for canonical, parts, is_player in npc_matchers:
             if is_player:
                 continue
@@ -383,6 +404,17 @@ async def _stream_narration_filtered(
                 for _sfx in (part + "：", part + "说道：", part + "说：", part + "说道，", part + "说，"):
                     if s.endswith(_sfx):
                         return s[:-len(_sfx)], canonical
+        # 书写/铭刻语境（写着：/刻着：…）不是说话人，交由 quote_written 当书写内容留旁白
+        if _WRITTEN_TEXT_RE.search(s):
+            return text, None
+        # 2) 泛化：无名/泛称说话人（护工/医生/老板/老妇人…）——带说话动词或独立成标签的「X：」
+        for _rx in (_SPEAKER_VERB_RE, _SPEAKER_LABEL_RE):
+            m = _rx.search(s)
+            if m:
+                name = m.group(1)
+                if name not in _NON_SPEAKER:
+                    # 命中已知 NPC 的局部名（如「史蒂芬」）则归一到全名；否则保留泛称（护工…）
+                    return s[:m.start(1)], (_match_npc(name) or name)
         return text, None
 
     def _flush_bracket_dialogue():
@@ -449,6 +481,8 @@ async def _stream_narration_filtered(
                     last_speaker = bracket_speaker
                     bracket_speaker = None
                     bracket_dialogue_buf = ""
+                # 书写/铭刻语境（写着：/刻着：…）→ 本引号是书写内容，留旁白不抽成对话
+                quote_written = bool(_WRITTEN_TEXT_RE.search(pending.rstrip()))
                 pending, _speaker = _strip_npc_prefix(pending)
                 if _speaker:
                     last_speaker = _speaker
@@ -465,7 +499,9 @@ async def _stream_narration_filtered(
                 dialogue_text = quote_buf.strip()
                 attributed = False
 
-                if len(dialogue_text) >= 2 and npc_matchers:
+                if quote_written:
+                    quote_written = False  # 书写内容：不抽对话，下方 not attributed 分支留回旁白
+                elif len(dialogue_text) >= 2 and npc_matchers:
                     recent = narration[-160:]
                     best_canonical: str | None = None
                     # 1) 显式说话线索：角色名紧随说话动词/冒号（如「史蒂芬说道：」「沃尔特低声」）。
