@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { api } from '../api/client'
 import { useModuleStore } from '../stores/moduleStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
+import { CharacterEditModal } from '../components/character/CharacterEditModal'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiDiceSixFacesSix, GiCharacter, GiReturnArrow, GiUpCard, GiPadlock } from 'react-icons/gi'
@@ -118,6 +119,7 @@ export function CharacterPage() {
   const [step, setStep] = useState<Step>('基本信息')
   const [creating, setCreating] = useState(false)
   const [selectedChar, setSelectedChar] = useState<Character | null>(null)
+  const [editingChar, setEditingChar] = useState<Character | null>(null)
 
   // Step 1: 基本信息
   const [name, setName] = useState('')
@@ -1280,6 +1282,13 @@ export function CharacterPage() {
                     <div className="flex items-center gap-2">
                       {occ && <span className="badge">{occ}</span>}
                       <span className="badge">{c.rule_system.toUpperCase()}</span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setEditingChar(c) }}
+                        className="text-xs px-1.5 py-0.5 rounded transition-colors hover:bg-[var(--color-accent)] hover:text-white"
+                        style={{ color: 'var(--color-text-accent)', border: '1px solid var(--color-border)' }}
+                      >
+                        编辑
+                      </button>
                       <ConfirmDialog
                         title="删除角色"
                         description={`确定要删除「${c.name}」吗？此操作不可恢复。`}
@@ -1326,6 +1335,19 @@ export function CharacterPage() {
         >
           <CharacterPanel character={selectedChar} />
         </aside>
+      )}
+
+      {editingChar && (
+        <CharacterEditModal
+          character={editingChar}
+          open={!!editingChar}
+          onOpenChange={(v) => { if (!v) setEditingChar(null) }}
+          onSaved={(updated) => {
+            setCharacters((prev) => prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c)))
+            setSelectedChar((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev))
+            setEditingChar(null)
+          }}
+        />
       )}
     </div>
   )
