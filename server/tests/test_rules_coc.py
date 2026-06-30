@@ -224,3 +224,35 @@ class TestCharacteristicRolls:
         assert resolve_skill_check(cd, "智力").skill_value == 70   # 中文属性名亦可
         # 普通技能不受别名影响
         assert resolve_skill_check(cd, "侦查").skill_value == 60
+
+
+class TestOccupationWeaponData:
+    """112 职业 / 106 武器 / 专精数据完整性。"""
+
+    def test_counts(self):
+        from app.rules.coc.occupations import COC_OCCUPATIONS
+        from app.rules.coc.specializations import SPECIALIZATIONS
+        from app.rules.coc.weapons import COC_WEAPONS
+        assert len(COC_OCCUPATIONS) == 112
+        assert len(COC_WEAPONS) == 106
+        assert set(SPECIALIZATIONS) == {"母语", "外语", "格斗", "射击", "科学", "生存", "技艺", "驾驶"}
+
+    def test_every_occupation_skill_is_allocatable(self):
+        """每个职业技能（按基名）要么在默认技能表，要么是专精占位——否则向导里看不到。"""
+        from app.rules.coc.character import COC_DEFAULT_SKILLS
+        from app.rules.coc.occupations import COC_OCCUPATIONS
+        from app.rules.coc.specializations import SPECIALIZATIONS
+
+        def base(s: str) -> str:
+            return s.split("(")[0]
+
+        allocatable = {base(k) for k in COC_DEFAULT_SKILLS} | set(SPECIALIZATIONS)
+        for occ in COC_OCCUPATIONS:
+            for sk in occ.skills:
+                assert base(sk) in allocatable, f"{occ.name} 的技能 {sk} 不可分配"
+
+    def test_weapon_fields_present(self):
+        from app.rules.coc.weapons import COC_WEAPONS
+        w = COC_WEAPONS[0]
+        for key in ("name", "skill", "dam", "tho", "range", "round", "num", "err"):
+            assert key in w

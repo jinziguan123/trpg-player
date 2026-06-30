@@ -72,6 +72,24 @@ def get_equipment(rule_system: str, era: str = "1920s", credit_rating: int = 0):
     return get_available_equipment(era, credit_rating)
 
 
+@router.get("/rules/{rule_system}/weapons")
+def get_weapons(rule_system: str):
+    """CoC 武器表，供武器选择器使用。"""
+    if rule_system != "coc":
+        raise HTTPException(400, f"暂不支持 {rule_system} 的武器表")
+    from app.rules.coc.weapons import COC_WEAPONS
+    return COC_WEAPONS
+
+
+@router.get("/rules/{rule_system}/specializations")
+def get_specializations(rule_system: str):
+    """专精技能类别（母语/外语/格斗/射击/科学/生存/技艺/驾驶）及各专精起始值。"""
+    if rule_system != "coc":
+        raise HTTPException(400, f"暂不支持 {rule_system} 的专精列表")
+    from app.rules.coc.specializations import SINGLE_SPEC, SPECIALIZATIONS
+    return {"categories": SPECIALIZATIONS, "single": sorted(SINGLE_SPEC)}
+
+
 class EvaluateRequest(BaseModel):
     module_id: str
     name: str
