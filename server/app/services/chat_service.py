@@ -60,7 +60,8 @@ GROUP_RE = re.compile(r"\[GROUP:([^\]]*)\]")
 # 书写/标识语境：其后引号是书写/标识内容（非台词），留旁白。允许标识名词与引号间夹分隔符。
 _WRITTEN_TEXT_RE = re.compile(
     r"(写着|写道|写有|刻着|刻有|记着|记载|标着|印着|贴着|挂着|题写|题着|题为|落款|显示|显现|上书|"
-    r"字牌|牌子|招牌|门牌|标牌|标签|标题|铭牌|告示|名为|名叫|写作|条目|卡片|抽出一张|一行字)"
+    r"字牌|牌子|招牌|门牌|标牌|标签|标题|铭牌|告示|名为|名叫|写作|条目|卡片|抽出一张|一行字|"
+    r"短讯|电讯|报道|头条|标语|新闻|登载|刊载|载有)"
     # 线索/书写内容常带 markdown 标记或换行（如「写着：> **」「记载：\n# 」），
     # 容忍这些标点/标记夹在提示词与引号之间，避免书写内容被误抽成台词。
     r"[：:，,、\s—\-*>＞#`～~。.]*$"
@@ -465,18 +466,19 @@ async def _stream_narration_filtered(
                     start = p + 1
         return best
 
-    def _resolve_speaker(pre: str) -> tuple[str | None, bool]:
-        """返回 (说话人, 是否弱信号)。弱信号（仅靠最近 NPC 主语推断）下，仅当引号文本
-        「像台词」才抽取，避免把门牌/招牌等短名词标签误判为台词。"""
+    def _resolve_speaker(pre: str) -> tuple[str | None, bool, bool]:
+        """返回 (说话人, 是否弱信号, 是否来自显式前缀)。弱信号（仅靠最近 NPC 主语推断）下，
+        仅当引号文本「像台词」才抽取，避免把门牌/招牌等短名词标签误判为台词。
+        from_prefix=True 时，调用方需把「X：」前缀从旁白里抹掉，免得说话人名重复显示。"""
         s = pre.rstrip()
         if _WRITTEN_TEXT_RE.search(s) or _REFERENCE_BEFORE_RE.search(s):
-            return None, False                # 书写/标识/被提及 → 留旁白
+            return None, False, False         # 书写/标识/被提及 → 留旁白
         spk = _prefix_speaker(s)
         if spk:
-            return spk, False                 # 强：显式说话前缀
+            return spk, False, True           # 强：显式说话前缀
         if last_speaker:
-            return last_speaker, False        # 强：承接当前说话人
-        return _recent_npc_subject(s), True   # 弱：最近行动的 NPC 主语
+            return last_speaker, False, False  # 强：承接当前说话人（段落分隔后会被释放）
+        return _recent_npc_subject(s), True, False  # 弱：最近行动的 NPC 主语
 
     extracted = result[2]
     dialogue_marks: list = result[3] if len(result) > 3 else []
@@ -569,7 +571,11 @@ async def _stream_narration_filtered(
                 # 开引号：先判说话人（基于引号前文），冲掉旁白，进入引号收集。
                 # 用 narration+pending 作前文：台词常另起一段，此时前文主语（如「诺特」）
                 # 已被 flush 进 narration，只看 pending 会漏掉说话人。
-                pending_speaker, pending_weak = _resolve_speaker(narration + pending)
+                pending_speaker, pending_weak, from_prefix = _resolve_speaker(narration + pending)
+                # 经显式前缀（「史蒂芬·诺特：」）判定说话人时，把该前缀从旁白里抹掉——
+                # 否则说话人名会既作旁白文字、又作气泡署名，重复显示。
+                if pending_speaker and from_prefix:
+                    pending = _SAY_PREFIX_RE.sub("", pending)
                 out = _flush_pending()
                 if out:
                     yield _mk("narration", out, actor_name="KP")
@@ -596,6 +602,10 @@ async def _stream_narration_filtered(
                     quote_buf += ch
                 else:
                     pending += ch
+                    # 段落分隔＝说话的「话筒」交还：清掉 last_speaker，避免上一位说话人
+                    # 跨段把后文（如另一场景里读到的报纸短讯）也吸成自己的台词。
+                    if last_speaker and pending.endswith("\n\n"):
+                        last_speaker = None
 
         if tag_found:
             out = _flush_pending()
