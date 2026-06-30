@@ -107,6 +107,7 @@ export function GameSessionPage() {
   const [showMap, setShowMap] = useState(false)
   const [showBigMap, setShowBigMap] = useState(false)         // 大地图（已知地点前往）
   const [locations, setLocations] = useState<KnownLocation[]>([])
+  const [confirmTravel, setConfirmTravel] = useState<KnownLocation | null>(null)  // 前往二次确认
   const [splitView, setSplitView] = useState(true)            // 分头行动分栏（检测到多组时生效）
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set())  // 被收起的分组
   const [sceneMap, setSceneMap] = useState<SceneMapPayload | null>(null)
@@ -329,6 +330,7 @@ export function GameSessionPage() {
       await api.post(`/sessions/${currentSession.id}/travel`, { scene_id: sceneId, acting_character_id: myCharId })
       setShowBigMap(false)
     } catch { /* 已在该地点 / 不可前往 等，由后端校验 */ }
+    finally { setConfirmTravel(null) }
   }
 
   useEffect(() => {
@@ -456,7 +458,7 @@ export function GameSessionPage() {
           )}
           <div className="ml-auto flex items-center gap-2">
             <button
-              onClick={() => setShowBigMap((v) => !v)}
+              onClick={() => { setConfirmTravel(null); setShowBigMap((v) => !v) }}
               className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
               title="大地图：前往已知地点"
             >
@@ -492,7 +494,7 @@ export function GameSessionPage() {
                 <span className="text-xs font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-text-accent)' }}>
                   <GiTreasureMap size={13} /> 大地图 · 前往已知地点
                 </span>
-                <button onClick={() => setShowBigMap(false)} title="收起大地图" style={{ color: 'var(--color-text-secondary)' }}><ChevronUp size={14} /></button>
+                <button onClick={() => { setConfirmTravel(null); setShowBigMap(false) }} title="收起大地图" style={{ color: 'var(--color-text-secondary)' }}><ChevronUp size={14} /></button>
               </div>
               {locations.length === 0 ? (
                 <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>暂无已知的可前往地点。</p>
@@ -502,7 +504,7 @@ export function GameSessionPage() {
                     <button
                       key={loc.id}
                       disabled={loc.current || streaming}
-                      onClick={() => travelTo(loc.id)}
+                      onClick={() => setConfirmTravel(loc)}
                       className="text-xs px-2.5 py-1 rounded border inline-flex items-center gap-1"
                       style={{
                         borderColor: loc.current ? 'var(--color-accent)' : 'var(--color-border)',
@@ -519,9 +521,27 @@ export function GameSessionPage() {
                   ))}
                 </div>
               )}
-              <p className="text-[11px] mt-2" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>
-                只显示你已知晓的地点；前往后由 KP 叙述抵达见闻。
-              </p>
+              {confirmTravel ? (
+                <div className="mt-2 rounded-md px-3 py-2 text-xs flex items-center gap-3 flex-wrap"
+                  style={{ background: 'var(--color-bg-secondary)', border: '1px solid var(--color-accent)' }}>
+                  <span style={{ color: 'var(--color-text-primary)' }}>
+                    确定前往「{confirmTravel.name}」？{confirmTravel.visited ? '' : '（你尚未去过此地）'}
+                  </span>
+                  <div className="flex items-center gap-2 ml-auto">
+                    <button onClick={() => travelTo(confirmTravel.id)} disabled={streaming}
+                      className="btn-primary !px-2.5 !py-1 inline-flex items-center gap-1"
+                      style={streaming ? { opacity: 0.5 } : undefined}>
+                      <GiReturnArrow size={12} style={{ transform: 'scaleX(-1)' }} /> 确认前往
+                    </button>
+                    <button onClick={() => setConfirmTravel(null)}
+                      className="btn-secondary !px-2.5 !py-1">取消</button>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-[11px] mt-2" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>
+                  只显示你已知晓的地点；前往后由 KP 叙述抵达见闻。
+                </p>
+              )}
             </div>
           </div>
         )}
