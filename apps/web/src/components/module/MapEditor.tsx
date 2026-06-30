@@ -143,8 +143,8 @@ export function MapEditor({ initial, assets, onSave, onCancel, onAIGenerate, onI
       {onImageGenerate && (
         <div className="flex items-center gap-2 mb-2 p-2 rounded flex-wrap" style={{ background: 'var(--color-bg-tertiary)' }}>
           <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>有模组自带地图图片？</span>
-          <input ref={imgRef} type="file" accept="image/*" className="hidden" onChange={(e) => { runImage(e.target.files?.[0]); e.target.value = '' }} />
-          <button onClick={() => imgRef.current?.click()} disabled={aiBusy} className="btn-secondary text-sm" style={aiBusy ? { opacity: 0.6 } : undefined}>{aiBusy ? '识别中…' : '上传地图图片识别生成'}</button>
+          <input ref={imgRef} type="file" accept="image/*,.pdf,application/pdf" className="hidden" onChange={(e) => { runImage(e.target.files?.[0]); e.target.value = '' }} />
+          <button onClick={() => imgRef.current?.click()} disabled={aiBusy} className="btn-secondary text-sm" style={aiBusy ? { opacity: 0.6 } : undefined}>{aiBusy ? '识别中…' : '上传地图图片/PDF 识别生成'}</button>
           <span className="text-xs" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>视觉模型据图转成瓦片地图（需在设置选支持视觉的模型）</span>
         </div>
       )}

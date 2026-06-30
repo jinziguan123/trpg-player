@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.api.modules import _decode_text
+from app.api.modules import _decode_text, _select_pdf_images
 from app.database import get_db
 from app.main import app
 from app.models import Base, Module  # noqa: F401 注册表
@@ -33,6 +33,32 @@ def test_parse_module_images(monkeypatch):
     monkeypatch.setattr(ms, "get_llm", lambda: TextOnly())
     with pytest.raises(ValueError):
         asyncio.run(ms.parse_module_images([(b"x", "image/png")], "coc"))
+
+
+def test_select_pdf_images_filters_and_sorts():
+    """PDF 内嵌图：过滤过小图标、按体积降序、识别 mime（地图通常是最大那张）。"""
+    class _Img:
+        def __init__(self, name, data):
+            self.name = name
+            self.data = data
+
+    class _Page:
+        def __init__(self, images):
+            self.images = images
+
+    class _Reader:
+        def __init__(self, pages):
+            self.pages = pages
+
+    reader = _Reader([
+        _Page([_Img("logo.png", b"x" * 100)]),                 # 太小 → 剔除
+        _Page([_Img("map.jpg", b"y" * 9000),                    # 最大 → 排第一
+               _Img("handout.png", b"z" * 5000)]),
+    ])
+    out = _select_pdf_images(reader, min_bytes=3000)
+    assert [len(d) for d, _ in out] == [9000, 5000]             # 降序，剔除了 100 字节的
+    assert out[0][1] == "image/jpeg" and out[1][1] == "image/png"
+    assert _select_pdf_images(_Reader([_Page([])])) == []       # 无图
 
 
 def test_decode_text_handles_non_utf8():
