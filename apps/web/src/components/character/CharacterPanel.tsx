@@ -260,10 +260,16 @@ function SkillsTab({
 interface WeaponItem {
   name: string
   skill?: string
-  damage?: string
+  success?: number
+  dam?: string
+  damage?: string   // 兼容历史字段
   range?: string
-  attacks?: number
-  ammo?: string
+  tho?: boolean
+  round?: string
+  attacks?: number  // 兼容历史字段
+  num?: string
+  ammo?: string     // 兼容历史字段
+  err?: string
 }
 
 // 装备可能是字符串数组（AI 建卡/手动选装）或对象数组（兼容历史数据）
@@ -294,20 +300,28 @@ function InventoryTab({ character }: { character: CharacterData }) {
         <div>
           <h4 className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>武器</h4>
           <div className="space-y-1">
-            {weapons.map((w, i) => (
-              <div key={`${w.name}-${i}`} className="text-xs px-2 py-1.5 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
-                <div className="flex justify-between">
-                  <span className="font-semibold">{w.name}</span>
-                  {w.damage && <span className="font-mono" style={{ color: 'var(--color-text-secondary)' }}>{w.damage}</span>}
+            {weapons.map((w, i) => {
+              const dam = w.dam || w.damage
+              const round = w.round || (w.attacks != null ? String(w.attacks) : '')
+              const num = w.num || w.ammo
+              return (
+                <div key={`${w.name}-${i}`} className="text-xs px-2 py-1.5 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+                  <div className="flex justify-between">
+                    <span className="font-semibold">{w.name}</span>
+                    {dam && <span className="font-mono" style={{ color: 'var(--color-text-secondary)' }}>{dam}</span>}
+                  </div>
+                  <div className="flex flex-wrap gap-2 mt-0.5" style={{ color: 'var(--color-text-secondary)', fontSize: '0.65rem' }}>
+                    {w.skill && <span>技能 {w.skill}</span>}
+                    {w.success != null && <span>成功率 {w.success}</span>}
+                    {w.range && <span>射程 {w.range}</span>}
+                    {w.tho && <span>贯穿</span>}
+                    {round && <span>次数 {round}</span>}
+                    {num && <span>装弹 {num}</span>}
+                    {w.err && <span>故障 {w.err}</span>}
+                  </div>
                 </div>
-                <div className="flex gap-2 mt-0.5" style={{ color: 'var(--color-text-secondary)', fontSize: '0.65rem' }}>
-                  {w.skill && <span>技能 {w.skill}</span>}
-                  {w.range && <span>射程 {w.range}</span>}
-                  {w.attacks ? <span>攻击 {w.attacks}</span> : null}
-                  {w.ammo && <span>弹药 {w.ammo}</span>}
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </div>
       )}
