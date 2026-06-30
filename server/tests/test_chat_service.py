@@ -424,6 +424,31 @@ def test_multiparagraph_narration_with_npcs_does_not_crash():
     assert "第三段" in result[0]
 
 
+def test_module_intro_card_from_metadata(db_factory):
+    """背景导语卡：取模组公开元信息（类型/年代/地区/难度/人数）+ 一句话前提，落成 system 事件。"""
+    db = db_factory()
+    module = Module(
+        title="常暗之箱", rule_system="coc", npcs=[],
+        description="在末班电车上醒来，发现身处诡异空间，必须寻找出路。",
+        world_setting={"tone": "恐怖、悬疑", "era": "现代", "region": "日本",
+                       "difficulty": "普通", "player_count": "2-3"},
+    )
+    char = Character(name="测试角色", rule_system="coc")
+    db.add(module); db.add(char); db.flush()
+    session = GameSession(module_id=module.id, player_character_id=char.id, status="active")
+    db.add(session); db.commit()
+
+    chunk = chat_service._persist_module_intro(db, session.id, module)
+    assert chunk is not None
+    evs = session_service.get_session_events(db_factory(), session.id)
+    intro = [e for e in evs if (e.metadata_ or {}).get("kind") == "module_intro"]
+    assert len(intro) == 1
+    md = intro[0].metadata_
+    assert md["title"] == "常暗之箱"
+    assert md["meta"] == "恐怖、悬疑 · 现代 · 日本 · 难度 普通 · 建议 2-3 人"
+    assert "末班电车" in intro[0].content
+
+
 def _patch_runtime(monkeypatch, db_factory):
     """把 chat_service 的运行期依赖换成测试可控的桩。"""
     import app.database as database

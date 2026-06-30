@@ -10,7 +10,7 @@ import { PartyRoster } from '../components/game/PartyRoster'
 import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { useMapAssets } from '../components/module/useMapAssets'
-import { GiReturnArrow, GiRollingDices } from 'react-icons/gi'
+import { GiReturnArrow, GiRollingDices, GiScrollUnfurled } from 'react-icons/gi'
 import { Copy, Bot, Map as MapIcon, ChevronUp } from 'lucide-react'
 
 interface SceneMapPayload { scene_id: string | null; scene_name: string | null; map: TileMap | null; entities: MapEntity[] }
@@ -540,6 +540,24 @@ export function GameSessionPage() {
               )
             }
             if (msg.type === 'system') {
+              // 背景导语卡：开场前展示模组类型/年代/难度等公开元信息 + 一句话前提，给玩家定位
+              if (msg.metadata?.kind === 'module_intro') {
+                const title = String(msg.metadata?.title || '模组')
+                const meta = String(msg.metadata?.meta || '')
+                return (
+                  <div key={msg.id} className="chat-msg py-2 flex justify-center">
+                    <div className="rounded-lg px-4 py-3 max-w-2xl w-full"
+                      style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
+                      <div className="flex items-center gap-2 mb-1" style={{ color: 'var(--color-text-accent)' }}>
+                        <GiScrollUnfurled />
+                        <span className="font-semibold">{title}</span>
+                      </div>
+                      {meta && <div className="text-xs mb-2" style={{ color: 'var(--color-text-secondary)' }}>{meta}</div>}
+                      {msg.content && <div className="text-sm whitespace-pre-wrap" style={{ color: 'var(--color-text-primary)' }}>{msg.content}</div>}
+                    </div>
+                  </div>
+                )
+              }
               // 待定检定提示：携带 check_request 元数据时，渲染成带「投骰」按钮的卡片
               const checkId = msg.metadata?.check_request ? String(msg.metadata?.id ?? '') : ''
               if (checkId) {

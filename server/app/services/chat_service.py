@@ -1234,19 +1234,53 @@ async def run_roll_generation(session_id: str, check_id: str) -> None:
         db.close()
 
 
+def _persist_module_intro(db: Session, session_id: str, module: Module) -> str | None:
+    """开场前先落一张「背景导语」卡：模组类型/年代/地区/难度/人数 + 一句话前提。
+
+    取自模组作者填写的公开元信息（world_setting / description），不含任何线索或真相，
+    给玩家一个「这是个什么故事」的定位，免得直接被拉进场景而摸不着头脑。返回卡片 chunk。
+    """
+    ws = module.world_setting or {}
+    bits: list[str] = []
+    for key in ("tone", "era", "region"):
+        v = str(ws.get(key) or "").strip()
+        if v:
+            bits.append(v)
+    diff = str(ws.get("difficulty") or "").strip()
+    if diff:
+        bits.append(f"难度 {diff}")
+    pc = str(ws.get("player_count") or "").strip()
+    if pc:
+        bits.append(f"建议 {pc} 人")
+    meta = " · ".join(bits)
+    premise = str(module.description or "").strip()
+    if not (meta or premise):
+        return None
+    ev = session_service.add_event(
+        db, session_id, "system", premise, actor_name="系统",
+        metadata={"kind": "module_intro", "title": module.title or "模组", "meta": meta},
+    )
+    return event_to_chunk(ev)
+
+
 async def run_opening_generation(session_id: str) -> None:
     from app.database import SessionLocal
 
     db = SessionLocal()
     try:
         game_session = db.get(GameSession, session_id)
-        # 幂等：已有事件（开局已生成）则不重复生成，只收尾，防止重复开场。
-        existing = session_service.get_session_events(db, session_id, limit=1)
-        if existing:
-            room_hub.broadcast(session_id, _make_chunk("done"))
-            return
         module = db.get(Module, game_session.module_id)
         player_char = db.get(Character, game_session.player_character_id)
+        # 幂等：已有正式叙事（旁白/对话）则不重复开场，只收尾。背景导语卡（system）不计入，
+        # 这样开场生成中途失败后重试仍能重新生成（而背景卡只补一次、不重复）。
+        events_all = session_service.get_session_events(db, session_id)
+        if any(e.event_type in ("narration", "dialogue") for e in events_all):
+            room_hub.broadcast(session_id, _make_chunk("done"))
+            return
+        if not any((e.metadata_ or {}).get("kind") == "module_intro" for e in events_all):
+            intro_chunk = _persist_module_intro(db, session_id, module)
+            if intro_chunk:
+                room_hub.broadcast(session_id, intro_chunk)
         party_others = session_service.get_party_members(
             db, session_id, exclude_id=game_session.player_character_id,
         )
