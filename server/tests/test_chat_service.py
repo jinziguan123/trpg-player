@@ -138,6 +138,18 @@ def test_sign_labels_not_extracted_as_dialogue():
     assert "恢复名誉" in result[0]              # 标识文本留在旁白
 
 
+def test_quoted_term_after_perception_verb_not_dialogue():
+    """被『听到/提到』的引号是被提及的词语而非台词，留旁白不抽成对话气泡。"""
+    npcs = [{"name": "史蒂芬·诺特"}]
+    text = "诺特先生听到“考古发现”这个词时，眉头微微皱了一下，绕过办公桌走到窗边。"
+    result = ["", "", [], [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    assert result[2] == [], result[2]
+    assert "考古发现" in result[0]
+
+
 def test_written_text_stays_in_narration():
     """『写着：「…」』是书写内容而非台词，应留在旁白、不抽成对话气泡。"""
     npcs = [{"name": "史蒂芬·诺特"}]

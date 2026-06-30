@@ -73,6 +73,12 @@ _WRITTEN_TEXT_RE = re.compile(
     r"字牌|牌子|招牌|门牌|标牌|标签|标题|铭牌|告示|名为|名叫|写作)"
     r"[：:，,、\s—\-]*$"
 )
+# 感知/指称类语境：其后引号是「被提及/被听到的词语或名称」而非台词（如「听到『考古发现』这个词」）。
+# 这类感知/指称动词不是说话动作，引号内容应留旁白，绝不抽成对话气泡。
+_REFERENCE_BEFORE_RE = re.compile(
+    r"(听到|听见|听过|想起|想到|提到|提及|讲到|说到|读到|看到|见到|记得|念及|称为|称作|叫做|叫作|唤作|所谓|对于|关于)"
+    r"[：:，,、\s]*$"
+)
 # 易误判为说话人的旁白连接词/状语（裸「X：」分支用），出现则不当作说话人。
 _NON_SPEAKER = {
     "这时", "此时", "随后", "接着", "然后", "突然", "忽然", "紧接", "与此", "另一",
@@ -497,8 +503,10 @@ async def _stream_narration_filtered(
                     last_speaker = bracket_speaker
                     bracket_speaker = None
                     bracket_dialogue_buf = ""
-                # 书写/铭刻语境（写着：/刻着：…）→ 本引号是书写内容，留旁白不抽成对话
-                quote_written = bool(_WRITTEN_TEXT_RE.search(pending.rstrip()))
+                # 书写/标识（写着：/字牌——）或感知/指称（听到/提到/所谓…）语境 → 本引号是
+                # 书写内容或被提及的词语，而非台词，留旁白不抽成对话
+                _pre = pending.rstrip()
+                quote_written = bool(_WRITTEN_TEXT_RE.search(_pre) or _REFERENCE_BEFORE_RE.search(_pre))
                 pending, _speaker = _strip_npc_prefix(pending)
                 if _speaker:
                     last_speaker = _speaker
