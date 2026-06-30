@@ -229,6 +229,9 @@ export function ModulePage() {
                 {m.world_setting?.era && (
                   <span className="badge">{String(m.world_setting.era)}</span>
                 )}
+                {m.world_setting?.region && (
+                  <span className="badge">{String(m.world_setting.region)}</span>
+                )}
                 {m.world_setting?.player_count && (
                   <span className="badge">{String(m.world_setting.player_count)}人</span>
                 )}

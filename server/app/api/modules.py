@@ -175,6 +175,12 @@ def update_module(module_id: str, data: ModuleWrite, db: Session = Depends(get_d
     return module
 
 
+@router.get("/difficulties")
+def list_difficulties():
+    """模组难度枚举（单一真源），供编辑下拉与筛选用。"""
+    return list(module_service.MODULE_DIFFICULTIES)
+
+
 @router.get("/{module_id}", response_model=ModuleRead)
 def get_module(module_id: str, db: Session = Depends(get_db)):
     module = module_service.get_module(db, module_id)

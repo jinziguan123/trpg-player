@@ -10,6 +10,7 @@ import { ModuleTimeline } from '../components/module/ModuleTimeline'
 import { MapView, type TileMap } from '../components/module/MapView'
 import { MapEditor } from '../components/module/MapEditor'
 import { useMapAssets } from '../components/module/useMapAssets'
+import { MODULE_DIFFICULTIES } from '../lib/module'
 
 interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string; map?: TileMap }
 interface NpcState { when?: string[]; personality?: string; initial_location?: string; alive?: boolean }
@@ -31,7 +32,7 @@ interface ModuleData {
 
 const BLANK: ModuleData = {
   title: '', rule_system: 'coc', description: '',
-  world_setting: { era: '', location: '', tone: '', player_count: '', difficulty: '', tags: [], player_brief: '', intro: '' },
+  world_setting: { era: '', location: '', tone: '', player_count: '', region: '', difficulty: '', tags: [], player_brief: '', intro: '' },
   scenes: [], npcs: [], clues: [], triggers: [],
 }
 
@@ -41,10 +42,10 @@ const parseCsv = (v: string) => v.split(/[,，、]/).map((s) => s.trim()).filter
 
 const WS_FIELDS: { key: string; label: string }[] = [
   { key: 'era', label: '年代' },
+  { key: 'region', label: '地区' },
   { key: 'location', label: '地点' },
   { key: 'tone', label: '基调' },
   { key: 'player_count', label: '人数' },
-  { key: 'difficulty', label: '难度' },
 ]
 
 const DANGER_OPTS: { value: string; label: string; color: string }[] = [
@@ -257,6 +258,17 @@ export function ModuleDetailPage() {
         {WS_FIELDS.map(({ key, label }) => (
           <Row key={key} label={label}>{edit ? <TextInput value={wsStr(data.world_setting, key)} onChange={(v) => updateWS(key, v)} /> : <span>{wsStr(data.world_setting, key) || '—'}</span>}</Row>
         ))}
+        <Row label="难度">
+          {edit ? (
+            <Select value={wsStr(data.world_setting, 'difficulty') || '__none'} onValueChange={(v) => updateWS('difficulty', v === '__none' ? '' : v)}>
+              <SelectTrigger className="w-40"><SelectValue placeholder="未设定" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none">未设定</SelectItem>
+                {MODULE_DIFFICULTIES.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          ) : <span>{wsStr(data.world_setting, 'difficulty') || '—'}</span>}
+        </Row>
         <Row label="标签">{edit ? <TextInput value={tagsText} onChange={(v) => updateWS('tags', v.split(/[,，、]/).map((s) => s.trim()).filter(Boolean))} placeholder="逗号分隔" /> : <span>{tagsText || '—'}</span>}</Row>
         <Row label="世界观导入">{edit ? <TextInput value={wsStr(data.world_setting, 'intro')} onChange={(v) => updateWS('intro', v)} multiline placeholder="开场朗读用的世界观/基调铺陈（年代、风物、是哪一类故事），无剧透，区别于开场钩子" /> : <span className="whitespace-pre-wrap">{wsStr(data.world_setting, 'intro') || '—'}</span>}</Row>
         <Row label="开场钩子">{edit ? <TextInput value={wsStr(data.world_setting, 'player_brief')} onChange={(v) => updateWS('player_brief', v)} multiline placeholder="玩家开场就合法知道的动机/处境（不含待发现的线索/真相）" /> : <span className="whitespace-pre-wrap">{wsStr(data.world_setting, 'player_brief') || '—'}</span>}</Row>

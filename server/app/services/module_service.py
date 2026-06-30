@@ -8,6 +8,9 @@ from app.models.module import Module
 
 logger = logging.getLogger(__name__)
 
+# 模组难度枚举（唯一真源；AI 解析与手动编辑都只允许这四档）
+MODULE_DIFFICULTIES: tuple[str, ...] = ("入门", "普通", "困难", "噩梦")
+
 PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
 请仔细阅读以下模组文本，提取结构化信息并以 JSON 格式返回。
 
@@ -19,6 +22,7 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
   "intro": "面向全桌的【世界观与基调导入】，开场时朗读用：年代质感、地点风物、这是一类什么样的故事（恐怖/悬疑/冒险的调性与预期、内容警示）。它和 player_brief 不同——player_brief 是角色剧内已知的前情事实，intro 是把玩家带入世界的氛围与世界观铺陈。同样严守无剧透：绝不包含任何需要在游戏中被发现的线索/真相/NPC 秘密。若模组没有值得铺陈的世界观，留空字符串。",
   "player_count": "推荐游玩人数，如 1-4",
   "era": "背景年代标签，如 1920s、现代、中世纪、维多利亚时代",
+  "region": "地区标签：模组主要发生地，简短一个，如 阿卡姆、伦敦、埃及、上海、北海道、虚构小镇名等",
   "difficulty": "难度等级，仅限以下四选一：入门/普通/困难/噩梦",
   "tags": ["模组主题标签，如 恐怖、悬疑、冒险、密室、调查、战斗 等，2-4个"],
   "world_setting": {{
@@ -147,9 +151,12 @@ async def parse_module_images(images: list[tuple[bytes, str]], rule_system: str,
 
 def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
     world_setting = data.get("world_setting", {})
-    for key in ("player_count", "era", "difficulty", "tags", "player_brief", "intro"):
+    for key in ("player_count", "era", "region", "difficulty", "tags", "player_brief", "intro"):
         if key in data:
             world_setting[key] = data[key]
+    # 难度归一到枚举：非法值置空，避免脏数据进入筛选维度
+    if world_setting.get("difficulty") not in MODULE_DIFFICULTIES:
+        world_setting["difficulty"] = ""
 
     module = Module(
         title=data.get("title", "未命名模组"),
@@ -180,7 +187,10 @@ def update_module(db: Session, module_id: str, data: dict) -> Module | None:
     if "description" in data:
         module.description = data["description"]
     if "world_setting" in data and data["world_setting"] is not None:
-        module.world_setting = data["world_setting"]
+        ws = dict(data["world_setting"])
+        if ws.get("difficulty") not in MODULE_DIFFICULTIES:
+            ws["difficulty"] = ""
+        module.world_setting = ws
     if "scenes" in data and data["scenes"] is not None:
         module.scenes = data["scenes"]
     if "npcs" in data and data["npcs"] is not None:

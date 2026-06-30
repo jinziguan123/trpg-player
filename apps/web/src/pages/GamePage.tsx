@@ -8,7 +8,8 @@ import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { SeatIcon } from '../components/game/SeatIcon'
 import { GiReturnArrow } from 'react-icons/gi'
-import { Sparkles } from 'lucide-react'
+import { Sparkles, Search } from 'lucide-react'
+import { MODULE_DIFFICULTIES } from '../lib/module'
 
 interface Character {
   id: string
@@ -51,6 +52,35 @@ export function GamePage() {
   const [error, setError] = useState('')
   const [joinCode, setJoinCode] = useState('')
   const [hostAddr, setHostAddr] = useState(getServerUrl())
+
+  // 模组检索：模糊查询 + 条件筛选（人数/年代/难度/地区）
+  const [query, setQuery] = useState('')
+  const [fPlayers, setFPlayers] = useState('')   // 玩家人数（空=不限）
+  const [fEra, setFEra] = useState('')           // ''=全部
+  const [fDifficulty, setFDifficulty] = useState('')
+  const [fRegion, setFRegion] = useState('')
+
+  const eraOptions = [...new Set(modules.map((m) => String((m.world_setting as Record<string, unknown>)?.era ?? '')).filter(Boolean))]
+  const regionOptions = [...new Set(modules.map((m) => String((m.world_setting as Record<string, unknown>)?.region ?? '')).filter(Boolean))]
+
+  const filteredModules = modules.filter((m) => {
+    const ws = (m.world_setting || {}) as Record<string, unknown>
+    if (fEra && String(ws.era ?? '') !== fEra) return false
+    if (fRegion && String(ws.region ?? '') !== fRegion) return false
+    if (fDifficulty && String(ws.difficulty ?? '') !== fDifficulty) return false
+    const n = parseInt(fPlayers, 10)
+    if (n > 0) { const r = parsePlayerRange(ws); if (n < r.min || n > r.max) return false }
+    const q = query.trim().toLowerCase()
+    if (q) {
+      const tags = Array.isArray(ws.tags) ? (ws.tags as unknown[]) : []
+      const hay = [m.title, m.description, ws.era, ws.region, ws.location, ws.tone, ...tags]
+        .map((x) => String(x ?? '').toLowerCase()).join(' ')
+      if (!hay.includes(q)) return false
+    }
+    return true
+  })
+  const hasFilter = !!(query.trim() || fPlayers || fEra || fDifficulty || fRegion)
+  const resetFilters = () => { setQuery(''); setFPlayers(''); setFEra(''); setFDifficulty(''); setFRegion('') }
 
   const selectedModule = modules.find((m) => m.id === moduleId)
   const range = parsePlayerRange(selectedModule?.world_setting)
@@ -226,12 +256,71 @@ export function GamePage() {
       <div className="card mb-6">
         <h3 className="card-title">新游戏</h3>
 
+        {/* 模组检索：模糊查询 + 条件筛选 */}
+        <div className="mb-3 space-y-2">
+          <div className="relative">
+            <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2" style={{ color: 'var(--color-text-secondary)' }} />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索模组名、简介、标签、地区…"
+              className="input w-full !pl-7"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="number" min={1} value={fPlayers}
+              onChange={(e) => setFPlayers(e.target.value)}
+              placeholder="玩家人数"
+              className="input !w-28"
+              title="按玩家人数筛选：保留推荐人数区间覆盖该人数的模组"
+            />
+            <Select value={fEra || '__all'} onValueChange={(v) => setFEra(v === '__all' ? '' : v)}>
+              <SelectTrigger className="!w-28"><SelectValue placeholder="年代" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all">年代 · 全部</SelectItem>
+                {eraOptions.map((e) => <SelectItem key={e} value={e}>{e}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={fDifficulty || '__all'} onValueChange={(v) => setFDifficulty(v === '__all' ? '' : v)}>
+              <SelectTrigger className="!w-28"><SelectValue placeholder="难度" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all">难度 · 全部</SelectItem>
+                {MODULE_DIFFICULTIES.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={fRegion || '__all'} onValueChange={(v) => setFRegion(v === '__all' ? '' : v)}>
+              <SelectTrigger className="!w-28"><SelectValue placeholder="地区" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all">地区 · 全部</SelectItem>
+                {regionOptions.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            {hasFilter && (
+              <button onClick={resetFilters} className="btn-secondary !px-2 !py-1 text-xs">清除筛选</button>
+            )}
+            <span className="text-xs ml-auto" style={{ color: 'var(--color-text-secondary)' }}>
+              {filteredModules.length} / {modules.length} 个模组
+            </span>
+          </div>
+        </div>
+
         <Select value={moduleId} onValueChange={onSelectModule}>
           <SelectTrigger className="w-full mb-3">
             <SelectValue placeholder="— 选择模组 —" />
           </SelectTrigger>
           <SelectContent>
-            {modules.map((m) => <SelectItem key={m.id} value={m.id}>{m.title}</SelectItem>)}
+            {filteredModules.length === 0 ? (
+              <div className="px-2 py-3 text-sm text-center" style={{ color: 'var(--color-text-secondary)' }}>无匹配模组</div>
+            ) : filteredModules.map((m) => {
+              const ws = (m.world_setting || {}) as Record<string, unknown>
+              const meta = [ws.era, ws.region, ws.difficulty].map((x) => String(x ?? '')).filter(Boolean).join(' · ')
+              return (
+                <SelectItem key={m.id} value={m.id}>
+                  {m.title}{meta ? <span style={{ color: 'var(--color-text-secondary)' }}>（{meta}）</span> : null}
+                </SelectItem>
+              )
+            })}
           </SelectContent>
         </Select>
 
