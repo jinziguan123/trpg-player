@@ -148,6 +148,7 @@ export function GameSessionPage() {
 
   const seenIds = useRef<Set<string>>(new Set())
   const liveTypeRef = useRef<string>('')
+  const liveGroupRef = useRef<string>('')   // 当前流式 narration 所属分组（分头行动实时分栏）
   const myCharIdRef = useRef<string | null>(null)
   useEffect(() => { myCharIdRef.current = myCharId }, [myCharId])
 
@@ -209,8 +210,13 @@ export function GameSessionPage() {
     }
     if (t === 'narration') {
       setThinking(false)  // 第一段叙述 token 到达 → 不再是"思考中"
-      if (liveTypeRef.current !== 'narration') {
-        endStream(); startStreamMessage('narration', 'KP'); liveTypeRef.current = 'narration'
+      // 分头行动按组生成时，narration chunk 带 metadata.group；切换分组要另起一条流式消息，
+      // 否则多组叙述会被拼进同一条、实时分栏失效（done 后 resync 会再按落库分组对齐）。
+      const grp = String((chunk.metadata as Record<string, unknown> | undefined)?.group || '')
+      if (liveTypeRef.current !== 'narration' || liveGroupRef.current !== grp) {
+        endStream()
+        startStreamMessage('narration', 'KP', grp ? { group: grp } : undefined)
+        liveTypeRef.current = 'narration'; liveGroupRef.current = grp
       }
       appendToStream(chunk.content || '')
       return

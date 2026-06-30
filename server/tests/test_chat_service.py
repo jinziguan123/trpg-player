@@ -211,6 +211,81 @@ def test_group_tags_split_scenes(db_factory):
     assert all("[GROUP" not in (e.content or "") for e in evs)
 
 
+def test_group_label_tags_all_output(db_factory):
+    """分头行动按组生成：group_label 给定时，整段产物（流式 + 落库）确定性归入该组，
+    不依赖模型自觉打 [GROUP]。"""
+    import json as _json
+    npcs = [{"name": "管理员"}]
+    text = "约翰推开图书馆厚重的门，翻查旧报。[SAY: who=管理员]这边请。[/SAY]"
+    result = ["", "", [], [], []]
+    chunks = asyncio.run(_collect(
+        chat_service._stream_narration_filtered(
+            _FakeKP(text), [], result, npcs=npcs, group_label="图书馆",
+        )
+    ))
+    payloads = [_json.loads(c[len("data: "):]) for c in chunks]
+    assert payloads and all(
+        p.get("metadata", {}).get("group") == "图书馆"
+        for p in payloads if p["type"] in ("narration", "npc_dialogue")
+    )
+    db = db_factory()
+    session_id = _seed_session(db)
+    chat_service._persist_narration(db, session_id, result)
+    evs = session_service.get_session_events(db_factory(), session_id)
+    groups = [
+        (_json.loads(e.metadata_) if isinstance(e.metadata_, str) else (e.metadata_ or {})).get("group")
+        for e in evs
+    ]
+    assert groups and all(g == "图书馆" for g in groups)
+
+
+def test_plan_groups_detects_split():
+    """分组规划：据本回合各角色行动判定分头，并把局部名归一到队伍全名。"""
+    class _FakeLLM:
+        async def complete(self, messages, temperature=0.7, **kw):
+            return (
+                '{"split": true, "groups": ['
+                '{"label": "图书馆", "members": ["约翰"]},'
+                '{"label": "档案馆", "members": ["亨利·卡特"]}]}'
+            )
+
+    class _Ev:
+        def __init__(self, t, a, c):
+            self.event_type, self.actor_name, self.content = t, a, c
+
+    player = Character(name="莫妮卡·卡佩尔", rule_system="coc")
+    t1 = Character(name="约翰·卡特", rule_system="coc")
+    t2 = Character(name="亨利·卡特", rule_system="coc")
+    events = [
+        _Ev("narration", "KP", "上一段旁白"),
+        _Ev("action", "约翰·卡特", "约翰走向图书馆的索引柜"),
+        _Ev("action", "亨利·卡特", "亨利推开档案馆的门"),
+    ]
+    groups = asyncio.run(chat_service._plan_groups(_FakeLLM(), player, [t1, t2], events))
+    assert {g["label"] for g in groups} == {"图书馆", "档案馆"}
+    assert {m for g in groups for m in g["members"]} == {"约翰·卡特", "亨利·卡特"}
+
+
+def test_plan_groups_no_split_when_single_actor():
+    """本回合只有一人行动时不算分头，直接回退整队（不调用 LLM）。"""
+    class _BoomLLM:
+        async def complete(self, *a, **k):
+            raise AssertionError("行动者不足两人时不应调用规划 LLM")
+
+    class _Ev:
+        def __init__(self, t, a, c):
+            self.event_type, self.actor_name, self.content = t, a, c
+
+    player = Character(name="莫妮卡·卡佩尔", rule_system="coc")
+    t1 = Character(name="约翰·卡特", rule_system="coc")
+    events = [
+        _Ev("narration", "KP", "上一段旁白"),
+        _Ev("action", "莫妮卡·卡佩尔", "我独自走进疗养院"),
+    ]
+    groups = asyncio.run(chat_service._plan_groups(_BoomLLM(), player, [t1], events))
+    assert groups == []
+
+
 def test_persisted_order_interleaves_narration_and_dialogue(db_factory):
     """落库要保留「旁白/对话交错」的原始顺序（与流式渲染一致），而非旁白全在前、对话全在后。"""
     npcs = [{"name": "史蒂芬·诺特"}]

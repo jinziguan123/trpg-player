@@ -361,6 +361,7 @@ def event_to_chunk(ev) -> str:
 async def _stream_narration_filtered(
     kp: KPAgent, messages: list[dict], result: list,
     npcs: list[dict] | None = None,
+    group_label: str | None = None,
 ) -> AsyncIterator[str]:
     """流式输出 KP 旁白，并把 NPC 台词抽成对话气泡。
 
@@ -372,6 +373,10 @@ async def _stream_narration_filtered(
 
     命令标签（[DICE_CHECK] 等）仍终止本次流；[MOVE]/[GROUP] 内联剔除不终止。
     *result* = [narration, full_response, extracted, dialogue_marks, group_marks]。
+
+    ``group_label`` 给定时（分头行动后端按组生成）：本次整段产物确定性地归入该组——
+    既给流式 chunk 打上 ``metadata.group``（前端实时分栏），也以 ``(0, label)`` 预置
+    group_mark（落库分组），不再依赖模型自觉打 [GROUP]。
     """
     full_response = ""
     narration = ""
@@ -473,6 +478,17 @@ async def _stream_narration_filtered(
     extracted = result[2]
     dialogue_marks: list = result[3] if len(result) > 3 else []
     group_marks: list = result[4] if len(result) > 4 else []
+    # 分头行动按组生成：确定性地把整段归入该组（流式 metadata + 落库 group_mark）。
+    if group_label:
+        group_marks.append((0, group_label))
+
+    def _mk(chunk_type: str, content: str = "", **kw) -> str:
+        """带分组标签的 _make_chunk：group_label 时给 chunk 附 metadata.group，供前端实时分栏。"""
+        if group_label:
+            md = dict(kw.pop("metadata", None) or {})
+            md["group"] = group_label
+            kw["metadata"] = md
+        return _make_chunk(chunk_type, content, **kw)
 
     def _flush_pending() -> str | None:
         nonlocal pending, narration
@@ -495,7 +511,7 @@ async def _stream_narration_filtered(
             last_speaker = speaker
             extracted.append((speaker, text))
             dialogue_marks.append((len(narration), speaker, text))
-            return _make_chunk("npc_dialogue", text, actor_name=speaker)
+            return _mk("npc_dialogue", text, actor_name=speaker)
         return None
 
     async for token in kp.narrate(messages):
@@ -532,7 +548,7 @@ async def _stream_narration_filtered(
                     if inner_s.startswith("SAY:"):
                         out = _flush_pending()
                         if out:
-                            yield _make_chunk("narration", out, actor_name="KP")
+                            yield _mk("narration", out, actor_name="KP")
                         rest = inner_s[len("SAY:"):].strip()
                         kv = _parse_tag_kv(rest)
                         say_speaker = (kv.get("who") or kv.get("name") or kv.get("speaker") or rest).strip()
@@ -553,7 +569,7 @@ async def _stream_narration_filtered(
                 pending_speaker, pending_weak = _resolve_speaker(narration + pending)
                 out = _flush_pending()
                 if out:
-                    yield _make_chunk("narration", out, actor_name="KP")
+                    yield _mk("narration", out, actor_name="KP")
                 in_quote = True
                 quote_open = ch
                 quote_buf = ""
@@ -566,7 +582,7 @@ async def _stream_narration_filtered(
                     last_speaker = pending_speaker
                     extracted.append((pending_speaker, text))
                     dialogue_marks.append((len(narration), pending_speaker, text))
-                    yield _make_chunk("npc_dialogue", text, actor_name=pending_speaker)
+                    yield _mk("npc_dialogue", text, actor_name=pending_speaker)
                 else:
                     pending += quote_open + quote_buf + ch  # 非台词：原样留旁白
                 quote_buf = ""
@@ -581,7 +597,7 @@ async def _stream_narration_filtered(
         if tag_found:
             out = _flush_pending()
             if out:
-                yield _make_chunk("narration", out, actor_name="KP")
+                yield _mk("narration", out, actor_name="KP")
             break
 
         if not in_bracket and not in_say and not in_quote and pending:
@@ -592,7 +608,7 @@ async def _stream_narration_filtered(
                 narration += chunk
                 result[0] = narration
                 if chunk.strip():
-                    yield _make_chunk("narration", chunk, actor_name="KP")
+                    yield _mk("narration", chunk, actor_name="KP")
             if len(pending) > 150:
                 last_b = -1
                 for _i, _ch in enumerate(pending):
@@ -604,7 +620,7 @@ async def _stream_narration_filtered(
                     narration += chunk
                     result[0] = narration
                     if chunk.strip():
-                        yield _make_chunk("narration", chunk, actor_name="KP")
+                        yield _mk("narration", chunk, actor_name="KP")
 
     if not tag_found:
         if in_say:
@@ -617,7 +633,7 @@ async def _stream_narration_filtered(
             pending += "[" + bracket_buf
         out = _flush_pending()
         if out:
-            yield _make_chunk("narration", out, actor_name="KP")
+            yield _mk("narration", out, actor_name="KP")
 
     result[0] = narration
     result[1] = full_response
@@ -788,6 +804,103 @@ def _persist_narration(db: Session, session_id: str, result: list) -> None:
         )
 
 
+def _current_turn_events(events: list) -> list:
+    """本回合事件 = 上一段 KP 旁白之后的所有事件（玩家行动 + 本轮队友行动）。"""
+    last_narr = -1
+    for i, e in enumerate(events):
+        if getattr(e, "event_type", None) == "narration":
+            last_narr = i
+    return events[last_narr + 1:]
+
+
+def _resolve_member(name: str, party: list[str]) -> str | None:
+    """把分组规划返回的成员名归一到队伍全名（容忍只给了名/姓的局部名）。"""
+    name = (name or "").strip()
+    if not name:
+        return None
+    for p in party:
+        if name == p or name in p or p in name:
+            return p
+    return None
+
+
+async def _plan_groups(
+    llm, player_char: Character, teammates: list[Character], events: list,
+) -> list[dict]:
+    """据本回合各角色行动，判断队伍是否分头。返回 [{label, members}]；未分头返回 []。
+
+    分头只存在于叙事文字里（会话级仅一个 current_scene），靠模型自觉打 [GROUP] 太脆，
+    故由后端先做一次轻量规划，再对每组单独生成、确定性打标签。
+    """
+    party = [player_char.name] + [t.name for t in teammates if t.name]
+    turn = _current_turn_events(events)
+    lines = [
+        f"- {e.actor_name}：{e.content}"
+        for e in turn
+        if getattr(e, "event_type", None) in ("action", "dialogue") and (e.content or "").strip()
+    ]
+    # 本回合行动者不足两人，谈不上分头
+    if len({e.actor_name for e in turn if getattr(e, "event_type", None) in ("action", "dialogue")}) < 2:
+        return []
+
+    sys_p = "你是 TRPG 跑团的场景编排助手，只输出 JSON，不要任何解释。"
+    user_p = (
+        f"队伍成员：{'、'.join(party)}\n"
+        "本回合各成员刚刚的行动：\n" + "\n".join(lines) + "\n\n"
+        "判断队伍这一刻是否分头行动（身处不同地点、各自独立推进）。\n"
+        '全队在一起 → 回 {\"split\": false}\n'
+        '分头 → 回 {\"split\": true, \"groups\": '
+        '[{\"label\": \"该组所在地点简称\", \"members\": [\"成员全名\", ...]}, ...]}\n'
+        "每个成员只属于一个分组；label 用其所在地点的简短名（如「图书馆」「档案馆」）。"
+    )
+    try:
+        raw = await llm.complete(
+            [{"role": "system", "content": sys_p}, {"role": "user", "content": user_p}],
+            temperature=0,
+        )
+    except Exception:
+        logger.exception("分头分组规划失败，回退为整队叙事")
+        return []
+
+    data = None
+    if isinstance(raw, dict):
+        data = raw
+    elif isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            m = re.search(r"\{.*\}", raw, re.S)
+            if m:
+                try:
+                    data = json.loads(m.group(0))
+                except json.JSONDecodeError:
+                    data = None
+    if not isinstance(data, dict) or not data.get("split"):
+        return []
+
+    groups: list[dict] = []
+    claimed: set[str] = set()
+    for g in (data.get("groups") or []):
+        label = str(g.get("label") or "").strip()
+        members: list[str] = []
+        for raw_name in (g.get("members") or []):
+            canon = _resolve_member(str(raw_name), party)
+            if canon and canon not in claimed:
+                members.append(canon)
+                claimed.add(canon)
+        if label and members:
+            groups.append({"label": label, "members": members})
+    # 至少两组才算分头；否则回退整队
+    return groups if len(groups) >= 2 else []
+
+
+SPLIT_FOCUS_PROMPT = (
+    "本回合队伍分头行动。现在【只】叙述以下成员在「{label}」发生的经过：{members}。\n"
+    "要求：详尽完整，与其他分组同等篇幅；只写这一组，绝不要叙述或提及其他分组的人"
+    "（他们会另行单独叙述）。"
+)
+
+
 async def _run_generation(
     db: Session,
     session_id: str,
@@ -801,6 +914,20 @@ async def _run_generation(
     kp = KPAgent(llm)
     # 仅在非开场、且该规则系统已挂载规则书时，向 KP 广告 [RULE_LOOKUP] 能力
     rules_enabled = bool(events) and rulebook_service.has_rulebook(db, module.rule_system)
+    matcher_npcs = _matcher_npcs(module, teammates)
+
+    # 分头行动：先规划分组，命中（≥2 组）则逐组单独生成、确定性打标签；否则走整队单遍。
+    groups: list[dict] = []
+    if teammates:
+        groups = await _plan_groups(llm, player_char, teammates, events)
+
+    if len(groups) >= 2:
+        await _run_split_generation(
+            db, session_id, game_session, module, player_char, events,
+            teammates, kp, llm, rules_enabled, matcher_npcs, groups,
+        )
+        return
+
     messages = build_kp_context(
         game_session, module, player_char, events, teammates=teammates,
         rules_lookup_enabled=rules_enabled,
@@ -809,7 +936,6 @@ async def _run_generation(
     result = ["", "", [], [], []]
     # 取消（硬取消 task）或流式中途报错（如供应商抖动断流）时，已生成的叙事都要落库，
     # 否则客户端在收到 done 后 resync 会拉到空历史，造成「生成到一半聊天全部消失」。
-    matcher_npcs = _matcher_npcs(module, teammates)
     try:
         async for chunk in _stream_narration_filtered(
             kp, messages, result, npcs=matcher_npcs,
@@ -823,6 +949,59 @@ async def _run_generation(
 
     async for chunk in _process_commands(
         db, session_id, result[1], module, player_char, game_session, llm,
+        teammates=teammates,
+    ):
+        room_hub.broadcast(session_id, chunk)
+
+    room_hub.broadcast(session_id, _make_chunk("done"))
+
+
+async def _run_split_generation(
+    db: Session,
+    session_id: str,
+    game_session: GameSession,
+    module: Module,
+    player_char: Character,
+    events: list,
+    teammates: list[Character] | None,
+    kp: KPAgent,
+    llm,
+    rules_enabled: bool,
+    matcher_npcs: list[dict],
+    groups: list[dict],
+) -> None:
+    """分头行动：对每个分组各跑一次聚焦叙事，后端确定性地把产物归入该组。
+
+    每组单独生成 → 篇幅均衡、不会「只详写最后一个场景」；分组标签由后端注入 →
+    前端实时/重连都能稳定分栏，不靠模型自觉打 [GROUP]。
+    命令（检定/HP/旗标/场景）在所有分组叙事完成后，对合并文本统一处理一次。
+    """
+    combined: list[str] = []
+    for grp in groups:
+        label = grp["label"]
+        members = "、".join(grp["members"])
+        messages = build_kp_context(
+            game_session, module, player_char, events, teammates=teammates,
+            rules_lookup_enabled=rules_enabled,
+        )
+        messages.append({
+            "role": "user",
+            "content": SPLIT_FOCUS_PROMPT.format(label=label, members=members),
+        })
+        result = ["", "", [], [], []]
+        try:
+            async for chunk in _stream_narration_filtered(
+                kp, messages, result, npcs=matcher_npcs, group_label=label,
+            ):
+                room_hub.broadcast(session_id, chunk)
+        except BaseException:
+            _persist_narration(db, session_id, result)
+            raise
+        _persist_narration(db, session_id, result)
+        combined.append(result[1])
+
+    async for chunk in _process_commands(
+        db, session_id, "\n".join(combined), module, player_char, game_session, llm,
         teammates=teammates,
     ):
         room_hub.broadcast(session_id, chunk)
