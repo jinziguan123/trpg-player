@@ -97,86 +97,47 @@ def test_written_text_near_player_stays_in_narration():
     assert "S. KANA" in result[0]  # 字母留在旁白文本里
 
 
-def test_npc_dialogue_still_extracted():
-    """模组 NPC 的引号台词仍正常抽取为对话。"""
-    text = "托马斯·金博尔抬起头，露出微笑。“下午好，年轻人。”"
+def test_say_marker_extracts_dialogue():
+    """显式 [SAY] 标记把 NPC 台词抽成对话（局部名归一到全名）。"""
+    text = "托马斯·金博尔露出和蔼的微笑。[SAY: who=托马斯]下午好，年轻人。[/SAY]他望向门口。"
     npcs = [{"name": "托马斯·金博尔"}]
-    result = ["", "", []]
+    result = ["", "", [], [], []]
     asyncio.run(_collect(
         chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
     ))
-    speakers = [name for name, _ in result[2]]
-    assert "托马斯·金博尔" in speakers
+    assert result[2] == [("托马斯·金博尔", "下午好，年轻人。")], result[2]
+    assert "[SAY" not in result[0] and "[/SAY]" not in result[0]  # 标记不入旁白
+    assert "望向门口" in result[0]
 
 
-def test_unnamed_npc_uses_role_label_not_named_npc():
-    """无名 NPC（护工）的台词归到其身份，不被硬塞给在场的有名 NPC。"""
+def test_unnamed_npc_via_say():
+    """无名 NPC（护工）用其身份作 who，归到该身份，不混入有名 NPC。"""
     npcs = [{"name": "史蒂芬·诺特"}]
     text = (
-        "史蒂芬说道：“你们去疗养院吧。”\n\n"
-        "一位路过的护工微笑致意：护工：“您是来找海恩斯院长的吧？请上二楼。”"
+        "[SAY: who=史蒂芬·诺特]你们去疗养院吧。[/SAY]\n\n"
+        "一位路过的护工迎上来。[SAY: who=护工]您是来找海恩斯院长的吧？[/SAY]"
     )
-    result = ["", "", [], []]
+    result = ["", "", [], [], []]
     asyncio.run(_collect(
         chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
     ))
     assert [n for n, _ in result[2]] == ["史蒂芬·诺特", "护工"], result[2]
 
 
-def test_sign_labels_not_extracted_as_dialogue():
-    """门牌/招牌等带引号的标识文本，不被抽成『仅在别处被提及』的 NPC 的台词。"""
-    npcs = [{"name": "维托里奥·马卡里奥"}]
+def test_bare_quotes_never_extracted():
+    """普通引号（被提及的词/门牌标识/书写内容）一律留旁白，绝不抽成对话气泡。"""
+    npcs = [{"name": "维托里奥·马卡里奥"}, {"name": "史蒂芬·诺特"}]
     text = (
-        "前租户——马卡里奥一家——卷入某种悲剧，夫妻二人双双精神失常。\n\n"
-        "北墙上排列着四扇磨砂玻璃的门，上面分别贴着褪色的字牌——“恢复名誉”、“波士顿环球报社”、“中央图书馆”。"
+        "前租户——马卡里奥一家——卷入悲剧。诺特先生听到“考古发现”这个词时皱了皱眉。\n\n"
+        "门上贴着褪色的字牌——“恢复名誉”、“波士顿环球报社”。照片角落写着“1899年”。"
     )
     result = ["", "", [], [], []]
     asyncio.run(_collect(
         chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
     ))
-    assert result[2] == [], result[2]          # 没有任何标签被错抽成对话
-    assert "恢复名誉" in result[0]              # 标识文本留在旁白
-
-
-def test_quoted_term_after_perception_verb_not_dialogue():
-    """被『听到/提到』的引号是被提及的词语而非台词，留旁白不抽成对话气泡。"""
-    npcs = [{"name": "史蒂芬·诺特"}]
-    text = "诺特先生听到“考古发现”这个词时，眉头微微皱了一下，绕过办公桌走到窗边。"
-    result = ["", "", [], [], []]
-    asyncio.run(_collect(
-        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
-    ))
-    assert result[2] == [], result[2]
-    assert "考古发现" in result[0]
-
-
-def test_written_text_stays_in_narration():
-    """『写着：「…」』是书写内容而非台词，应留在旁白、不抽成对话气泡。"""
-    npcs = [{"name": "史蒂芬·诺特"}]
-    text = '史蒂芬说道：“看这个。”\n\n照片角落写着：“1899年，圣玛丽疗养院全体人员。”'
-    result = ["", "", [], []]
-    asyncio.run(_collect(
-        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
-    ))
-    assert [n for n, _ in result[2]] == ["史蒂芬·诺特"], result[2]
-    assert "1899年" in result[0]
-
-
-def test_speaker_not_hijacked_by_mentioned_npc():
-    """当前说话人的台词不被『仅在旁白里被提及』的其他 NPC（如历史人物）夺走。"""
-    npcs = [{"name": "史蒂芬·诺特"}, {"name": "沃尔特·科比特"}]
-    text = (
-        "史蒂芬开口道：“先看看这些。”\n\n"
-        "他从桌上拿起文件递过来。这是科比特的一些零星记录，年份不全。\n\n"
-        "“档案馆四点关门，你们还有一个半小时。”\n\n"
-        "“这是通行证，带着吧。”"
-    )
-    result = ["", "", [], []]
-    asyncio.run(_collect(
-        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
-    ))
-    speakers = [name for name, _ in result[2]]
-    assert speakers == ["史蒂芬·诺特", "史蒂芬·诺特", "史蒂芬·诺特"], speakers
+    assert result[2] == [], result[2]            # 无任何引号被错抽成对话
+    for kw in ("考古发现", "恢复名誉", "1899年"):
+        assert kw in result[0]                   # 都留在旁白
 
 
 def test_group_tags_split_scenes(db_factory):
@@ -184,7 +145,7 @@ def test_group_tags_split_scenes(db_factory):
     npcs = [{"name": "护工"}]
     text = (
         "[GROUP: scene=档案馆]亨利在档案馆翻查旧卷宗，灰尘扑面。\n\n"
-        "[GROUP: scene=疗养院]莫妮卡走进疗养院走廊，护工说道：“您找海恩斯院长？”"
+        "[GROUP: scene=疗养院]莫妮卡走进疗养院走廊。[SAY: who=护工]您找海恩斯院长？[/SAY]"
     )
     result = ["", "", [], [], []]
     asyncio.run(_collect(
@@ -205,13 +166,11 @@ def test_persisted_order_interleaves_narration_and_dialogue(db_factory):
     """落库要保留「旁白/对话交错」的原始顺序（与流式渲染一致），而非旁白全在前、对话全在后。"""
     npcs = [{"name": "史蒂芬·诺特"}]
     text = (
-        "诺特先生走上前来。\n\n"
-        "“万幸你们来了。”\n\n"
-        "他压低声音，凑近了些。\n\n"
-        "“房子就在彻斯特街。”\n\n"
+        "诺特先生走上前来。[SAY: who=史蒂芬·诺特]万幸你们来了。[/SAY]"
+        "他压低声音，凑近了些。[SAY: who=史蒂芬·诺特]房子就在彻斯特街。[/SAY]"
         "他递来一把铜钥匙。"
     )
-    result = ["", "", [], []]
+    result = ["", "", [], [], []]
     asyncio.run(_collect(
         chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
     ))

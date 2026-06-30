@@ -57,40 +57,6 @@ MOVE_RE = re.compile(r"\[MOVE:([^\]]*)\]")
 # 分头行动：KP 在每个分组/场景内容前标 [GROUP: scene=<场景标签>]，后续内容归该组，前端据此分栏。内联剔除。
 GROUP_RE = re.compile(r"\[GROUP:([^\]]*)\]")
 
-# 无名/泛称 NPC 的说话人前缀识别（如「护工：」「一位医生说道：」），用于把其台词正确
-# 归到该身份名下，而不是硬塞给某个有名有姓的 NPC。
-# A：带说话动词（动词消歧，较安全，可内联）；B：裸「X：」仅当独立成标签（前为句末/冒号/换行/引号）。
-_SPEAKER_VERB_RE = re.compile(
-    r"([一-龥·]{2,5})(?:说道|说|问道|问|答道|答|开口道|低声道|喊道|叫道|笑道|沉声道|轻声道)[：:，,]\s*$"
-)
-_SPEAKER_LABEL_RE = re.compile(
-    r"(?:^|[。！？!?\n：:」』])\s*([一-龥·]{2,5})[：:]\s*$"
-)
-# 书写/铭刻/标牌类语境：其后引号是「书写/标识内容」而非台词，应留在旁白、绝不抽成对话气泡。
-# 允许标识名词与引号之间夹分隔符（——、、：、空格 等），覆盖「贴着褪色的字牌——「…」」这类。
-_WRITTEN_TEXT_RE = re.compile(
-    r"(写着|写道|写有|刻着|刻有|记着|记载|标着|印着|贴着|挂着|题写|题着|题为|落款|显示|显现|上书|"
-    r"字牌|牌子|招牌|门牌|标牌|标签|标题|铭牌|告示|名为|名叫|写作)"
-    r"[：:，,、\s—\-]*$"
-)
-# 感知/指称类语境：其后引号是「被提及/被听到的词语或名称」而非台词（如「听到『考古发现』这个词」）。
-# 这类感知/指称动词不是说话动作，引号内容应留旁白，绝不抽成对话气泡。
-_REFERENCE_BEFORE_RE = re.compile(
-    r"(听到|听见|听过|想起|想到|提到|提及|讲到|说到|读到|看到|见到|记得|念及|称为|称作|叫做|叫作|唤作|所谓|对于|关于)"
-    r"[：:，,、\s]*$"
-)
-# 易误判为说话人的旁白连接词/状语（裸「X：」分支用），出现则不当作说话人。
-_NON_SPEAKER = {
-    "这时", "此时", "随后", "接着", "然后", "突然", "忽然", "紧接", "与此", "另一",
-    "其中", "只见", "声音", "众人", "大家", "对方", "他们", "她们", "它们", "远处", "身后",
-}
-
-# 「在说话」的动词线索：角色名紧随其后才认定为说话人，区别于「仅被提及」。
-_SPEAK_CUES = (
-    "说", "道", "问", "答", "开口", "低声", "嘀咕", "喊", "叫", "吼", "沉吟",
-    "补充", "继续", "回答", "应", "讲", "嘟囔", "轻声", "冷笑", "叹", "笑",
-)
-
 CMD_TAG_PREFIXES = (
     "DICE_CHECK:", "OPPOSED_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:",
     "SCENE_CHANGE:", "RULE_LOOKUP:", "SET_FLAG:", "CLEAR_FLAG:",
@@ -344,14 +310,14 @@ async def _stream_narration_filtered(
     kp: KPAgent, messages: list[dict], result: list,
     npcs: list[dict] | None = None,
 ) -> AsyncIterator[str]:
-    """Stream KP narration, intercepting command tags and NPC dialogue.
+    """流式输出 KP 旁白，并按**显式标记**抽取 NPC 台词。
 
-    Yields ``narration`` chunks for descriptive text and ``npc_dialogue``
-    chunks for quoted NPC speech detected inline (Chinese double-quotes
-    “…”).  Command tags terminate the stream early.
+    NPC 台词只认显式标记 ``[SAY: who=<名字>]台词[/SAY]``（who 也可写成 ``[SAY: 名字]``）；
+    其余所有引号（“”/「」）一律当普通旁白文本，绝不当台词抽取——彻底规避「被提及的词语/
+    门牌标识/书写内容」被误判为对话的问题。命令标签（[DICE_CHECK] 等）仍会终止本次流；
+    [MOVE]/[GROUP] 为内联标记，剔除但不终止。
 
-    *result* is ``[narration_text, full_response, extracted_dialogues]``,
-    mutated in place.
+    *result* = ``[narration_text, full_response, extracted_dialogues, dialogue_marks, group_marks]``，原地修改。
     """
     full_response = ""
     narration = ""
@@ -360,274 +326,131 @@ async def _stream_narration_filtered(
     bracket_buf = ""
     tag_found = False
 
-    in_quote = False
-    quote_buf = ""
-    quote_written = False  # 当前引号是否为「书写内容」（写着：/刻着：…）→ 留旁白不抽对话
-    # Build (canonical_name, [searchable_parts]) for partial matching.
-    # E.g. "托马斯·金博尔" → ["托马斯·金博尔", "托马斯", "金博尔"]
-    # (canonical, [searchable_parts], is_player)。玩家方角色（真人/AI 队友）只用于
-    # 命中后**阻止**抽取，绝不作为说话人——玩家不通过 KP 旁白发言，旁白里靠近其名字
-    # 的引号文本多是书写/刻字内容或 KP 误代言，应留在旁白而非渲染成其对话气泡。
-    npc_matchers: list[tuple[str, list[str], bool]] = []
+    in_say = False
+    say_speaker = ""
+    say_buf = ""
+
+    # NPC 名归一：[SAY] 里若写了局部名（如「史蒂芬」）则归一到全名（「史蒂芬·诺特」）。
+    npc_matchers: list[tuple[str, list[str]]] = []
     for _n in (npcs or []):
         _name = _n.get("name", "")
-        if not _name:
+        if not _name or _n.get("is_player"):
             continue
         _parts = [_name]
         for _sep in ("·", "·", " ", "-"):
             if _sep in _name:
-                _parts.extend(
-                    p.strip() for p in _name.split(_sep) if len(p.strip()) >= 2
-                )
+                _parts.extend(p.strip() for p in _name.split(_sep) if len(p.strip()) >= 2)
                 break
-        npc_matchers.append((_name, _parts, bool(_n.get("is_player"))))
+        npc_matchers.append((_name, _parts))
+
+    def _canon(name: str) -> str:
+        name = (name or "").strip()
+        for canonical, parts in npc_matchers:
+            if name == canonical or name in parts:
+                return canonical
+        return name
+
     extracted = result[2]
-    # 记录每段对话插入时的旁白偏移 (offset_in_narration, name, text)，持久化时据此
-    # 把整段旁白按偏移切开、与对话交错还原——使「生成结束后从 DB 对齐」的渲染顺序与
-    # 流式时一致（旁白/对话交错），而非旁白全在前、对话全在后。
+    # 对话插入时的旁白偏移 (offset, name, text)：持久化时据此把旁白按序与对话交错还原。
     dialogue_marks: list = result[3] if len(result) > 3 else []
-
-    def _mark_dlg(name: str, text: str) -> None:
-        dialogue_marks.append((len(narration), name, text))
-
-    # 分头行动分组标记：(旁白偏移, 组标签)，持久化时据此给各段/对话打 group
+    # 分头行动分组标记 (offset, label)：持久化时据此给各段/对话打 group。
     group_marks: list = result[4] if len(result) > 4 else []
 
-    last_speaker: str | None = None
-    bracket_speaker: str | None = None
-    bracket_dialogue_buf = ""
+    def _flush_pending() -> str | None:
+        """把累积的旁白并入 narration，返回需要广播的文本（纯空白则 None）。"""
+        nonlocal pending, narration
+        if not pending:
+            return None
+        narration += pending
+        result[0] = narration
+        out = pending if pending.strip() else None
+        pending = ""
+        return out
 
-    def _match_npc(text: str) -> str | None:
-        text = text.strip()
-        for canonical, parts, is_player in npc_matchers:
-            if is_player:
-                continue
-            if text == canonical or text in parts:
-                return canonical
+    def _emit_say():
+        """收尾当前 [SAY]：产出一条 npc_dialogue（空台词则忽略）。"""
+        nonlocal in_say, say_speaker, say_buf
+        text = say_buf.strip()
+        speaker = _canon(say_speaker)
+        in_say = False
+        say_buf = ""
+        say_speaker = ""
+        if text and speaker:
+            extracted.append((speaker, text))
+            dialogue_marks.append((len(narration), speaker, text))
+            return _make_chunk("npc_dialogue", text, actor_name=speaker)
         return None
-
-    def _strip_npc_prefix(text: str) -> tuple[str, str | None]:
-        s = text.rstrip()
-        if not s:
-            return text, None
-        # 1) 已知 NPC 名前缀优先（归一到 canonical）
-        for canonical, parts, is_player in npc_matchers:
-            if is_player:
-                continue
-            for part in parts:
-                for _sfx in (part + "：", part + "说道：", part + "说：", part + "说道，", part + "说，"):
-                    if s.endswith(_sfx):
-                        return s[:-len(_sfx)], canonical
-        # 书写/铭刻语境（写着：/刻着：…）不是说话人，交由 quote_written 当书写内容留旁白
-        if _WRITTEN_TEXT_RE.search(s):
-            return text, None
-        # 2) 泛化：无名/泛称说话人（护工/医生/老板/老妇人…）——带说话动词或独立成标签的「X：」
-        for _rx in (_SPEAKER_VERB_RE, _SPEAKER_LABEL_RE):
-            m = _rx.search(s)
-            if m:
-                name = m.group(1)
-                if name not in _NON_SPEAKER:
-                    # 命中已知 NPC 的局部名（如「史蒂芬」）则归一到全名；否则保留泛称（护工…）
-                    return s[:m.start(1)], (_match_npc(name) or name)
-        return text, None
-
-    def _flush_bracket_dialogue():
-        nonlocal bracket_speaker, bracket_dialogue_buf, last_speaker
-        dialogue_text = bracket_dialogue_buf.strip()
-        result_chunk = None
-        if dialogue_text and bracket_speaker:
-            last_speaker = bracket_speaker
-            extracted.append((bracket_speaker, dialogue_text))
-            _mark_dlg(bracket_speaker, dialogue_text)
-            result_chunk = _make_chunk(
-                "npc_dialogue", dialogue_text,
-                actor_name=bracket_speaker,
-            )
-        bracket_speaker = None
-        bracket_dialogue_buf = ""
-        return result_chunk
 
     async for token in kp.narrate(messages):
         full_response += token
 
         for ch in token:
+            if in_say:
+                say_buf += ch
+                if say_buf.endswith("[/SAY]"):
+                    say_buf = say_buf[:-len("[/SAY]")]
+                    chunk = _emit_say()
+                    if chunk:
+                        yield chunk
+                elif say_buf.endswith("\n\n"):
+                    # KP 漏写结束标签：到段落边界即收尾
+                    say_buf = say_buf[:-2]
+                    chunk = _emit_say()
+                    if chunk:
+                        yield chunk
+                continue
+
             if in_bracket:
                 bracket_buf += ch
                 if ch == "]":
-                    inner = bracket_buf[:-1]
-                    if inner.strip().startswith("MOVE:"):
-                        # 内联走位标记：从旁白剔除、不终止流（仍留在 full_response 供 _process_commands 解析）
-                        bracket_buf = ""
-                        in_bracket = False
-                        continue
-                    if inner.strip().startswith("GROUP:"):
-                        # 内联分组标记：记录从此处起后续内容所属的分组/场景，从旁白剔除、不终止流
-                        kv = _parse_tag_kv(inner.strip()[len("GROUP:"):])
-                        label = (kv.get("scene") or kv.get("group") or kv.get("name") or "").strip()
-                        group_marks.append((len(narration), label or None))
-                        bracket_buf = ""
-                        in_bracket = False
-                        continue
-                    if any(
-                        inner.strip().startswith(p) for p in CMD_TAG_PREFIXES
-                    ):
-                        tag_found = True
-                        break
-                    matched_npc = _match_npc(inner) if not in_quote else None
-                    if matched_npc:
-                        if pending:
-                            narration += pending
-                            result[0] = narration
-                            if pending.strip():
-                                yield _make_chunk("narration", pending, actor_name="KP")
-                            pending = ""
-                        bracket_speaker = matched_npc
-                        bracket_dialogue_buf = ""
-                    else:
-                        restored = "[" + bracket_buf
-                        if in_quote:
-                            quote_buf += restored
-                        else:
-                            pending += restored
+                    inner_s = bracket_buf[:-1].strip()
                     bracket_buf = ""
                     in_bracket = False
+                    if inner_s.startswith("MOVE:"):
+                        continue  # 走位标记：留 full_response 供 _process_commands 解析，旁白里剔除
+                    if inner_s.startswith("GROUP:"):
+                        kv = _parse_tag_kv(inner_s[len("GROUP:"):])
+                        label = (kv.get("scene") or kv.get("group") or kv.get("name") or "").strip()
+                        group_marks.append((len(narration), label or None))
+                        continue
+                    if inner_s.startswith("SAY:"):
+                        out = _flush_pending()
+                        if out:
+                            yield _make_chunk("narration", out, actor_name="KP")
+                        rest = inner_s[len("SAY:"):].strip()
+                        kv = _parse_tag_kv(rest)
+                        say_speaker = (kv.get("who") or kv.get("name") or kv.get("speaker") or rest).strip()
+                        say_buf = ""
+                        in_say = True
+                        continue
+                    if any(inner_s.startswith(p) for p in CMD_TAG_PREFIXES):
+                        tag_found = True
+                        break
+                    # 其它方括号：原样保留为旁白文本
+                    pending += "[" + inner_s + "]"
             elif ch == "[":
-                if bracket_speaker:
-                    chunk = _flush_bracket_dialogue()
-                    if chunk:
-                        yield chunk
                 in_bracket = True
                 bracket_buf = ""
-            elif ch == "“" and not in_quote:
-                if bracket_speaker:
-                    last_speaker = bracket_speaker
-                    bracket_speaker = None
-                    bracket_dialogue_buf = ""
-                # 书写/标识（写着：/字牌——）或感知/指称（听到/提到/所谓…）语境 → 本引号是
-                # 书写内容或被提及的词语，而非台词，留旁白不抽成对话
-                _pre = pending.rstrip()
-                quote_written = bool(_WRITTEN_TEXT_RE.search(_pre) or _REFERENCE_BEFORE_RE.search(_pre))
-                pending, _speaker = _strip_npc_prefix(pending)
-                if _speaker:
-                    last_speaker = _speaker
-                if pending:
-                    narration += pending
-                    result[0] = narration
-                    if pending.strip():
-                        yield _make_chunk("narration", pending, actor_name="KP")
-                    pending = ""
-                in_quote = True
-                quote_buf = ""
-            elif ch == "”" and in_quote:
-                in_quote = False
-                dialogue_text = quote_buf.strip()
-                attributed = False
-
-                if quote_written:
-                    quote_written = False  # 书写内容：不抽对话，下方 not attributed 分支留回旁白
-                elif len(dialogue_text) >= 2 and npc_matchers:
-                    recent = narration[-160:]
-                    best_canonical: str | None = None
-                    # 1) 显式说话线索：角色名紧随说话动词/冒号（如「史蒂芬说道：」「沃尔特低声」）。
-                    #    只有这种「在说话」的信号才切换说话人；「仅被提及」的名字（如剧情里
-                    #    谈到的历史人物）不算，避免把当前说话人的台词错挂到被提及者头上。
-                    cue_speaker: str | None = None
-                    cue_is_player = False
-                    cue_pos = -1
-                    for canonical, parts, is_player in npc_matchers:
-                        for part in parts:
-                            start = 0
-                            while True:
-                                p = recent.find(part, start)
-                                if p < 0:
-                                    break
-                                after = recent[p + len(part): p + len(part) + 8]
-                                if after[:1] in ("：", ":") or any(v in after for v in _SPEAK_CUES):
-                                    if p > cue_pos:
-                                        cue_pos, cue_speaker, cue_is_player = p, canonical, is_player
-                                start = p + 1
-                    if cue_speaker is not None:
-                        # 玩家方角色被点名说话 → KP 误代言/书写内容，不抽取（留旁白）
-                        best_canonical = None if cue_is_player else cue_speaker
-                    elif last_speaker is not None:
-                        # 无新说话人线索 → 沿用当前说话人，别被仅被提及的名字夺走
-                        best_canonical = last_speaker
-                    else:
-                        # 首句且无线索：只认**紧贴引号前**（最近 24 字）出现的 NPC——即该句正在
-                        # 描述的当事人。远处仅被提及的名字（如另一段里的前租户）不作说话人，
-                        # 避免把门牌/招牌等「带引号的标签文本」错挂成某 NPC 的台词。
-                        near = narration[-24:]
-                        best_pos = -1
-                        best_len = -1
-                        best_is_player = False
-                        for canonical, parts, is_player in npc_matchers:
-                            for part in parts:
-                                pos = near.rfind(part)
-                                if pos >= 0 and (len(part), pos) > (best_len, best_pos):
-                                    best_pos, best_len = pos, len(part)
-                                    best_canonical, best_is_player = canonical, is_player
-                        if best_is_player:
-                            best_canonical = None
-                    if best_canonical:
-                        last_speaker = best_canonical
-                        extracted.append((best_canonical, dialogue_text))
-                        _mark_dlg(best_canonical, dialogue_text)
-                        yield _make_chunk(
-                            "npc_dialogue", dialogue_text,
-                            actor_name=best_canonical,
-                        )
-                        attributed = True
-
-                if not attributed:
-                    pending += "“" + quote_buf + "”"
-                quote_buf = ""
             else:
-                if in_quote:
-                    quote_buf += ch
-                elif bracket_speaker:
-                    bracket_dialogue_buf += ch
-                    if bracket_dialogue_buf.endswith("\n\n"):
-                        chunk = _flush_bracket_dialogue()
-                        if chunk:
-                            yield chunk
-                else:
-                    pending += ch
+                pending += ch
 
         if tag_found:
-            if bracket_speaker:
-                chunk = _flush_bracket_dialogue()
-                if chunk:
-                    yield chunk
-            if pending:
-                narration += pending
-                result[0] = narration
-                if pending.strip():
-                    yield _make_chunk("narration", pending, actor_name="KP")
+            out = _flush_pending()
+            if out:
+                yield _make_chunk("narration", out, actor_name="KP")
             break
 
-        if not in_bracket and not in_quote and not bracket_speaker and pending:
-            # Paragraph buffering: yield at \n\n boundaries
+        if not in_bracket and not in_say and pending:
+            # 段落边界 \n\n 处分块输出旁白
             while "\n\n" in pending:
                 idx = pending.index("\n\n") + 2
                 chunk = pending[:idx]
-                _cs = chunk.rstrip()
-                _hold = False
-                if _cs and npc_matchers:
-                    for _, _pts, _ in npc_matchers:
-                        for _p in _pts:
-                            if any(_cs.endswith(_p + s) for s in ("：", "说道：", "说：", "说道，", "说，")):
-                                _hold = True
-                                break
-                        if _hold:
-                            break
-                if _hold:
-                    break
                 pending = pending[idx:]
                 narration += chunk
                 result[0] = narration
                 if chunk.strip():
                     yield _make_chunk("narration", chunk, actor_name="KP")
-            # Sentence fallback for long buffers
+            # 长缓冲按句末分块，避免单段过久不出字
             if len(pending) > 150:
                 last_b = -1
                 for _i, _ch in enumerate(pending):
@@ -635,29 +458,22 @@ async def _stream_narration_filtered(
                         last_b = _i
                 if last_b >= 0:
                     chunk = pending[: last_b + 1]
-                    pending = pending[last_b + 1 :]
+                    pending = pending[last_b + 1:]
                     narration += chunk
                     result[0] = narration
                     if chunk.strip():
                         yield _make_chunk("narration", chunk, actor_name="KP")
 
     if not tag_found:
-        if in_bracket:
-            if in_quote:
-                quote_buf += "[" + bracket_buf
-            else:
-                pending += "[" + bracket_buf
-        if in_quote:
-            pending += "“" + quote_buf
-        if bracket_speaker:
-            chunk = _flush_bracket_dialogue()
+        if in_say:
+            chunk = _emit_say()  # 未闭合的 SAY：收尾
             if chunk:
                 yield chunk
-        if pending:
-            narration += pending
-            result[0] = narration
-            if pending.strip():
-                yield _make_chunk("narration", pending, actor_name="KP")
+        if in_bracket:
+            pending += "[" + bracket_buf  # 未闭合方括号：原样留旁白
+        out = _flush_pending()
+        if out:
+            yield _make_chunk("narration", out, actor_name="KP")
 
     result[0] = narration
     result[1] = full_response
