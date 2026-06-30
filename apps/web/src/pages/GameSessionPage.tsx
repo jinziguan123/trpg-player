@@ -31,6 +31,18 @@ function stripCommandTags(text: string): string {
     .trim()
 }
 
+// 行内 markdown：把加粗/斜体等渲染出来，但 p 退化为 span 以贴合气泡（不换行、不留段距）。
+function InlineMd({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{ p: ({ children }) => <>{children}</> }}
+    >
+      {text}
+    </ReactMarkdown>
+  )
+}
+
 /** 拆出正式行动与 OOC（小括号场外）内容，与后端 split_ooc 对齐。 */
 function splitOOC(text: string): { inChar: string; ooc: string } {
   const parts = text.match(OOC_RE) || []
@@ -532,11 +544,11 @@ export function GameSessionPage() {
                   </div>
                 ) : !isPlayer && msg.type === 'dialogue' ? (
                   <div>
-                    <span className="chat-bubble-npc">{msg.content}</span>
+                    <span className="chat-bubble-npc"><InlineMd text={msg.content} /></span>
                   </div>
                 ) : msg.type === 'action' ? (
                   <div className={isPlayer ? 'chat-player' : ''}>
-                    <span className="chat-bubble-action">{msg.content}</span>
+                    <span className="chat-bubble-action">{isPlayer ? msg.content : <InlineMd text={msg.content} />}</span>
                   </div>
                 ) : msg.type === 'narration' ? (
                   <div className="chat-content markdown-body">

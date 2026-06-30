@@ -109,6 +109,23 @@ def test_npc_dialogue_still_extracted():
     assert "托马斯·金博尔" in speakers
 
 
+def test_speaker_not_hijacked_by_mentioned_npc():
+    """当前说话人的台词不被『仅在旁白里被提及』的其他 NPC（如历史人物）夺走。"""
+    npcs = [{"name": "史蒂芬·诺特"}, {"name": "沃尔特·科比特"}]
+    text = (
+        "史蒂芬开口道：“先看看这些。”\n\n"
+        "他从桌上拿起文件递过来。这是科比特的一些零星记录，年份不全。\n\n"
+        "“档案馆四点关门，你们还有一个半小时。”\n\n"
+        "“这是通行证，带着吧。”"
+    )
+    result = ["", "", [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    speakers = [name for name, _ in result[2]]
+    assert speakers == ["史蒂芬·诺特", "史蒂芬·诺特", "史蒂芬·诺特"], speakers
+
+
 def test_persisted_order_interleaves_narration_and_dialogue(db_factory):
     """落库要保留「旁白/对话交错」的原始顺序（与流式渲染一致），而非旁白全在前、对话全在后。"""
     npcs = [{"name": "史蒂芬·诺特"}]

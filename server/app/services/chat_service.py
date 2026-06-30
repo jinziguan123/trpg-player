@@ -55,6 +55,12 @@ CLEAR_FLAG_RE = re.compile(r"\[CLEAR_FLAG:\s*flag=([^\]]+)\]")
 # 走位：KP 在叙述里就地标记角色移动到某锚点（物体/出口/NPC/其他角色/坐标）。内联剔除、不打断叙述。
 MOVE_RE = re.compile(r"\[MOVE:([^\]]*)\]")
 
+# 「在说话」的动词线索：角色名紧随其后才认定为说话人，区别于「仅被提及」。
+_SPEAK_CUES = (
+    "说", "道", "问", "答", "开口", "低声", "嘀咕", "喊", "叫", "吼", "沉吟",
+    "补充", "继续", "回答", "应", "讲", "嘟囔", "轻声", "冷笑", "叹", "笑",
+)
+
 CMD_TAG_PREFIXES = (
     "DICE_CHECK:", "OPPOSED_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:",
     "SCENE_CHANGE:", "RULE_LOOKUP:", "SET_FLAG:", "CLEAR_FLAG:",
@@ -460,25 +466,45 @@ async def _stream_narration_filtered(
                 attributed = False
 
                 if len(dialogue_text) >= 2 and npc_matchers:
-                    context = narration[-300:]
+                    recent = narration[-160:]
                     best_canonical: str | None = None
-                    best_pos = -1
-                    best_len = -1
-                    best_is_player = False
+                    # 1) 显式说话线索：角色名紧随说话动词/冒号（如「史蒂芬说道：」「沃尔特低声」）。
+                    #    只有这种「在说话」的信号才切换说话人；「仅被提及」的名字（如剧情里
+                    #    谈到的历史人物）不算，避免把当前说话人的台词错挂到被提及者头上。
+                    cue_speaker: str | None = None
+                    cue_is_player = False
+                    cue_pos = -1
                     for canonical, parts, is_player in npc_matchers:
                         for part in parts:
-                            pos = context.rfind(part)
-                            if pos >= 0 and (len(part), pos) > (best_len, best_pos):
-                                best_pos = pos
-                                best_len = len(part)
-                                best_canonical = canonical
-                                best_is_player = is_player
-                    if best_is_player:
-                        # 最近的匹配是玩家方角色 → 该引号不是 NPC 台词（书写/刻字内容
-                        # 或 KP 误代言）→ 不抽取，整段留在旁白里
-                        best_canonical = None
-                    elif best_canonical is None:
+                            start = 0
+                            while True:
+                                p = recent.find(part, start)
+                                if p < 0:
+                                    break
+                                after = recent[p + len(part): p + len(part) + 8]
+                                if after[:1] in ("：", ":") or any(v in after for v in _SPEAK_CUES):
+                                    if p > cue_pos:
+                                        cue_pos, cue_speaker, cue_is_player = p, canonical, is_player
+                                start = p + 1
+                    if cue_speaker is not None:
+                        # 玩家方角色被点名说话 → KP 误代言/书写内容，不抽取（留旁白）
+                        best_canonical = None if cue_is_player else cue_speaker
+                    elif last_speaker is not None:
+                        # 无新说话人线索 → 沿用当前说话人，别被仅被提及的名字夺走
                         best_canonical = last_speaker
+                    else:
+                        # 首句且无线索：退化到最近被提及的非玩家 NPC；最近的是玩家则留旁白
+                        best_pos = -1
+                        best_len = -1
+                        best_is_player = False
+                        for canonical, parts, is_player in npc_matchers:
+                            for part in parts:
+                                pos = recent.rfind(part)
+                                if pos >= 0 and (len(part), pos) > (best_len, best_pos):
+                                    best_pos, best_len = pos, len(part)
+                                    best_canonical, best_is_player = canonical, is_player
+                        if best_is_player:
+                            best_canonical = None
                     if best_canonical:
                         last_speaker = best_canonical
                         extracted.append((best_canonical, dialogue_text))
