@@ -10,10 +10,11 @@ import { PartyRoster } from '../components/game/PartyRoster'
 import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { useMapAssets } from '../components/module/useMapAssets'
-import { GiReturnArrow, GiRollingDices, GiScrollUnfurled } from 'react-icons/gi'
+import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker } from 'react-icons/gi'
 import { Copy, Bot, Map as MapIcon, ChevronUp } from 'lucide-react'
 
 interface SceneMapPayload { scene_id: string | null; scene_name: string | null; map: TileMap | null; entities: MapEntity[] }
+interface KnownLocation { id: string; name: string; current: boolean; visited: boolean }
 
 const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE|SAY|GROUP|MOVE)[^\]]*\]|\[\/SAY\]/g
 const OOC_RE = /（[^（）]*）|\([^()]*\)/g
@@ -104,6 +105,8 @@ export function GameSessionPage() {
   const [refreshTick, setRefreshTick] = useState(0)
   const [showPanel, setShowPanel] = useState(true)
   const [showMap, setShowMap] = useState(false)
+  const [showBigMap, setShowBigMap] = useState(false)         // 大地图（已知地点前往）
+  const [locations, setLocations] = useState<KnownLocation[]>([])
   const [splitView, setSplitView] = useState(true)            // 分头行动分栏（检测到多组时生效）
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set())  // 被收起的分组
   const [sceneMap, setSceneMap] = useState<SceneMapPayload | null>(null)
@@ -304,11 +307,29 @@ export function GameSessionPage() {
     }
   }, [shownCharId, refreshTick])
 
-  // 场景地图：展开时拉取当前场景的地图+实体位置；场景切换/生成结束(refreshTick)后刷新
+  // 场景地图：展开时拉取「我」所在场景的地图+实体位置；场景切换/生成结束(refreshTick)后刷新。
+  // 带 char_id → 分头行动时地图跟随我自己所在的场景，而非会话级单一场景。
   useEffect(() => {
     if (!showMap || !sessionId) return
-    api.get<SceneMapPayload>(`/sessions/${sessionId}/scene-map`).then(setSceneMap).catch(() => setSceneMap(null))
-  }, [showMap, sessionId, currentSession?.current_scene_id, refreshTick])
+    const q = myCharId ? `?char_id=${myCharId}` : ''
+    api.get<SceneMapPayload>(`/sessions/${sessionId}/scene-map${q}`).then(setSceneMap).catch(() => setSceneMap(null))
+  }, [showMap, sessionId, myCharId, currentSession?.current_scene_id, refreshTick])
+
+  // 大地图（已知地点）：展开时拉取，前往后/生成结束刷新
+  useEffect(() => {
+    if (!showBigMap || !sessionId) return
+    const q = myCharId ? `?char_id=${myCharId}` : ''
+    api.get<{ locations: KnownLocation[] }>(`/sessions/${sessionId}/locations${q}`)
+      .then((r) => setLocations(r.locations || [])).catch(() => setLocations([]))
+  }, [showBigMap, sessionId, myCharId, currentSession?.current_scene_id, refreshTick])
+
+  const travelTo = async (sceneId: string) => {
+    if (!currentSession || streaming) return
+    try {
+      await api.post(`/sessions/${currentSession.id}/travel`, { scene_id: sceneId, acting_character_id: myCharId })
+      setShowBigMap(false)
+    } catch { /* 已在该地点 / 不可前往 等，由后端校验 */ }
+  }
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -435,6 +456,13 @@ export function GameSessionPage() {
           )}
           <div className="ml-auto flex items-center gap-2">
             <button
+              onClick={() => setShowBigMap((v) => !v)}
+              className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
+              title="大地图：前往已知地点"
+            >
+              <GiTreasureMap size={13} /> {showBigMap ? '收起大地图' : '大地图'}
+            </button>
+            <button
               onClick={() => setShowMap(!showMap)}
               className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
             >
@@ -455,6 +483,46 @@ export function GameSessionPage() {
               selectedId={shownCharId}
               onSelect={(id) => { setPanelCharId(id); setShowPanel(true) }}
             />
+          </div>
+        )}
+        {showBigMap && (
+          <div className="pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
+            <div className="rounded-md p-3" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-text-accent)' }}>
+                  <GiTreasureMap size={13} /> 大地图 · 前往已知地点
+                </span>
+                <button onClick={() => setShowBigMap(false)} title="收起大地图" style={{ color: 'var(--color-text-secondary)' }}><ChevronUp size={14} /></button>
+              </div>
+              {locations.length === 0 ? (
+                <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>暂无已知的可前往地点。</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {locations.map((loc) => (
+                    <button
+                      key={loc.id}
+                      disabled={loc.current || streaming}
+                      onClick={() => travelTo(loc.id)}
+                      className="text-xs px-2.5 py-1 rounded border inline-flex items-center gap-1"
+                      style={{
+                        borderColor: loc.current ? 'var(--color-accent)' : 'var(--color-border)',
+                        background: loc.current ? 'var(--color-accent)' : 'transparent',
+                        color: loc.current ? '#fff' : 'var(--color-text-primary)',
+                        opacity: streaming && !loc.current ? 0.5 : 1,
+                        cursor: loc.current || streaming ? 'default' : 'pointer',
+                      }}
+                      title={loc.current ? '你正在此处' : (loc.visited ? '前往（已探索）' : '前往（新地点）')}
+                    >
+                      {loc.current ? <GiPositionMarker size={12} /> : <GiReturnArrow size={12} style={{ transform: 'scaleX(-1)' }} />}
+                      {loc.name}{loc.current ? '（当前）' : ''}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <p className="text-[11px] mt-2" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>
+                只显示你已知晓的地点；前往后由 KP 叙述抵达见闻。
+              </p>
+            </div>
           </div>
         )}
         {showMap && (
@@ -650,8 +718,9 @@ export function GameSessionPage() {
             return (
               <div key={`c${i}`} className="flex gap-3 overflow-x-auto items-start my-1">
                 {shown.map((g) => (
-                  <div key={g} className="flex-1 min-w-[280px]"
-                    style={{ borderLeft: '2px solid var(--color-border)', paddingLeft: 10 }}>
+                  // 每个场景列各自独立滚动：长短不一时互不牵连，可单独翻看某一条线
+                  <div key={g} className="flex-1 min-w-[280px] overflow-y-auto chat-scroll pr-1"
+                    style={{ borderLeft: '2px solid var(--color-border)', paddingLeft: 10, maxHeight: 'calc(100vh - 230px)' }}>
                     <div className="text-xs font-semibold mb-1 sticky top-0 z-10 py-1"
                       style={{ color: 'var(--color-text-accent)', background: 'var(--color-bg-primary)' }}>
                       {g}
