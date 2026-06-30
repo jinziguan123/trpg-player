@@ -169,6 +169,31 @@ def test_generation_saves_on_interrupt(db_factory, monkeypatch):
     assert narrations[0].content == "KP 刚说到一半"
 
 
+def test_opening_saves_partial_on_stream_error(db_factory, monkeypatch):
+    """开场流式中途报错（供应商抖动断流）时，已生成片段应落库，避免客户端 resync 后聊天清空。"""
+    _patch_runtime(monkeypatch, db_factory)
+
+    async def fake_stream(kp, messages, result, npcs=None):
+        result[0] = "雾气弥漫的码头，远处传来"
+        yield chat_service._make_chunk("narration", "雾气弥漫的码头，远处传来", actor_name="KP")
+        raise RuntimeError("provider stream dropped")
+
+    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+
+    db = db_factory()
+    session_id = _seed_session(db)
+    # 不应抛出（run_opening_generation 吞异常并落库提示）
+    asyncio.run(chat_service.run_opening_generation(session_id))
+
+    # 已生成的开场片段落库（非空，绝不丢成空历史）
+    narrations = _narrations(db_factory, session_id)
+    assert len(narrations) == 1
+    assert narrations[0].content == "雾气弥漫的码头，远处传来"
+    # 同时落了一条系统提示，供 resync 后仍可见
+    systems = [e for e in session_service.get_session_events(db_factory(), session_id) if e.event_type == "system"]
+    assert any("中断" in (e.content or "") for e in systems)
+
+
 def test_generation_saves_once_on_success(db_factory, monkeypatch):
     """正常完成时落库一次且不重复。"""
     _patch_runtime(monkeypatch, db_factory)

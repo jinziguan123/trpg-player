@@ -663,6 +663,14 @@ async def _run_team_turn(
             yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=dev.id)
 
 
+def _persist_error_notice(db: Session, session_id: str, text: str) -> None:
+    """把生成中断提示落库为 system 事件，保证在客户端 resync 后仍可见。"""
+    try:
+        session_service.add_event(db, session_id, "system", text, actor_name="系统")
+    except Exception:
+        logger.exception("落库生成中断提示失败: session=%s", session_id)
+
+
 def _persist_narration(db: Session, session_id: str, result: list) -> None:
     narration_text = result[0].rstrip()
     if narration_text:
@@ -694,15 +702,16 @@ async def _run_generation(
     )
 
     result = ["", "", []]
-    # try/finally 保证流被取消（如硬取消生成 task）时已生成的叙事仍落库，
-    # 避免「刷新丢失」类问题；成功路径只落库一次。
+    # 取消（硬取消 task）或流式中途报错（如供应商抖动断流）时，已生成的叙事都要落库，
+    # 否则客户端在收到 done 后 resync 会拉到空历史，造成「生成到一半聊天全部消失」。
     matcher_npcs = _matcher_npcs(module, teammates)
     try:
         async for chunk in _stream_narration_filtered(
             kp, messages, result, npcs=matcher_npcs,
         ):
             room_hub.broadcast(session_id, chunk)
-    except asyncio.CancelledError:
+    except BaseException:
+        # CancelledError(继承 BaseException) 与普通异常都先把已生成片段落库再上抛
         _persist_narration(db, session_id, result)
         raise
     _persist_narration(db, session_id, result)
@@ -747,7 +756,7 @@ async def run_chat_generation(session_id: str) -> None:
         logger.info("生成被取消: session=%s", session_id)
     except Exception:
         logger.exception("生成失败: session=%s", session_id)
-        room_hub.broadcast(session_id, _make_chunk("system", "生成出错，请重试"))
+        _persist_error_notice(db, session_id, "（KP 生成中断，请重试或继续输入）")
         room_hub.broadcast(session_id, _make_chunk("done"))
     finally:
         db.close()
@@ -905,7 +914,8 @@ async def run_opening_generation(session_id: str) -> None:
         logger.info("开场生成被取消: session=%s", session_id)
     except Exception:
         logger.exception("开场生成失败: session=%s", session_id)
-        room_hub.broadcast(session_id, _make_chunk("system", "生成出错，请重试"))
+        # 落库系统提示（而非仅广播）：否则客户端收到 done 后 resync 会把它一并抹掉
+        _persist_error_notice(db, session_id, "（开场生成中断，请点重试或刷新）")
         room_hub.broadcast(session_id, _make_chunk("done"))
     finally:
         db.close()
