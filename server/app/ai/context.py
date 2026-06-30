@@ -10,6 +10,7 @@ from app.ai.prompts.kp_system import (
     KP_SYSTEM_PROMPT,
     KP_OPENING_PROMPT,
     MOVE_INSTRUCTION,
+    GROUP_INSTRUCTION,
     RULE_LOOKUP_INSTRUCTION,
     PLOT_FLAG_INSTRUCTION,
 )
@@ -427,6 +428,10 @@ def build_kp_context(
     # 仅当前场景有地图时，广告 [MOVE] 走位能力（让地图反映玩家/NPC 实际位置）。
     if current_scene and current_scene.get("map"):
         system_content += MOVE_INSTRUCTION
+
+    # 队伍可能分头（有队友）时，广告 [GROUP] 分组标记，便于分头行动分栏展示。
+    if not is_opening and teammates:
+        system_content += GROUP_INSTRUCTION
 
     party_char_ids = {player_char.id} | {t.id for t in teammates}
 

@@ -503,9 +503,13 @@ def add_event(
     actor_name: str = "",
     visibility: list[str] | None = None,
     metadata: dict | None = None,
+    group: str | None = None,
 ) -> EventLog:
     seq = get_next_sequence_num(db, session_id)
     meta = dict(metadata or {})
+    # 分头行动：同一回合里不同分组/场景的内容，用 group 标签分栏渲染（KP 经 [GROUP] 标注）。
+    if group:
+        meta["group"] = group
     # 给事件打上「发生在哪个场景」的戳：NPC 上下文据此只看自己所在场景的事件，
     # 避免一个 NPC 知道玩家在别处发生的事（信息隔离）。调用方未显式给 scene_id 时取当前场景。
     if "scene_id" not in meta:

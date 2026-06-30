@@ -54,6 +54,8 @@ SET_FLAG_RE = re.compile(r"\[SET_FLAG:\s*flag=([^\]]+)\]")
 CLEAR_FLAG_RE = re.compile(r"\[CLEAR_FLAG:\s*flag=([^\]]+)\]")
 # 走位：KP 在叙述里就地标记角色移动到某锚点（物体/出口/NPC/其他角色/坐标）。内联剔除、不打断叙述。
 MOVE_RE = re.compile(r"\[MOVE:([^\]]*)\]")
+# 分头行动：KP 在每个分组/场景内容前标 [GROUP: scene=<场景标签>]，后续内容归该组，前端据此分栏。内联剔除。
+GROUP_RE = re.compile(r"\[GROUP:([^\]]*)\]")
 
 # 无名/泛称 NPC 的说话人前缀识别（如「护工：」「一位医生说道：」），用于把其台词正确
 # 归到该身份名下，而不是硬塞给某个有名有姓的 NPC。
@@ -379,6 +381,9 @@ async def _stream_narration_filtered(
     def _mark_dlg(name: str, text: str) -> None:
         dialogue_marks.append((len(narration), name, text))
 
+    # 分头行动分组标记：(旁白偏移, 组标签)，持久化时据此给各段/对话打 group
+    group_marks: list = result[4] if len(result) > 4 else []
+
     last_speaker: str | None = None
     bracket_speaker: str | None = None
     bracket_dialogue_buf = ""
@@ -443,6 +448,14 @@ async def _stream_narration_filtered(
                     inner = bracket_buf[:-1]
                     if inner.strip().startswith("MOVE:"):
                         # 内联走位标记：从旁白剔除、不终止流（仍留在 full_response 供 _process_commands 解析）
+                        bracket_buf = ""
+                        in_bracket = False
+                        continue
+                    if inner.strip().startswith("GROUP:"):
+                        # 内联分组标记：记录从此处起后续内容所属的分组/场景，从旁白剔除、不终止流
+                        kv = _parse_tag_kv(inner.strip()[len("GROUP:"):])
+                        label = (kv.get("scene") or kv.get("group") or kv.get("name") or "").strip()
+                        group_marks.append((len(narration), label or None))
                         bracket_buf = ""
                         in_bracket = False
                         continue
@@ -638,6 +651,8 @@ async def _stream_narration_filtered(
         result[2] = extracted
     if len(result) > 3:
         result[3] = dialogue_marks
+    if len(result) > 4:
+        result[4] = group_marks
 
 
 MAX_TEAMMATES_PER_TURN = 4
@@ -760,27 +775,40 @@ def _persist_narration(db: Session, session_id: str, result: list) -> None:
     """
     narration = result[0]
     marks = result[3] if len(result) > 3 else None
+    group_marks = sorted(result[4], key=lambda g: g[0]) if len(result) > 4 and result[4] else []
 
-    def _add_narr(text: str) -> None:
+    def _group_at(offset: int) -> str | None:
+        g = None
+        for off, label in group_marks:
+            if off <= offset:
+                g = label
+            else:
+                break
+        return g
+
+    def _add_narr(text: str, offset: int) -> None:
         t = text.rstrip()
         if t:
-            session_service.add_event(db, session_id, "narration", t, actor_name="KP")
+            session_service.add_event(
+                db, session_id, "narration", t, actor_name="KP", group=_group_at(offset),
+            )
 
     if marks is not None:
         pos = 0
         for off, npc_name, dialogue_text in sorted(marks, key=lambda m: m[0]):
             off = max(pos, min(off, len(narration)))
-            _add_narr(narration[pos:off])
+            _add_narr(narration[pos:off], pos)
             if dialogue_text:
                 session_service.add_event(
                     db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
+                    group=_group_at(off),
                 )
             pos = off
-        _add_narr(narration[pos:])
+        _add_narr(narration[pos:], pos)
         return
 
     # 回退：无交错信息
-    _add_narr(narration)
+    _add_narr(narration, 0)
     for npc_name, dialogue_text in result[2]:
         session_service.add_event(
             db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
@@ -805,7 +833,7 @@ async def _run_generation(
         rules_lookup_enabled=rules_enabled,
     )
 
-    result = ["", "", [], []]
+    result = ["", "", [], [], []]
     # 取消（硬取消 task）或流式中途报错（如供应商抖动断流）时，已生成的叙事都要落库，
     # 否则客户端在收到 done 后 resync 会拉到空历史，造成「生成到一半聊天全部消失」。
     matcher_npcs = _matcher_npcs(module, teammates)
@@ -880,7 +908,7 @@ async def _run_kp_turn(
     messages.append({"role": "user", "content": user_prompt})
 
     kp = KPAgent(llm)
-    res = ["", "", [], []]
+    res = ["", "", [], [], []]
     try:
         async for chunk in _stream_narration_filtered(
             kp, messages, res, npcs=_matcher_npcs(module, party_others),
@@ -1266,7 +1294,7 @@ async def _process_commands(
         messages.append({"role": "user", "content": continuation_prompt})
 
         kp = KPAgent(llm)
-        cont_result = ["", "", [], []]
+        cont_result = ["", "", [], [], []]
         try:
             async for chunk in _stream_narration_filtered(
                 kp, messages, cont_result, npcs=_matcher_npcs(module, teammates),
@@ -1383,7 +1411,7 @@ async def _handle_rule_lookup(
     messages.append({"role": "user", "content": continuation})
 
     kp = KPAgent(llm)
-    cont_result = ["", "", [], []]
+    cont_result = ["", "", [], [], []]
     try:
         async for chunk in _stream_narration_filtered(
             kp, messages, cont_result, npcs=_matcher_npcs(module, teammates),

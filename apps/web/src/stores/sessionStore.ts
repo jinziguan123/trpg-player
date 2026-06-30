@@ -34,7 +34,7 @@ interface GameSession {
   created_at?: string
 }
 
-interface ChatMessage {
+export interface ChatMessage {
   id: string
   type: string
   content: string

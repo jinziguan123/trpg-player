@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { toast } from 'sonner'
 import { api, connectSSE } from '../api/client'
-import { useSessionStore } from '../stores/sessionStore'
+import { useSessionStore, type ChatMessage } from '../stores/sessionStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { PartyRoster } from '../components/game/PartyRoster'
 import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
@@ -103,6 +103,8 @@ export function GameSessionPage() {
   const [refreshTick, setRefreshTick] = useState(0)
   const [showPanel, setShowPanel] = useState(true)
   const [showMap, setShowMap] = useState(false)
+  const [splitView, setSplitView] = useState(true)            // 分头行动分栏（检测到多组时生效）
+  const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set())  // 被收起的分组
   const [sceneMap, setSceneMap] = useState<SceneMapPayload | null>(null)
   const mapAssets = useMapAssets()
 
@@ -387,6 +389,19 @@ export function GameSessionPage() {
     return <div className="flex items-center justify-center h-full text-sm" style={{ color: 'var(--color-text-secondary)' }}>加载中...</div>
   }
 
+  // 分头行动：消息按 metadata.group 分组；出现 ≥2 个分组时才提供分栏
+  const chatGroups: string[] = []
+  for (const m of messages) {
+    const g = String(m.metadata?.group || '').trim() || '主线'
+    if (!chatGroups.includes(g)) chatGroups.push(g)
+  }
+  const splitAvailable = chatGroups.length >= 2
+  const toggleGroup = (g: string) => setHiddenGroups((prev) => {
+    const next = new Set(prev)
+    if (next.has(g)) next.delete(g); else next.add(g)
+    return next
+  })
+
   return (
     <div className="flex h-full gap-4">
       <div className="flex flex-col flex-1 min-w-0">
@@ -454,13 +469,35 @@ export function GameSessionPage() {
             与房间连接中断，正在重连…
           </div>
         )}
+        {splitAvailable && (
+          <div className="flex items-center gap-1.5 px-1 pb-1 mb-1 text-xs flex-wrap" style={{ borderBottom: '1px solid var(--color-border)' }}>
+            <span style={{ color: 'var(--color-text-secondary)' }}>分头行动：</span>
+            <button
+              onClick={() => setSplitView((v) => !v)}
+              className="px-2 py-0.5 rounded border"
+              style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-accent)' }}
+            >{splitView ? '合并为单列' : '分栏显示'}</button>
+            {splitView && chatGroups.map((g) => {
+              const on = !hiddenGroups.has(g)
+              return (
+                <button key={g} onClick={() => toggleGroup(g)} className="px-2 py-0.5 rounded border"
+                  style={{
+                    borderColor: on ? 'var(--color-accent)' : 'var(--color-border)',
+                    background: on ? 'var(--color-accent)' : 'transparent',
+                    color: on ? '#fff' : 'var(--color-text-secondary)',
+                  }}>{g}</button>
+              )
+            })}
+          </div>
+        )}
         <div ref={scrollRef} className="flex-1 overflow-auto pb-4 chat-scroll">
           {loadingOlder && (
             <div className="text-center py-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
               加载更早的记录...
             </div>
           )}
-          {messages.map((msg) => {
+          {(() => {
+          const renderOne = (msg: ChatMessage) => {
             const isPlayer = !!msg.metadata?.is_player
             const showLabel = msg.actor_name && (msg.type === 'dialogue' || msg.type === 'action')
             if (msg.type === 'ooc') {
@@ -563,7 +600,30 @@ export function GameSessionPage() {
                 )}
               </div>
             )
-          })}
+          }
+          // 分头行动：按 metadata.group 分栏；无组归「主线」。仅当出现 ≥2 个分组才分栏。
+          const groupOf = (m: ChatMessage) => (String(m.metadata?.group || '').trim() || '主线')
+          const allGroups: string[] = []
+          for (const m of messages) { const g = groupOf(m); if (!allGroups.includes(g)) allGroups.push(g) }
+          if (!splitView || allGroups.length < 2) {
+            return messages.map(renderOne)
+          }
+          const shown = allGroups.filter((g) => !hiddenGroups.has(g))
+          return (
+            <div className="flex gap-3 overflow-x-auto items-start">
+              {shown.map((g) => (
+                <div key={g} className="flex-1 min-w-[300px]"
+                  style={{ borderLeft: g === '主线' ? 'none' : '2px solid var(--color-border)', paddingLeft: g === '主线' ? 0 : 10 }}>
+                  <div className="text-xs font-semibold mb-1 sticky top-0 z-10 py-1"
+                    style={{ color: 'var(--color-text-accent)', background: 'var(--color-bg-primary)' }}>
+                    {g}
+                  </div>
+                  {messages.filter((m) => groupOf(m) === g).map(renderOne)}
+                </div>
+              ))}
+            </div>
+          )
+          })()}
           {streaming && (
             <div className="chat-loading flex items-center gap-2">
               <span className="dot-pulse" />

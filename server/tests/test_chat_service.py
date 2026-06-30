@@ -152,6 +152,28 @@ def test_speaker_not_hijacked_by_mentioned_npc():
     assert speakers == ["史蒂芬·诺特", "史蒂芬·诺特", "史蒂芬·诺特"], speakers
 
 
+def test_group_tags_split_scenes(db_factory):
+    """分头行动：[GROUP] 标记把各组内容落库到对应 group，供前端分栏。"""
+    npcs = [{"name": "护工"}]
+    text = (
+        "[GROUP: scene=档案馆]亨利在档案馆翻查旧卷宗，灰尘扑面。\n\n"
+        "[GROUP: scene=疗养院]莫妮卡走进疗养院走廊，护工说道：“您找海恩斯院长？”"
+    )
+    result = ["", "", [], [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    db = db_factory()
+    session_id = _seed_session(db)
+    chat_service._persist_narration(db, session_id, result)
+    import json as _json
+    evs = session_service.get_session_events(db_factory(), session_id)
+    groups = [(_json.loads(e.metadata_ or "{}") if isinstance(e.metadata_, str) else (e.metadata_ or {})).get("group") for e in evs]
+    # 两组内容各自带 group；标记本身不出现在旁白文本里
+    assert "档案馆" in groups and "疗养院" in groups
+    assert all("[GROUP" not in (e.content or "") for e in evs)
+
+
 def test_persisted_order_interleaves_narration_and_dialogue(db_factory):
     """落库要保留「旁白/对话交错」的原始顺序（与流式渲染一致），而非旁白全在前、对话全在后。"""
     npcs = [{"name": "史蒂芬·诺特"}]
