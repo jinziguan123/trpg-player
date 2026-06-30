@@ -189,7 +189,8 @@ def locations(session_id: str, char_id: str | None = None, db: Session = Depends
     module = db.get(Module, game_session.module_id)
     if not module:
         raise HTTPException(404, "模组不存在")
-    return {"locations": session_service.list_known_locations(module, game_session, char_id=char_id)}
+    events = session_service.get_session_events(db, session_id)
+    return {"locations": session_service.list_known_locations(module, game_session, char_id=char_id, events=events)}
 
 
 @router.post("/{session_id}/travel")
@@ -216,8 +217,8 @@ async def travel(
         raise HTTPException(403, str(e))
 
     module = db.get(Module, game_session.module_id)
-    scene_id = (data.scene_id or "").strip()
-    known = session_service.known_scene_ids(module, game_session) if module else set()
+    events = session_service.get_session_events(db, session_id)
+    known = session_service.known_scene_ids(module, game_session, events) if module else set()
     if scene_id not in known:
         raise HTTPException(400, "该地点尚未知晓或不可前往")
     if session_service.get_char_location(game_session, actor.id) == scene_id:

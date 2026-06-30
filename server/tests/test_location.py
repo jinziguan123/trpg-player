@@ -43,21 +43,43 @@ def _seed(db):
     return session.id, pc.id, ally.id, module.id
 
 
-def test_known_locations_are_visited_plus_neighbors(db_factory):
+class _Ev:
+    def __init__(self, etype, content):
+        self.event_type, self.content = etype, content
+
+
+def test_known_locations_are_visited_plus_mentioned(db_factory):
     db = db_factory()
     sid, pc_id, _, mod_id = _seed(db)
     session = db.get(GameSession, sid)
     module = db.get(Module, mod_id)
-    known = session_service.known_scene_ids(module, session)
-    assert known == {"a", "b", "c"}      # d 不与已访问相连 → 不可见
-    locs = session_service.list_known_locations(module, session, char_id=pc_id)
+    # 没有任何对话提及时，只有已访问/当前所在（a）可见
+    assert session_service.known_scene_ids(module, session, []) == {"a"}
+    # 对话里提到「图书馆」「档案馆」→ 解锁 b、c；d（隐秘地窖）未提及仍隐藏
+    events = [_Ev("narration", "门上挂着牌子：图书馆、档案馆。")]
+    known = session_service.known_scene_ids(module, session, events)
+    assert known == {"a", "b", "c"}
+    assert "d" not in known
+    locs = session_service.list_known_locations(module, session, char_id=pc_id, events=events)
     by_id = {x["id"]: x for x in locs}
     assert by_id["a"]["current"] is True
-    assert by_id["b"]["visited"] is False and by_id["c"]["visited"] is False
     assert "d" not in by_id
 
 
-def test_set_char_location_moves_player_and_reveals(db_factory):
+def test_known_location_unlocked_by_facility_suffix(db_factory):
+    """提到设施类型后缀（「疗养院」）即可解锁完整标题含该后缀的地点（如「罗克斯伯里疗养院」）。"""
+    db = db_factory()
+    sid, pc_id, _, mod_id = _seed(db)
+    # 给模组加一个「罗克斯伯里疗养院」场景
+    module = db.get(Module, mod_id)
+    module.scenes = _SCENES + [{"id": "san", "title": "罗克斯伯里疗养院", "connections": []}]
+    db.commit()
+    session = db.get(GameSession, sid)
+    events = [_Ev("dialogue", "我们得去那家疗养院问问加布里埃尔。")]
+    assert "san" in session_service.known_scene_ids(module, session, events)
+
+
+def test_set_char_location_moves_player(db_factory):
     db = db_factory()
     sid, pc_id, _, mod_id = _seed(db)
     session_service.set_char_location(db, sid, pc_id, "c")
@@ -65,9 +87,6 @@ def test_set_char_location_moves_player_and_reveals(db_factory):
     assert session.current_scene_id == "c"                 # 主角移动同步 current_scene_id
     assert session_service.get_char_location(session, pc_id) == "c"
     assert "c" in (session.world_state or {}).get("visited_scenes")
-    # 抵达 c 后，d（与 c 相连）成为新的已知地点
-    module = db.get(Module, mod_id)
-    assert "d" in session_service.known_scene_ids(module, session)
 
 
 def test_scene_map_follows_char_and_filters_party(db_factory):

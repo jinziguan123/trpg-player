@@ -628,27 +628,66 @@ def set_char_location(db: Session, session_id: str, char_id: str, scene_id: str)
     db.commit()
 
 
-def known_scene_ids(module, session: GameSession) -> set:
-    """已知地点 = 已访问场景 ∪ 与之直接相连（connections）的场景。未探索且不相连的不显示。"""
+# 地点名常见的「设施类型」后缀：按长度从长到短，供从场景标题析出可被对话提及的关键词。
+_FACILITY_SUFFIXES = [
+    "疗养院", "图书馆", "档案馆", "博物馆", "派出所", "警察局", "礼拜堂", "老房子",
+    "报社", "医院", "教堂", "法院", "老宅", "宅邸", "公寓", "旅馆", "酒店",
+    "饭店", "学校", "大学", "中学", "小学", "墓地", "墓园", "工厂", "仓库", "教会",
+    "庄园", "别墅", "城堡", "监狱", "银行", "邮局", "车站", "码头", "农场", "矿场",
+    "洞穴", "地窖", "街区", "房子", "宅", "街",
+]
+
+
+def _scene_aliases(title: str) -> set[str]:
+    """从场景标题析出可被对话「提及」的别名：完整标题 + 设施类型后缀 + 专名前缀。
+
+    例：「罗克斯伯里疗养院」→ {完整标题, "疗养院", "罗克斯伯里"}，
+    这样对话里出现「疗养院」即可解锁该地点。
+    """
+    title = (title or "").strip()
+    aliases = {title} if title else set()
+    for suf in _FACILITY_SUFFIXES:
+        if title.endswith(suf) and len(title) > len(suf):
+            aliases.add(suf)
+            prefix = title[: -len(suf)].strip("·的 ")
+            if len(prefix) >= 2:
+                aliases.add(prefix)
+            break
+    return {a for a in aliases if len(a) >= 2}
+
+
+def known_scene_ids(module, session: GameSession, events: list | None = None) -> set:
+    """已知地点 = 已访问/当前所在 ∪ 对话中被提及过的场景（KP 或角色提到其名即解锁）。
+
+    未访问、且对话从未提及的地点不在大地图上显示——避免直接剧透全图。
+    """
     by_id = {s.get("id"): s for s in (module.scenes or []) if s.get("id")}
-    visited = set((session.world_state or {}).get("visited_scenes") or [])
+    known = set((session.world_state or {}).get("visited_scenes") or [])
     if session.current_scene_id:
-        visited.add(session.current_scene_id)
-    known = set(visited)
-    for sid in list(visited):
-        for nb in (by_id.get(sid, {}) or {}).get("connections") or []:
-            if nb in by_id:
-                known.add(nb)
+        known.add(session.current_scene_id)
+    convo = "\n".join(
+        (getattr(e, "content", "") or "")
+        for e in (events or [])
+        if getattr(e, "event_type", None) in ("narration", "dialogue", "action", "system")
+    )
+    if convo:
+        for sid, s in by_id.items():
+            if sid in known:
+                continue
+            if any(alias in convo for alias in _scene_aliases(s.get("title") or s.get("name") or "")):
+                known.add(sid)
     return {sid for sid in known if sid in by_id}
 
 
-def list_known_locations(module, session: GameSession, char_id: str | None = None) -> list[dict]:
+def list_known_locations(
+    module, session: GameSession, char_id: str | None = None, events: list | None = None,
+) -> list[dict]:
     """供「大地图」渲染：已知地点列表（当前所在高亮、已访问标记）。"""
     by_id = {s.get("id"): s for s in (module.scenes or []) if s.get("id")}
     visited = set((session.world_state or {}).get("visited_scenes") or [])
     cur = get_char_location(session, char_id)
     out = []
-    for sid in known_scene_ids(module, session):
+    for sid in known_scene_ids(module, session, events):
         s = by_id[sid]
         out.append({
             "id": sid,

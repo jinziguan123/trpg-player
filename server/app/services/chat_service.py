@@ -1054,6 +1054,19 @@ async def _run_split_generation(
     # 「玩家行动 + KP 叙事」自成一体（而非行动全挤在主线、叙事另起一列）。
     _tag_turn_events_by_group(db, _current_turn_events(events), groups)
 
+    # 队友走同一套位置流程：把分头分组的场景落到各队友的位置状态（玩家不在此自动移动，
+    # 仍只经大地图前往）。这样分头后地图按角色各看各的、co-location 过滤才准确。
+    name_to_char = {t.name: t for t in (teammates or []) if t.name}
+    for grp in groups:
+        sid = _resolve_scene_ref(module, grp.get("label") or "")
+        if not sid:
+            continue
+        for mname in grp.get("members") or []:
+            t = name_to_char.get(mname) or next(
+                (c for n, c in name_to_char.items() if mname in n or n in mname), None)
+            if t and t.id != player_char.id:
+                session_service.set_char_location(db, session_id, t.id, sid)
+
     combined: list[str] = []
     for grp in groups:
         label = grp["label"]
