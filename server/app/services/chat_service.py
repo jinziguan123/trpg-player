@@ -66,9 +66,12 @@ _SPEAKER_VERB_RE = re.compile(
 _SPEAKER_LABEL_RE = re.compile(
     r"(?:^|[。！？!?\n：:」』])\s*([一-龥·]{2,5})[：:]\s*$"
 )
-# 书写/铭刻类语境：其后引号是「书写内容」而非台词，应留在旁白、绝不抽成对话气泡。
+# 书写/铭刻/标牌类语境：其后引号是「书写/标识内容」而非台词，应留在旁白、绝不抽成对话气泡。
+# 允许标识名词与引号之间夹分隔符（——、、：、空格 等），覆盖「贴着褪色的字牌——「…」」这类。
 _WRITTEN_TEXT_RE = re.compile(
-    r"(写着|写道|写有|刻着|刻有|记着|记载|标着|印着|贴着|挂着|题写|题着|落款|显示|显现|上书)[：:，,]?\s*$"
+    r"(写着|写道|写有|刻着|刻有|记着|记载|标着|印着|贴着|挂着|题写|题着|题为|落款|显示|显现|上书|"
+    r"字牌|牌子|招牌|门牌|标牌|标签|标题|铭牌|告示|名为|名叫|写作)"
+    r"[：:，,、\s—\-]*$"
 )
 # 易误判为说话人的旁白连接词/状语（裸「X：」分支用），出现则不当作说话人。
 _NON_SPEAKER = {
@@ -542,13 +545,16 @@ async def _stream_narration_filtered(
                         # 无新说话人线索 → 沿用当前说话人，别被仅被提及的名字夺走
                         best_canonical = last_speaker
                     else:
-                        # 首句且无线索：退化到最近被提及的非玩家 NPC；最近的是玩家则留旁白
+                        # 首句且无线索：只认**紧贴引号前**（最近 24 字）出现的 NPC——即该句正在
+                        # 描述的当事人。远处仅被提及的名字（如另一段里的前租户）不作说话人，
+                        # 避免把门牌/招牌等「带引号的标签文本」错挂成某 NPC 的台词。
+                        near = narration[-24:]
                         best_pos = -1
                         best_len = -1
                         best_is_player = False
                         for canonical, parts, is_player in npc_matchers:
                             for part in parts:
-                                pos = recent.rfind(part)
+                                pos = near.rfind(part)
                                 if pos >= 0 and (len(part), pos) > (best_len, best_pos):
                                     best_pos, best_len = pos, len(part)
                                     best_canonical, best_is_player = canonical, is_player

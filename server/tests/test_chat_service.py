@@ -123,6 +123,21 @@ def test_unnamed_npc_uses_role_label_not_named_npc():
     assert [n for n, _ in result[2]] == ["史蒂芬·诺特", "护工"], result[2]
 
 
+def test_sign_labels_not_extracted_as_dialogue():
+    """门牌/招牌等带引号的标识文本，不被抽成『仅在别处被提及』的 NPC 的台词。"""
+    npcs = [{"name": "维托里奥·马卡里奥"}]
+    text = (
+        "前租户——马卡里奥一家——卷入某种悲剧，夫妻二人双双精神失常。\n\n"
+        "北墙上排列着四扇磨砂玻璃的门，上面分别贴着褪色的字牌——“恢复名誉”、“波士顿环球报社”、“中央图书馆”。"
+    )
+    result = ["", "", [], [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    assert result[2] == [], result[2]          # 没有任何标签被错抽成对话
+    assert "恢复名誉" in result[0]              # 标识文本留在旁白
+
+
 def test_written_text_stays_in_narration():
     """『写着：「…」』是书写内容而非台词，应留在旁白、不抽成对话气泡。"""
     npcs = [{"name": "史蒂芬·诺特"}]
