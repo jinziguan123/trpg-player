@@ -60,9 +60,10 @@ function fmtTime(ts?: number): string {
 /** 检定结果按成败取强调色。兼容引擎英文枚举与 SAN 检定的中文。 */
 function diceAccent(outcome: string): string {
   const s = String(outcome || '')
-  if (s.includes('critical') || s.includes('大成功')) return 'var(--color-accent)'
-  if (s.includes('fumble') || s.includes('大失败')) return 'var(--color-danger)'
-  if (s.includes('success') || s === '成功') return 'var(--color-success)'
+  if (s.includes('critical') || s.includes('大成功')) return '#d4af37'        // 大成功：金黄
+  if (s.includes('fumble') || s.includes('大失败')) return '#1a1a1a'          // 大失败：黑
+  if (s.includes('success') || s === '成功') return 'var(--color-success)'    // 其余成功：绿
+  if (s.includes('fail') || s.includes('失败')) return 'var(--color-danger)'  // 普通失败：红
   return 'var(--color-text-secondary)'
 }
 
