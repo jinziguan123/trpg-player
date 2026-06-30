@@ -21,6 +21,34 @@ export interface WeaponDef {
   time: string
 }
 
+// 角色携带的武器（规范字段；兼容历史 damage/attacks/ammo）
+export interface CharWeapon {
+  name: string
+  skill?: string
+  success?: number   // 成功率
+  dam?: string       // 伤害
+  range?: string     // 射程
+  tho?: boolean      // 是否贯穿
+  round?: string     // 次数 a/b
+  num?: string       // 装弹量
+  err?: string       // 故障
+}
+
+/** 历史武器对象（含旧字段 damage/attacks/ammo）归一化为规范字段。 */
+export function normalizeWeapon(w: Record<string, unknown>): CharWeapon {
+  return {
+    name: String(w.name ?? ''),
+    skill: (w.skill as string) ?? '',
+    success: (w.success as number) ?? undefined,
+    dam: (w.dam as string) ?? (w.damage as string) ?? '',
+    range: (w.range as string) ?? '',
+    tho: typeof w.tho === 'boolean' ? w.tho : w.tho === 1,
+    round: (w.round as string) ?? (w.attacks != null ? String(w.attacks) : ''),
+    num: (w.num as string) ?? (w.ammo as string) ?? '',
+    err: (w.err as string) ?? '',
+  }
+}
+
 let _specCache: Specializations | null = null
 let _weaponCache: WeaponDef[] | null = null
 

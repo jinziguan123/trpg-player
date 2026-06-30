@@ -5,8 +5,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { GiCancel, GiCheckMark } from 'react-icons/gi'
 import { SpecializationDialog } from './SpecializationDialog'
-import { WeaponPickerDialog } from './WeaponPickerDialog'
-import { useSpecializations, type WeaponDef } from './useCocData'
+import { WeaponsEditor } from './WeaponsEditor'
+import { useSpecializations, normalizeWeapon, type CharWeapon } from './useCocData'
 
 interface CharacterData {
   id: string
@@ -51,44 +51,6 @@ const VITAL_FIELDS: { key: string; label: string }[] = [
   { key: 'hitPoints', label: 'HP' },
   { key: 'sanity', label: 'SAN' },
   { key: 'magicPoints', label: 'MP' },
-]
-
-// 角色武器规范字段（兼容历史的 damage/attacks/ammo）
-interface WeaponItem {
-  name: string
-  skill?: string
-  success?: number   // 成功率
-  dam?: string       // 伤害
-  range?: string     // 射程
-  tho?: boolean      // 是否贯穿
-  round?: string     // 次数 a/b
-  num?: string       // 装弹量
-  err?: string       // 故障
-}
-
-// 历史武器对象 → 规范字段
-function normalizeWeapon(w: Record<string, unknown>): WeaponItem {
-  return {
-    name: String(w.name ?? ''),
-    skill: (w.skill as string) ?? '',
-    success: (w.success as number) ?? undefined,
-    dam: (w.dam as string) ?? (w.damage as string) ?? '',
-    range: (w.range as string) ?? '',
-    tho: typeof w.tho === 'boolean' ? w.tho : w.tho === 1,
-    round: (w.round as string) ?? (w.attacks != null ? String(w.attacks) : ''),
-    num: (w.num as string) ?? (w.ammo as string) ?? '',
-    err: (w.err as string) ?? '',
-  }
-}
-
-// 武器行内联编辑字段（成功率、贯穿单独处理）
-const WEAPON_FIELDS: { key: keyof WeaponItem; label: string }[] = [
-  { key: 'skill', label: '使用技能' },
-  { key: 'dam', label: '伤害' },
-  { key: 'range', label: '射程' },
-  { key: 'round', label: '次数(a/b)' },
-  { key: 'num', label: '装弹量' },
-  { key: 'err', label: '故障' },
 ]
 
 // 装备历史上可能是字符串数组或对象数组，统一取名字
@@ -159,10 +121,9 @@ export function CharacterEditModal({
   const [equipText, setEquipText] = useState(
     (Array.isArray(sd.equipment) ? sd.equipment : []).map(equipmentName).filter(Boolean).join('、'),
   )
-  const [weapons, setWeapons] = useState<WeaponItem[]>(
+  const [weapons, setWeapons] = useState<CharWeapon[]>(
     (Array.isArray(sd.weapons) ? sd.weapons : []).map((w) => normalizeWeapon(w as Record<string, unknown>)),
   )
-  const [weaponPickerOpen, setWeaponPickerOpen] = useState(false)
   const [backstory, setBackstory] = useState(character.backstory || '')
   const [sections, setSections] = useState<Record<string, string>>(() => {
     const o: Record<string, string> = {}
@@ -184,13 +145,6 @@ export function CharacterEditModal({
     const value = base === '母语' ? (attrs.EDU || init) : init
     setSkills([...skills, [key, value]])
     toast.success(`已添加 ${key}`)
-  }
-
-  const pickWeapon = (w: WeaponDef) => {
-    setWeapons([...weapons, {
-      name: w.name, skill: w.skill, success: skillValueOf(w.skill),
-      dam: w.dam, range: w.range, tho: !!w.tho, round: w.round, num: w.num, err: w.err,
-    }])
   }
 
   const save = async () => {
@@ -345,72 +299,7 @@ export function CharacterEditModal({
             {/* 道具：武器（规范字段）+ 随身物品（自由文本） */}
             <TabsContent value="道具">
               <div className="space-y-4">
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <h4 className="text-sm font-semibold" style={{ color: 'var(--color-text-accent)' }}>武器</h4>
-                    <div className="flex gap-2">
-                      <button onClick={() => setWeaponPickerOpen(true)} className="btn-secondary text-xs">从武器表添加</button>
-                      <button onClick={() => setWeapons([...weapons, { name: '' }])} className="btn-secondary text-xs">手动添加</button>
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    {weapons.map((w, i) => {
-                      const upd = (patch: Partial<WeaponItem>) => {
-                        const next = [...weapons]; next[i] = { ...w, ...patch }; setWeapons(next)
-                      }
-                      return (
-                        <div key={i} className="p-2 rounded space-y-2" style={{ background: 'var(--color-bg-tertiary)' }}>
-                          <div className="flex items-center gap-2">
-                            <input
-                              value={w.name}
-                              onChange={(e) => upd({ name: e.target.value })}
-                              placeholder="武器名称"
-                              className={inputCls + ' flex-1'}
-                              style={inputStyle}
-                            />
-                            <label className="flex items-center gap-1 text-xs whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
-                              <input type="checkbox" checked={!!w.tho} onChange={(e) => upd({ tho: e.target.checked })} /> 贯穿
-                            </label>
-                            <button
-                              onClick={() => setWeapons(weapons.filter((_, j) => j !== i))}
-                              className="text-xs px-2 py-1 rounded hover:bg-[var(--color-danger)] hover:text-white transition-colors"
-                              style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}
-                            >删除</button>
-                          </div>
-                          <div className="grid grid-cols-3 gap-2">
-                            {/* 成功率：可手改，「取技能」按当前技能值回填 */}
-                            <label className="text-xs">
-                              <span className="block mb-0.5" style={{ color: 'var(--color-text-secondary)' }}>
-                                成功率
-                                <button
-                                  onClick={() => upd({ success: skillValueOf(w.skill || '') })}
-                                  className="ml-1 underline"
-                                  style={{ color: 'var(--color-text-accent)' }}
-                                  title="按使用技能的当前值回填"
-                                >取技能</button>
-                              </span>
-                              <NumInput value={w.success ?? 0} onChange={(n) => upd({ success: n })} />
-                            </label>
-                            {WEAPON_FIELDS.map((f) => (
-                              <label key={f.key} className="text-xs">
-                                <span className="block mb-0.5" style={{ color: 'var(--color-text-secondary)' }}>{f.label}</span>
-                                <input
-                                  value={String(w[f.key] ?? '')}
-                                  onChange={(e) => upd({ [f.key]: e.target.value } as Partial<WeaponItem>)}
-                                  className={inputCls}
-                                  style={inputStyle}
-                                />
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    })}
-                    {weapons.length === 0 && (
-                      <p className="text-xs" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>暂无武器</p>
-                    )}
-                  </div>
-                </div>
+                <WeaponsEditor weapons={weapons} onChange={setWeapons} skillValueOf={skillValueOf} />
 
                 <div>
                   <h4 className="text-sm font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>随身物品与装备</h4>
@@ -482,9 +371,6 @@ export function CharacterEditModal({
           onConfirm={(specName, init) => addSpecialization(specBase, specName, init)}
         />
       )}
-
-      {/* 武器表选择弹窗 */}
-      <WeaponPickerDialog open={weaponPickerOpen} onOpenChange={setWeaponPickerOpen} onPick={pickWeapon} />
     </Dialog>
   )
 }

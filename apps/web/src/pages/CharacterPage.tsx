@@ -5,6 +5,9 @@ import { api } from '../api/client'
 import { useModuleStore } from '../stores/moduleStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { CharacterEditModal } from '../components/character/CharacterEditModal'
+import { SpecializationDialog } from '../components/character/SpecializationDialog'
+import { WeaponsEditor } from '../components/character/WeaponsEditor'
+import { useSpecializations, normalizeWeapon, type CharWeapon } from '../components/character/useCocData'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiDiceSixFacesSix, GiCharacter, GiReturnArrow, GiUpCard, GiPadlock } from 'react-icons/gi'
@@ -41,6 +44,12 @@ const ATTR_LABELS: Record<string, string> = {
 
 const ATTR_KEYS = ['STR', 'CON', 'SIZ', 'DEX', 'APP', 'INT', 'POW', 'EDU'] as const
 
+// 专精基名（与后端 SPECIALIZATIONS 对齐）
+const SPEC_BASES = ['母语', '外语', '格斗', '射击', '科学', '生存', '技艺', '驾驶']
+
+// 技能键基名："格斗(斗殴)" → "格斗"
+const skillBase = (s: string) => s.split('(')[0]
+
 const ATTR_RANGES: Record<string, { min: number; max: number }> = {
   STR: { min: 15, max: 90 }, CON: { min: 15, max: 90 },
   SIZ: { min: 40, max: 90 }, DEX: { min: 15, max: 90 },
@@ -52,13 +61,6 @@ const POINT_POOL = 460
 
 const STEPS = ['基本信息', '属性设定', '职业选择', '技能加点', '背景故事', '随身物品'] as const
 type Step = (typeof STEPS)[number]
-
-interface EquipmentItem {
-  name: string
-  category: string
-  era: string[]
-  min_credit: number
-}
 
 interface WeaponItem {
   name: string
@@ -97,7 +99,6 @@ interface ImportedCharacterData {
   }
 }
 
-const MAX_EQUIPMENT = 10
 const NON_ALLOCATABLE_SKILLS = ['克苏鲁神话']
 
 function initAttrs(): Record<string, number> {
@@ -155,11 +156,14 @@ export function CharacterPage() {
   // Step 4: 技能
   const [skillAlloc, setSkillAlloc] = useState<Record<string, number>>({})
   const [defaultSkills, setDefaultSkills] = useState<Record<string, number>>({})
+  const [extraSkills, setExtraSkills] = useState<string[]>([])              // 经专精弹窗添加的「基名(专精)」技能键
+  const [specBaseVals, setSpecBaseVals] = useState<Record<string, number>>({})  // 这些专精技能的基础起始值
+  const [specBase, setSpecBase] = useState<string>('')                     // 当前打开专精弹窗的基名
+  const spec = useSpecializations()
 
   // Step 5: 物品
-  const [availableEquipment, setAvailableEquipment] = useState<EquipmentItem[]>([])
-  const [selectedEquipment, setSelectedEquipment] = useState<string[]>([])
-  const [weapons, setWeapons] = useState<WeaponItem[]>([])
+  const [equipText, setEquipText] = useState('')                           // 随身物品自由文本，以、分隔
+  const [weapons, setWeapons] = useState<CharWeapon[]>([])
 
   // Step 5: 结构化背景故事
   const [personalDesc, setPersonalDesc] = useState('')
@@ -278,20 +282,43 @@ export function CharacterPage() {
     setStep('技能加点')
   }
 
+  // 职业技能按基名匹配：职业写「格斗」可命中「格斗(斗殴)」等专精
+  const occHas = (skillName: string): boolean => {
+    const occSkills = selectedOcc?.skills ?? []
+    return occSkills.some((os) => os === skillName || skillBase(os) === skillBase(skillName))
+  }
+
   const allocatedOccTotal = Object.entries(skillAlloc)
-    .filter(([k]) => selectedOcc?.skills.includes(k))
+    .filter(([k]) => occHas(k))
     .reduce((s, [, v]) => s + v, 0)
 
   const allocatedIntTotal = Object.entries(skillAlloc)
-    .filter(([k]) => !selectedOcc?.skills.includes(k))
+    .filter(([k]) => !occHas(k))
     .reduce((s, [, v]) => s + v, 0)
 
   const remainingOcc = occPoints - allocatedOccTotal
   const remainingInt = intPoints - allocatedIntTotal
 
+  // 技能当前值：基础(默认或专精起始) + 已加点；导入模式直接用加点值
+  const skillValueOf = (skillName: string): number => {
+    const alloc = skillAlloc[skillName] || 0
+    if (isImported) return alloc
+    return (defaultSkills[skillName] ?? specBaseVals[skillName] ?? 0) + alloc
+  }
+
+  // 选中专精 → 落为「基名(专精)」技能；母语值=EDU，其余用专精 init
+  const addSpecialization = (base: string, specName: string, init: number) => {
+    const key = `${base}(${specName})`
+    if (defaultSkills[key] != null || extraSkills.includes(key)) { toast.error(`已存在「${key}」`); return }
+    const value = base === '母语' ? ((effectiveAttrs?.EDU as number) || init) : init
+    setExtraSkills([...extraSkills, key])
+    setSpecBaseVals({ ...specBaseVals, [key]: value })
+    toast.success(`已添加 ${key}`)
+  }
+
   const updateSkill = (skillName: string, delta: number) => {
     if (!isImported) {
-      const isOccSkill = selectedOcc?.skills.includes(skillName) ?? false
+      const isOccSkill = occHas(skillName)
       const remaining = isOccSkill ? remainingOcc : remainingInt
       if (delta > 0 && remaining <= 0) return
       if (delta > 0 && delta > remaining) return
@@ -333,7 +360,8 @@ export function CharacterPage() {
     if (scarsAndWounds) sd.scarsAndWounds = scarsAndWounds
     if (phobiasAndManias) sd.phobiasAndManias = phobiasAndManias
     if (investigatorHistory) sd.investigatorHistory = investigatorHistory
-    if (selectedEquipment.length > 0) sd.equipment = selectedEquipment
+    const equip = equipText.split(/[、,，]/).map((e) => e.trim()).filter(Boolean)
+    if (equip.length > 0) sd.equipment = equip
     if (weapons.length > 0) sd.weapons = weapons
     return sd
   }
@@ -368,9 +396,9 @@ export function CharacterPage() {
     try {
       let finalSkills: Record<string, number>
       if (isImported) {
-        finalSkills = { ...defaultSkills, ...skillAlloc }
+        finalSkills = { ...defaultSkills, ...specBaseVals, ...skillAlloc }
       } else {
-        finalSkills = { ...defaultSkills }
+        finalSkills = { ...defaultSkills, ...specBaseVals }
         for (const [k, v] of Object.entries(skillAlloc)) {
           finalSkills[k] = (finalSkills[k] || 0) + v
         }
@@ -412,8 +440,9 @@ export function CharacterPage() {
     setSelectedOcc(null)
     setCreditRating(0)
     setSkillAlloc({})
-    setAvailableEquipment([])
-    setSelectedEquipment([])
+    setExtraSkills([])
+    setSpecBaseVals({})
+    setEquipText('')
     setWeapons([])
     setPersonalDesc('')
     setIdeologyBeliefs('')
@@ -472,11 +501,11 @@ export function CharacterPage() {
     }
 
     if (data.equipment && data.equipment.length > 0) {
-      setSelectedEquipment(data.equipment)
+      setEquipText(data.equipment.join('、'))
     }
 
     if (data.weapons && data.weapons.length > 0) {
-      setWeapons(data.weapons)
+      setWeapons(data.weapons.map((w) => normalizeWeapon(w as Record<string, unknown>)))
     }
 
     // 查找匹配职业；找不到则建为自定义职业
@@ -571,10 +600,11 @@ export function CharacterPage() {
 
   const allSkillNames = [...new Set([
     ...Object.keys(defaultSkills),
+    ...extraSkills,
     ...(isImported ? Object.keys(skillAlloc) : []),
   ])].sort((a, b) => {
-    const aIsOcc = selectedOcc?.skills.includes(a) ?? false
-    const bIsOcc = selectedOcc?.skills.includes(b) ?? false
+    const aIsOcc = occHas(a)
+    const bIsOcc = occHas(b)
     if (aIsOcc !== bIsOcc) return aIsOcc ? -1 : 1
     return a.localeCompare(b, 'zh')
   })
@@ -960,11 +990,24 @@ export function CharacterPage() {
                   </div>
                 )}
 
+                <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                  <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>添加专精：</span>
+                  {SPEC_BASES.map((b) => (
+                    <button
+                      key={b}
+                      onClick={() => setSpecBase(b)}
+                      disabled={!spec}
+                      className="text-xs px-2 py-0.5 rounded border transition-colors hover:bg-[var(--color-accent)] hover:text-white"
+                      style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-accent)' }}
+                    >{b}</button>
+                  ))}
+                </div>
+
                 <div className="max-h-72 overflow-auto space-y-0.5 mb-3">
                   {allSkillNames.map((skillName) => {
-                    const base = defaultSkills[skillName] || 0
+                    const base = defaultSkills[skillName] ?? specBaseVals[skillName] ?? 0
                     const alloc = skillAlloc[skillName] || 0
-                    const isOcc = selectedOcc?.skills.includes(skillName) ?? false
+                    const isOcc = occHas(skillName)
                     const displayVal = isImported ? alloc : base + alloc
                     const isLocked = NON_ALLOCATABLE_SKILLS.includes(skillName)
                     return (
@@ -1107,20 +1150,7 @@ export function CharacterPage() {
 
                 <div className="flex gap-2">
                   <button onClick={() => setStep('技能加点')} className="btn-secondary">上一步</button>
-                  <button
-                    onClick={async () => {
-                      const mod = modules.find((m) => m.id === moduleId)
-                      const era = (mod?.world_setting?.era as string) || '1920s'
-                      const items = await api.get<EquipmentItem[]>(
-                        `/rules/coc/equipment?era=${encodeURIComponent(era)}&credit_rating=${creditRating}`,
-                      )
-                      setAvailableEquipment(items)
-                      setStep('随身物品')
-                    }}
-                    className="btn-primary"
-                  >
-                    下一步
-                  </button>
+                  <button onClick={() => setStep('随身物品')} className="btn-primary">下一步</button>
                 </div>
               </div>
             )}
@@ -1128,94 +1158,26 @@ export function CharacterPage() {
             {/* Step 6: 随身物品 */}
             {step === '随身物品' && (
               <div>
-                {/* 武器区域 */}
-                {weapons.length > 0 && (
-                  <div className="mb-4">
-                    <div className="text-xs font-semibold mb-2" style={{ color: 'var(--color-text-accent)' }}>武器（从角色卡导入）</div>
-                    <div className="space-y-1.5">
-                      {weapons.map((w, i) => (
-                        <div key={i} className="flex items-center justify-between py-1.5 px-2 rounded text-sm" style={{ background: 'var(--color-bg-tertiary)' }}>
-                          <div>
-                            <span className="font-semibold">{w.name}</span>
-                            <span className="text-xs ml-2" style={{ color: 'var(--color-text-secondary)' }}>
-                              {w.skill && `技能: ${w.skill}`}
-                              {w.damage && ` | 伤害: ${w.damage}`}
-                              {w.range && w.range !== '——' && ` | 射程: ${w.range}`}
-                            </span>
-                          </div>
-                          <button
-                            onClick={() => setWeapons(weapons.filter((_, j) => j !== i))}
-                            className="text-xs px-1.5 py-0.5 rounded"
-                            style={{ color: 'var(--color-danger)' }}
-                          >
-                            移除
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <div className="flex justify-between items-center mb-3 text-sm">
-                  <span style={{ color: 'var(--color-text-secondary)' }}>
-                    根据信用评级 <strong className="font-mono">{creditRating}%</strong> 筛选可用物品
-                  </span>
-                  <span>
-                    已选：
-                    <strong className="font-mono" style={{ color: selectedEquipment.length >= MAX_EQUIPMENT ? 'var(--color-danger)' : 'var(--color-text-primary)' }}>
-                      {selectedEquipment.length}/{MAX_EQUIPMENT}
-                    </strong>
-                  </span>
+                {/* 武器：从武器表挑选或手动添加，规范九字段 */}
+                <div className="mb-4">
+                  <WeaponsEditor weapons={weapons} onChange={setWeapons} skillValueOf={skillValueOf} />
                 </div>
 
-                {(() => {
-                  const categories = [...new Set(availableEquipment.map((e) => e.category))]
-                  return categories.map((cat) => (
-                    <div key={cat} className="mb-3">
-                      <div className="text-xs font-semibold mb-1 px-1" style={{ color: 'var(--color-text-accent)' }}>{cat}</div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {availableEquipment
-                          .filter((e) => e.category === cat)
-                          .map((eq) => {
-                            const selected = selectedEquipment.includes(eq.name)
-                            return (
-                              <button
-                                key={eq.name}
-                                onClick={() => {
-                                  if (selected) {
-                                    setSelectedEquipment(selectedEquipment.filter((n) => n !== eq.name))
-                                  } else if (selectedEquipment.length < MAX_EQUIPMENT) {
-                                    setSelectedEquipment([...selectedEquipment, eq.name])
-                                  }
-                                }}
-                                disabled={!selected && selectedEquipment.length >= MAX_EQUIPMENT}
-                                className="px-2 py-1 rounded text-xs border transition-colors"
-                                style={{
-                                  borderColor: selected ? 'var(--color-accent)' : 'var(--color-border)',
-                                  background: selected ? 'rgba(139, 37, 0, 0.1)' : 'transparent',
-                                  color: selected ? 'var(--color-text-accent)' : 'var(--color-text-primary)',
-                                  fontWeight: selected ? 600 : 400,
-                                  opacity: !selected && selectedEquipment.length >= MAX_EQUIPMENT ? 0.4 : 1,
-                                }}
-                              >
-                                {eq.name}
-                                {eq.min_credit > 0 && (
-                                  <span style={{ color: 'var(--color-text-secondary)', marginLeft: 4 }}>≥{eq.min_credit}%</span>
-                                )}
-                              </button>
-                            )
-                          })}
-                      </div>
-                    </div>
-                  ))
-                })()}
-
-                {selectedEquipment.length > 0 && (
-                  <div className="card !bg-[var(--color-bg-tertiary)] mb-3">
-                    <div className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>已选物品</div>
-                    <div className="text-sm">{selectedEquipment.join('、')}</div>
-                  </div>
-                )}
+                {/* 随身物品与装备：自由填写，以、（顿号）分隔 */}
+                <div className="mb-3">
+                  <h4 className="text-sm font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>随身物品与装备</h4>
+                  <p className="text-xs mb-1.5" style={{ color: 'var(--color-text-secondary)', opacity: 0.8 }}>
+                    自由填写，多个物品以、（顿号）分隔
+                  </p>
+                  <textarea
+                    value={equipText}
+                    onChange={(e) => setEquipText(e.target.value)}
+                    rows={3}
+                    placeholder="如：怀表、笔记本与钢笔、手电筒、绳索"
+                    className="w-full px-2 py-1 rounded text-sm resize-y"
+                    style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}
+                  />
+                </div>
 
                 {evalResult && (
                   <div
@@ -1347,6 +1309,19 @@ export function CharacterPage() {
             setSelectedChar((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev))
             setEditingChar(null)
           }}
+        />
+      )}
+
+      {/* 创建向导：专精选择弹窗 */}
+      {specBase && (
+        <SpecializationDialog
+          base={specBase}
+          open={!!specBase}
+          onOpenChange={(v) => { if (!v) setSpecBase('') }}
+          disabledItems={[...Object.keys(defaultSkills), ...extraSkills]
+            .filter((k) => k.startsWith(`${specBase}(`))
+            .map((k) => k.slice(specBase.length + 1, -1))}
+          onConfirm={(specName, init) => addSpecialization(specBase, specName, init)}
         />
       )}
     </div>
