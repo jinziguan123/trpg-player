@@ -700,12 +700,13 @@ def _parse_team_decision(raw) -> dict | None:
     else:
         return None
     action = str(data.get("action") or "").strip().lower()
-    if action not in TEAM_ACTION_EVENT and action != "silent":
+    if action not in TEAM_ACTION_EVENT and action not in ("silent", "travel"):
         return None
     return {
         "action": action,
         "content": str(data.get("content") or "").strip(),
-        "skill": str(data.get("skill") or "").strip(),  # 仅 action=check 时有意义
+        "skill": str(data.get("skill") or "").strip(),   # 仅 action=check 时有意义
+        "target": str(data.get("target") or "").strip(),  # 仅 action=travel 时有意义
     }
 
 
@@ -742,6 +743,25 @@ async def _run_team_turn(
             continue  # 解析失败：hold，不重试不递归
         action = decision["action"]
         content = decision["content"]
+        # 队友「前往」：显式移动，确定性切换其所在场景（仅限已知地点），落一条「前往」事件。
+        # 队友的移动由此动作触发，KP 不再从其台词臆测搬人；分头分组据 party_locations 归并。
+        if action == "travel":
+            sid = _resolve_scene_ref(module, decision.get("target") or content)
+            known = session_service.known_scene_ids(module, game_session, events)
+            cur = session_service.get_char_location(game_session, teammate.id)
+            if sid and sid in known and sid != cur:
+                session_service.set_char_location(db, session_id, teammate.id, sid)
+                db.refresh(game_session)
+                label = _scene_name(module, sid)
+                ev = session_service.add_event(
+                    db, session_id, "action", f"（前往：{label}）",
+                    actor_id=teammate.id, actor_name=teammate.name,
+                )
+                yield _make_chunk(
+                    "action", f"（前往：{label}）", actor_name=teammate.name,
+                    event_id=ev.id, actor_id=teammate.id,
+                )
+            continue
         if action == "silent" or not content:
             continue
         event_type = TEAM_ACTION_EVENT[action]
@@ -843,140 +863,27 @@ def _current_turn_events(events: list) -> list:
     return events[last_narr + 1:]
 
 
-def _resolve_member(name: str, party: list[str]) -> str | None:
-    """把分组规划返回的成员名归一到队伍全名（容忍只给了名/姓的局部名）。"""
-    name = (name or "").strip()
-    if not name:
-        return None
-    for p in party:
-        if name == p or name in p or p in name:
-            return p
-    return None
-
-
-async def _plan_groups(
-    llm, player_char: Character, teammates: list[Character], events: list,
+def _location_groups(
+    game_session: GameSession, module: Module, player_char: Character,
+    teammates: list[Character] | None,
 ) -> list[dict]:
-    """据本回合各角色行动，判断队伍是否分头。返回 [{label, members}]；未分头返回 []。
+    """按每个队伍成员的「真实所在场景」（party_locations）归并成列 → [{label, members}]。
 
-    分头只存在于叙事文字里（会话级仅一个 current_scene），靠模型自觉打 [GROUP] 太脆，
-    故由后端先做一次轻量规划，再对每组单独生成、确定性打标签。
+    分头行动＝队伍成员身处不同场景。位置是确定性状态（玩家经大地图前往、队友经 travel 动作更新），
+    故直接据此归并：同场景合一列、列名＝场景名（跨回合稳定）；返回 ≥2 组即为分头。
+    不再靠 LLM 猜测分组，也不会因「打算去X」这种意图误判。
     """
-    party = [player_char.name] + [t.name for t in teammates if t.name]
-    turn = _current_turn_events(events)
-    actors = [
-        e.actor_name for e in turn
-        if getattr(e, "event_type", None) in ("action", "dialogue") and (e.content or "").strip()
-    ]
-    acting = [m for m in party if any(m == a or m in a or a in m for a in actors)]
-    lines = [
-        f"- {e.actor_name}：{e.content}"
-        for e in turn
-        if getattr(e, "event_type", None) in ("action", "dialogue") and (e.content or "").strip()
-    ]
-    # 本回合行动者不足两人，谈不上分头
-    if len(acting) < 2:
-        return []
-
-    sys_p = "你是 TRPG 跑团的场景编排助手，只输出 JSON，不要任何解释。"
-    user_p = (
-        f"队伍成员：{'、'.join(party)}\n"
-        "本回合各成员刚刚的行动：\n" + "\n".join(lines) + "\n\n"
-        "判断队伍这一刻是否分头行动（身处不同地点、各自独立推进）。\n"
-        '全队在一起 → 回 {\"split\": false}\n'
-        '分头 → 回 {\"split\": true, \"groups\": '
-        '[{\"label\": \"该组所在地点简称\", \"members\": [\"成员全名\", ...]}, ...]}\n'
-        "规则：①每个有行动的成员都必须恰好出现在一个分组里，不得遗漏；"
-        "②在同一地点的成员归入同一分组；③label 用其所在地点的简短名（如「图书馆」「档案馆」）。"
-    )
-    try:
-        raw = await llm.complete(
-            [{"role": "system", "content": sys_p}, {"role": "user", "content": user_p}],
-            temperature=0,
-        )
-    except Exception:
-        logger.exception("分头分组规划失败，回退为整队叙事")
-        return []
-
-    data = None
-    if isinstance(raw, dict):
-        data = raw
-    elif isinstance(raw, str):
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            m = re.search(r"\{.*\}", raw, re.S)
-            if m:
-                try:
-                    data = json.loads(m.group(0))
-                except json.JSONDecodeError:
-                    data = None
-    if not isinstance(data, dict) or not data.get("split"):
-        return []
-
-    groups: list[dict] = []
-    claimed: set[str] = set()
-    for g in (data.get("groups") or []):
-        label = str(g.get("label") or "").strip()
-        members: list[str] = []
-        for raw_name in (g.get("members") or []):
-            canon = _resolve_member(str(raw_name), party)
-            if canon and canon not in claimed:
-                members.append(canon)
-                claimed.add(canon)
-        if label and members:
-            groups.append({"label": label, "members": members})
-    # 兜底：本回合有行动却被规划遗漏的成员，各自单列，绝不丢人（否则该成员「没有输出」）。
-    for m in acting:
-        if m not in claimed:
-            groups.append({"label": m, "members": [m]})
-            claimed.add(m)
-    # 至少两组才算分头；否则回退整队
-    return groups if len(groups) >= 2 else []
-
-
-def _team_only_groups(groups: list[dict], player_name: str) -> list[dict]:
-    """把玩家从分头分组里剔除，只留 AI 队友分组。
-
-    玩家的移动只由其自行经大地图触发，绝不因分头意图被叙述成已抵达；故分头叙事只覆盖队友。
-    """
-    out: list[dict] = []
-    for g in groups:
-        members = [m for m in (g.get("members") or []) if m != player_name]
-        if members:
-            out.append({"label": g["label"], "members": members})
-    return out
-
-
-def _scene_grouped(
-    team_groups: list[dict], module: Module, player_char: Character, player_scene_id: str | None,
-) -> list[dict]:
-    """把队友分组 + 玩家当前场景，按「实际场景」归并成列（同场景合一列，列名＝场景名）。
-
-    解决两点：①玩家在自己场景里的行动也要有回应——她的当前场景独立成一列（用真实所在，
-    不采信意图、不移动她）；②分栏以「小地图/场景」为原子：同一场景内即使分头也不再分列，
-    且跨回合同一场景用同一稳定列名（避免「房子」「住宅」被当成两列）。
-    """
+    members = [player_char] + list(teammates or [])
     by_scene: dict[str, dict] = {}
     order: list[str] = []
-
-    def add(scene_id: str, label: str, members: list[str]) -> None:
-        if scene_id not in by_scene:
-            by_scene[scene_id] = {"label": label, "members": []}
-            order.append(scene_id)
-        for m in members:
-            if m not in by_scene[scene_id]["members"]:
-                by_scene[scene_id]["members"].append(m)
-
-    if player_scene_id:
-        add(player_scene_id, _scene_name(module, player_scene_id), [player_char.name])
-    for g in team_groups:
-        sid = _resolve_scene_ref(module, g.get("label") or "")
-        if sid:
-            add(sid, _scene_name(module, sid), g.get("members") or [])
-        else:  # 解析不到真实场景，退回按原标签独立成列
-            key = g.get("label") or "?"
-            add(key, key, g.get("members") or [])
+    for ch in members:
+        sid = session_service.get_char_location(game_session, ch.id) or game_session.current_scene_id
+        if not sid:
+            continue
+        if sid not in by_scene:
+            by_scene[sid] = {"label": _scene_name(module, sid), "members": []}
+            order.append(sid)
+        by_scene[sid]["members"].append(ch.name)
     return [by_scene[s] for s in order]
 
 
@@ -1002,17 +909,9 @@ async def _run_generation(
     rules_enabled = bool(events) and rulebook_service.has_rulebook(db, module.rule_system)
     matcher_npcs = _matcher_npcs(module, teammates)
 
-    # 分头行动：先规划分组。玩家的移动只由其自行经大地图触发——故把玩家从分头分组里剔除，
-    # 分头只对 AI 队友生成各自场景的叙事与位置；玩家留在主线，绝不因「我打算去X」被叙述成已抵达。
-    groups: list[dict] = []
-    if teammates:
-        groups = await _plan_groups(llm, player_char, teammates, events)
-    team_groups = _team_only_groups(groups, player_char.name)
-    scene_groups: list[dict] = []
-    if team_groups:
-        # 按「实际场景」归并：玩家当前所在独立成列（回应其场景内行动），同场景合一列。
-        p_scene = session_service.get_char_location(game_session, player_char.id)
-        scene_groups = _scene_grouped(team_groups, module, player_char, p_scene)
+    # 分头行动：按各成员「真实所在场景」归并（玩家经大地图、队友经 travel 动作更新的确定性位置）。
+    # 身处 ≥2 个场景即分头 → 逐场景生成叙事。不再靠 LLM 猜分组、也不因「打算去X」误判。
+    scene_groups = _location_groups(game_session, module, player_char, teammates)
 
     if len(scene_groups) >= 2:
         await _run_split_generation(
@@ -1104,20 +1003,8 @@ async def _run_split_generation(
     """
     # 先把本回合各角色的行动/对话/掷骰也归入其所在场景列：这样每一列＝该场景里
     # 「玩家行动 + KP 叙事」自成一体（而非行动全挤在主线、叙事另起一列）。
+    # 位置已由显式移动（玩家大地图 / 队友 travel 动作）确定性写入，此处不再据分组反推搬人。
     _tag_turn_events_by_group(db, _current_turn_events(events), groups)
-
-    # 队友走同一套位置流程：把分头分组的场景落到各队友的位置状态（玩家不在此自动移动，
-    # 仍只经大地图前往）。这样分头后地图按角色各看各的、co-location 过滤才准确。
-    name_to_char = {t.name: t for t in (teammates or []) if t.name}
-    for grp in groups:
-        sid = _resolve_scene_ref(module, grp.get("label") or "")
-        if not sid:
-            continue
-        for mname in grp.get("members") or []:
-            t = name_to_char.get(mname) or next(
-                (c for n, c in name_to_char.items() if mname in n or n in mname), None)
-            if t and t.id != player_char.id:
-                session_service.set_char_location(db, session_id, t.id, sid)
 
     combined: list[str] = []
     for grp in groups:

@@ -289,56 +289,33 @@ def test_group_label_tags_all_output(db_factory):
     assert groups and all(g == "图书馆" for g in groups)
 
 
-def test_plan_groups_detects_split():
-    """分组规划：据本回合各角色行动判定分头，并把局部名归一到队伍全名。"""
-    class _FakeLLM:
-        async def complete(self, messages, temperature=0.7, **kw):
-            return (
-                '{"split": true, "groups": ['
-                '{"label": "图书馆", "members": ["约翰"]},'
-                '{"label": "档案馆", "members": ["亨利·卡特"]}]}'
-            )
-
-    class _Ev:
-        def __init__(self, t, a, c):
-            self.event_type, self.actor_name, self.content = t, a, c
-
-    player = Character(name="莫妮卡·卡佩尔", rule_system="coc")
-    t1 = Character(name="约翰·卡特", rule_system="coc")
-    t2 = Character(name="亨利·卡特", rule_system="coc")
-    events = [
-        _Ev("narration", "KP", "上一段旁白"),
-        _Ev("action", "约翰·卡特", "约翰走向图书馆的索引柜"),
-        _Ev("action", "亨利·卡特", "亨利推开档案馆的门"),
-    ]
-    groups = asyncio.run(chat_service._plan_groups(_FakeLLM(), player, [t1, t2], events))
-    assert {g["label"] for g in groups} == {"图书馆", "档案馆"}
-    assert {m for g in groups for m in g["members"]} == {"约翰·卡特", "亨利·卡特"}
-
-
-def test_plan_groups_covers_dropped_member():
-    """规划遗漏了有行动的成员时，兜底给其单列，绝不丢人。"""
-    class _FakeLLM:
-        async def complete(self, messages, temperature=0.7, **kw):
-            # 故意只规划莫妮卡和亨利，漏掉约翰
-            return '{"split": true, "groups": [{"label":"疗养院","members":["莫妮卡·卡佩尔"]},{"label":"档案馆","members":["亨利·卡特"]}]}'
-
-    class _Ev:
-        def __init__(self, t, a, c):
-            self.event_type, self.actor_name, self.content = t, a, c
-
-    player = Character(name="莫妮卡·卡佩尔", rule_system="coc")
+def test_location_groups_by_actual_scene(db_factory):
+    """按每人真实所在场景归并：全队同处不分头；有人 travel 到别处则分头，同场景合一列。"""
+    db = db_factory()
+    module = Module(
+        title="M", rule_system="coc", npcs=[],
+        scenes=[{"id": "scene_office", "title": "事务所"},
+                {"id": "scene_lib", "title": "中央图书馆"}],
+    )
+    pc = Character(name="莫妮卡·卡佩尔", rule_system="coc")
     t1 = Character(name="亨利·卡特", rule_system="coc")
     t2 = Character(name="约翰·卡特", rule_system="coc")
-    events = [
-        _Ev("narration", "KP", "上一段旁白"),
-        _Ev("action", "莫妮卡·卡佩尔", "我走进疗养院"),
-        _Ev("action", "亨利·卡特", "亨利去档案馆"),
-        _Ev("action", "约翰·卡特", "约翰去图书馆"),
-    ]
-    groups = asyncio.run(chat_service._plan_groups(_FakeLLM(), player, [t1, t2], events))
-    members = {m for g in groups for m in g["members"]}
-    assert members == {"莫妮卡·卡佩尔", "亨利·卡特", "约翰·卡特"}  # 约翰被兜底补上
+    db.add_all([module, pc, t1, t2]); db.flush()
+    sess = GameSession(module_id=module.id, player_character_id=pc.id, status="active",
+                       current_scene_id="scene_office", world_state={})
+    db.add(sess); db.commit()
+
+    # 全队默认同处「事务所」→ 不分头（1 组）
+    g0 = chat_service._location_groups(sess, module, pc, [t1, t2])
+    assert len(g0) == 1 and g0[0]["label"] == "事务所"
+
+    # 亨利 travel 到图书馆 → 2 个场景，分头；约翰仍与玩家同处
+    session_service.set_char_location(db, sess.id, t1.id, "scene_lib")
+    sess = db.get(GameSession, sess.id)
+    g1 = chat_service._location_groups(sess, module, pc, [t1, t2])
+    by = {x["label"]: set(x["members"]) for x in g1}
+    assert by == {"事务所": {"莫妮卡·卡佩尔", "约翰·卡特"}, "中央图书馆": {"亨利·卡特"}}
+    assert g1[0]["label"] == "事务所"  # 玩家所在列在前
 
 
 def test_tag_turn_events_by_group(db_factory):
@@ -371,51 +348,16 @@ def test_written_card_text_with_markdown_not_extracted():
     assert result[2] == []  # 卡片书写内容不被当成对话
 
 
-def test_team_only_groups_excludes_player():
-    """分头分组剔除玩家：玩家不进分头叙事（其移动只由大地图前往触发）。"""
-    groups = [
-        {"label": "疗养院", "members": ["莫妮卡·卡佩尔"]},          # 玩家所在 → 整组被移除
-        {"label": "图书馆", "members": ["亨利·卡特"]},
-        {"label": "档案馆", "members": ["约翰·卡特"]},
-    ]
-    out = chat_service._team_only_groups(groups, "莫妮卡·卡佩尔")
-    assert [g["label"] for g in out] == ["图书馆", "档案馆"]        # 疗养院（玩家）被剔除
-    assert all("莫妮卡·卡佩尔" not in g["members"] for g in out)
-    # 玩家与队友混在同一组时，只移除玩家、保留队友
-    mixed = [{"label": "门厅", "members": ["莫妮卡·卡佩尔", "亨利·卡特"]}]
-    assert chat_service._team_only_groups(mixed, "莫妮卡·卡佩尔") == [
-        {"label": "门厅", "members": ["亨利·卡特"]}
-    ]
-
-
-def test_scene_grouped_adds_player_scene_and_merges_by_scene():
-    """按场景归并：玩家当前场景独立成列；标签解析到同一场景则合并；列名＝场景名。"""
-    module = Module(
-        title="M", rule_system="coc", npcs=[],
-        scenes=[
-            {"id": "scene_office", "title": "事务所"},
-            {"id": "scene_lib", "title": "中央图书馆"},
-            {"id": "scene_house", "title": "科比特的老房子"},
-        ],
-    )
-    player = Character(name="莫妮卡·卡佩尔", rule_system="coc")
-    team_groups = [
-        {"label": "图书馆", "members": ["亨利·卡特"]},   # → 中央图书馆
-        {"label": "房子", "members": ["约翰·卡特"]},     # → 科比特的老房子
-    ]
-    out = chat_service._scene_grouped(team_groups, module, player, "scene_office")
-    labels = [g["label"] for g in out]
-    assert labels == ["事务所", "中央图书馆", "科比特的老房子"]   # 玩家所在列在前
-    assert out[0]["members"] == ["莫妮卡·卡佩尔"]
-
-    # 两个队友的标签都解析到同一场景（房子/老房子）→ 合并为一列
-    merged = chat_service._scene_grouped(
-        [{"label": "房子", "members": ["亨利·卡特"]},
-         {"label": "老房子", "members": ["约翰·卡特"]}],
-        module, player, "scene_office",
-    )
-    house = [g for g in merged if g["label"] == "科比特的老房子"]
-    assert len(house) == 1 and set(house[0]["members"]) == {"亨利·卡特", "约翰·卡特"}
+def test_parse_team_decision_accepts_travel():
+    """队友决策解析：新增 travel 动作与 target 字段。"""
+    d = chat_service._parse_team_decision(
+        '{"action":"travel","content":"我去图书馆查查","target":"中央图书馆"}')
+    assert d and d["action"] == "travel" and d["target"] == "中央图书馆"
+    # 普通动作仍照常
+    d2 = chat_service._parse_team_decision('{"action":"speak","content":"我同意"}')
+    assert d2["action"] == "speak" and d2["target"] == ""
+    # 未知动作仍被拒
+    assert chat_service._parse_team_decision('{"action":"fly","content":"x"}') is None
 
 
 def test_skill_names_from_dict_and_system_data():
@@ -441,26 +383,6 @@ def test_detect_check_request_routes_only_real_requests():
     none = asyncio.run(chat_service._detect_check_request(
         _LLM('{"check": false}'), "我走进房间四处看看", char))
     assert none is None
-
-
-def test_plan_groups_no_split_when_single_actor():
-    """本回合只有一人行动时不算分头，直接回退整队（不调用 LLM）。"""
-    class _BoomLLM:
-        async def complete(self, *a, **k):
-            raise AssertionError("行动者不足两人时不应调用规划 LLM")
-
-    class _Ev:
-        def __init__(self, t, a, c):
-            self.event_type, self.actor_name, self.content = t, a, c
-
-    player = Character(name="莫妮卡·卡佩尔", rule_system="coc")
-    t1 = Character(name="约翰·卡特", rule_system="coc")
-    events = [
-        _Ev("narration", "KP", "上一段旁白"),
-        _Ev("action", "莫妮卡·卡佩尔", "我独自走进疗养院"),
-    ]
-    groups = asyncio.run(chat_service._plan_groups(_BoomLLM(), player, [t1], events))
-    assert groups == []
 
 
 def test_persisted_order_interleaves_narration_and_dialogue(db_factory):

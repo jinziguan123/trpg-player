@@ -596,9 +596,14 @@ def build_team_context(
     all_teammates: list[Character] | None = None,
 ) -> list[dict]:
     """构建单个 AI 队友的决策上下文：场景 + 队伍 + 最近事件。"""
+    from app.services import session_service  # 局部导入避免顶层循环依赖
+
     flags = _active_flags(session)
     scenes = [_resolve_state(s, flags) for s in (module.scenes or [])]
-    current_scene = _resolve_scene(scenes, session.current_scene_id, flags)
+    # 用队友「自己所在」的场景（分头后各在各处），而非会话级单一场景
+    viewer_scene_id = session_service.get_char_location(session, teammate.id)
+    current_scene = _resolve_scene(scenes, viewer_scene_id, flags)
+    current_location = (current_scene.get("title") or current_scene.get("name") or "当前所在") if current_scene else "当前所在"
 
     # 队伍其他成员（一视同仁，无主角；房主角色也只是其中一名队友）
     party_members = [player_char] + [
@@ -606,12 +611,18 @@ def build_team_context(
     ]
     party_info = "\n".join(f"- 队友：{m.name}" for m in party_members) or "无"
 
+    # 可前往的已知地点（对话提及/已访问；排除当前所在），供 travel 选 target
+    known = session_service.list_known_locations(module, session, char_id=teammate.id, events=events)
+    known_locations = "、".join(loc["name"] for loc in known if not loc["current"]) or "（暂无其他已知地点）"
+
     system_content = TEAM_SYSTEM_PROMPT.format(
         rule_system=module.rule_system.upper(),
         name=teammate.name,
         char_info=_format_player_info(teammate),
+        current_location=current_location,
         scene=_format_json(current_scene) if current_scene else "初始场景",
         party_info=party_info,
+        known_locations=known_locations,
     )
 
     digest = _format_recent_events_digest(

@@ -150,16 +150,22 @@ def test_parse_team_decision():
         "action": "act",
         "content": "查看",
         "skill": "",
+        "target": "",
     }
     assert chat_service._parse_team_decision("前缀 {\"action\":\"speak\",\"content\":\"嗨\"} 后缀") == {
         "action": "speak",
         "content": "嗨",
         "skill": "",
+        "target": "",
     }
     # check 行动带 skill
     assert chat_service._parse_team_decision(
         '{"action":"check","content":"我辨认铭文","skill":"考古学"}'
-    ) == {"action": "check", "content": "我辨认铭文", "skill": "考古学"}
+    ) == {"action": "check", "content": "我辨认铭文", "skill": "考古学", "target": ""}
+    # travel 行动带 target
+    assert chat_service._parse_team_decision(
+        '{"action":"travel","content":"我去图书馆","target":"中央图书馆"}'
+    ) == {"action": "travel", "content": "我去图书馆", "skill": "", "target": "中央图书馆"}
     assert chat_service._parse_team_decision("坏数据") is None
     assert chat_service._parse_team_decision('{"action":"unknown","content":"x"}') is None
 
