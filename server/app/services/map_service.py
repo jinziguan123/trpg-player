@@ -58,6 +58,9 @@ MAP_GEN_PROMPT = """你是 TRPG 像素地图设计师。请把下面这个【场
 9. 素材库：下表是已有的可用素材（格式 [类型] id｜名称）。若某 object/NPC 与表中某素材**语义匹配**
    （按名称/类型，如「石棺」对应素材库里的石棺），就把它的 "asset_id" 填成该素材的 id，让地图用上对应贴图；
    拿不准或无匹配就**不要填 asset_id**，系统会按类型取默认素材。terrain（地板/墙/门）不用填，按类型默认。
+10. **多层建筑（重要）**：若该地点含多个楼层/层级（如楼上/楼下/阁楼/地下室），**绝不要**把多层塞进同一张网格；
+    改为**每层各出一张地图**，返回：{{"floors": [{{"name": "一楼", "w":.., "h":.., "tiles":[..], "objects":[..], "entrances":[..], "npc_pos":[..], "notes":".."}}, {{"name": "地下室", ...}}]}}。
+    每层内部按上面的规则各自成图；楼梯在该层画成一个出口（entrances，name 写「上楼」「下楼」，to 留空）。**单层场景照常返回单张地图**（不要用 floors）。
 
 【场景】
 名称：{name}
@@ -227,13 +230,28 @@ async def generate_scene_map(
         temperature=0.4,
         max_tokens=4096,
     )
-    m = _extract_json(raw)
-    _clean_asset_ids(m, {a.get("id") for a in (assets or [])})
-    issues = validate_map(m)
-    if issues:
-        m["_issues"] = issues
-        logger.warning("场景 %s 地图校验问题：%s", scene.get("id"), issues)
-    return m
+    data = _extract_json(raw)
+    ids = {a.get("id") for a in (assets or [])}
+
+    def _finish(m: dict) -> dict:
+        _clean_asset_ids(m, ids)
+        issues = validate_map(m)
+        if issues:
+            m["_issues"] = issues
+            logger.warning("场景 %s 地图校验问题：%s", scene.get("id"), issues)
+        return m
+
+    floors = data.get("floors")
+    if isinstance(floors, list) and floors:
+        # 多层建筑：每层各一张图（楼层字段可能内联，也可能嵌在 map 下）
+        out = []
+        for i, f in enumerate(floors):
+            fm = f.get("map") if isinstance(f.get("map"), dict) else {
+                k: f[k] for k in ("w", "h", "tiles", "objects", "entrances", "npc_pos", "notes") if k in f
+            }
+            out.append({"name": f.get("name") or f"第 {i + 1} 层", "map": _finish(fm)})
+        return {"floors": out}
+    return _finish(data)
 
 
 def _spawn_pos(m: dict) -> tuple[int, int]:
@@ -295,8 +313,27 @@ def _resolve_anchor(m: dict, name: str, tracked: dict) -> tuple[int, int] | None
     return None
 
 
-def _resolved_scene_map(db: Session, session: GameSession, scene_id: str | None = None):
-    """(scene, resolved_map) —— 按当前 flags 解析指定场景（默认会话当前场景）及其变体地图。"""
+def scene_floor_maps(scene: dict) -> list[dict]:
+    """规整场景的楼层地图列表 → [{"name", "map"}]。
+
+    多层建筑用 scene['floors']（如科比特的房子＝二楼/一楼/地下室各一张图）；
+    单层场景回落到 scene['map']（名称留空）。无地图返回 []。
+    """
+    floors = scene.get("floors")
+    if isinstance(floors, list) and floors:
+        out = []
+        for i, f in enumerate(floors):
+            if isinstance(f, dict) and f.get("map"):
+                out.append({"name": f.get("name") or f"第 {i + 1} 层", "map": f["map"]})
+        if out:
+            return out
+    if scene.get("map"):
+        return [{"name": "", "map": scene["map"]}]
+    return []
+
+
+def _resolved_scene_floors(db: Session, session: GameSession, scene_id: str | None = None):
+    """(scene, [{"name","map"}]) —— 按当前 flags 解析指定场景（默认会话当前场景）及其楼层地图。"""
     from app.ai.context import _active_flags, _resolve_state
 
     module = db.get(Module, session.module_id)
@@ -307,9 +344,15 @@ def _resolved_scene_map(db: Session, session: GameSession, scene_id: str | None 
         scenes[0] if scenes else None,
     )
     if not scene:
-        return None, None
+        return None, []
     resolved = _resolve_state(scene, _active_flags(session))
-    return scene, resolved.get("map")
+    return scene, scene_floor_maps(resolved)
+
+
+def _resolved_scene_map(db: Session, session: GameSession, scene_id: str | None = None):
+    """(scene, resolved_map) —— 取解析后的首层地图（供 [MOVE] 走位等按单图处理）。"""
+    scene, floors = _resolved_scene_floors(db, session, scene_id)
+    return scene, (floors[0]["map"] if floors else None)
 
 
 def apply_move(db: Session, session: GameSession, actor: str, target: str) -> None:
@@ -330,62 +373,76 @@ def apply_move(db: Session, session: GameSession, actor: str, target: str) -> No
     session_service.set_position(db, session.id, scene_id, actor, x, y)
 
 
-def current_scene_map(db: Session, session: GameSession, char_id: str | None = None) -> dict:
-    """运行时：返回某角色所在场景的地图 + 同场景实体位置（玩家/队友/NPC 实际走位）。
-
-    ``char_id`` 给定时（前端按当前用户拉取）取该角色所在场景——分头行动时各人看到的是
-    自己所处场景的地图；缺省时取会话当前场景。只摆放与该场景同处的队伍成员（按 party_locations
-    过滤），免得分头后别处的队友错误地出现在这张图上。
-    位置优先取 world_state.positions（[MOVE] 实际走位），无记录则回落入口附近 / npc_pos。
-    """
-    view_scene_id = session_service.get_char_location(session, char_id)
-    scene, m = _resolved_scene_map(db, session, scene_id=view_scene_id)
-    if not scene:
-        return {"scene_id": None, "scene_name": None, "map": None, "entities": []}
+def _floor_entities(
+    db: Session, session: GameSession, m: dict, scene_id: str, include_party: bool,
+) -> list[dict]:
+    """算一张（楼层）地图上的实体位置：NPC 按该层 npc_pos，队伍成员仅在入口层摆放。"""
     entities: list[dict] = []
-    if m:
-        scene_id = scene.get("id")
-        tracked = dict((session.world_state or {}).get("positions", {}).get(scene_id) or {})
-        occupied: set[tuple[int, int]] = set()
-        locations = session_service.get_party_locations(session)
+    if not m:
+        return entities
+    tracked = dict((session.world_state or {}).get("positions", {}).get(scene_id) or {})
+    occupied: set[tuple[int, int]] = set()
+    locations = session_service.get_party_locations(session)
 
-        def here(cid: str) -> bool:
-            # 无位置记录的成员，回落视作在会话当前场景（向后兼容旧存档）
-            return locations.get(cid, session.current_scene_id) == scene_id
+    def here(cid: str) -> bool:
+        # 无位置记录的成员，回落视作在会话当前场景（向后兼容旧存档）
+        return locations.get(cid, session.current_scene_id) == scene_id
 
-        def place(name: str, kind: str, default_xy: tuple[int, int], asset_id=None):
-            if name in tracked and len(tracked[name]) == 2:
-                x, y = int(tracked[name][0]), int(tracked[name][1])
-            elif tuple(default_xy) not in occupied:
-                # 默认落点（入口门/npc_pos）未被占用就照用；门口本就是合理站位
-                x, y = int(default_xy[0]), int(default_xy[1])
-            else:
-                x, y = _nearest_floor(m, default_xy[0], default_xy[1], occupied)
-            occupied.add((x, y))
-            ent = {"name": name, "x": x, "y": y, "kind": kind}
-            if asset_id:
-                ent["asset_id"] = asset_id
-            entities.append(ent)
+    def place(name: str, kind: str, default_xy: tuple[int, int], asset_id=None):
+        if name in tracked and len(tracked[name]) == 2:
+            x, y = int(tracked[name][0]), int(tracked[name][1])
+        elif tuple(default_xy) not in occupied:
+            x, y = int(default_xy[0]), int(default_xy[1])
+        else:
+            x, y = _nearest_floor(m, default_xy[0], default_xy[1], occupied)
+        occupied.add((x, y))
+        ent = {"name": name, "x": x, "y": y, "kind": kind}
+        if asset_id:
+            ent["asset_id"] = asset_id
+        entities.append(ent)
 
-        sx, sy = _spawn_pos(m)
+    sx, sy = _spawn_pos(m)
+    if include_party:
         pc = db.get(Character, session.player_character_id)
         if pc and here(pc.id):
             place(pc.name, "player", (sx, sy))
         for t in session_service.get_party_members(db, session.id, exclude_id=session.player_character_id):
             if here(t.id):
                 place(t.name, "ally", (sx, sy))
-        for n in m.get("npc_pos") or []:
-            nm = str(n.get("name", "")).strip()
-            if not nm:
-                continue
-            kind = "enemy" if n.get("hostile") else "npc"
-            place(nm, kind, (int(n.get("x", sx)), int(n.get("y", sy))), n.get("asset_id"))
-        m = {**m, "npc_pos": []}  # NPC 已并入 entities，避免前端按 npc_pos 重复画
+    for n in m.get("npc_pos") or []:
+        nm = str(n.get("name", "")).strip()
+        if not nm:
+            continue
+        kind = "enemy" if n.get("hostile") else "npc"
+        place(nm, kind, (int(n.get("x", sx)), int(n.get("y", sy))), n.get("asset_id"))
+    return entities
+
+
+def current_scene_map(db: Session, session: GameSession, char_id: str | None = None) -> dict:
+    """运行时：返回某角色所在场景的**分层**地图 + 各层实体位置。
+
+    ``char_id`` 给定时（前端按当前用户拉取）取该角色所在场景——分头行动时各看各的。
+    多层建筑（floors）返回多张楼层图，前端加楼层切换；单层返回单元素列表。队伍成员统一
+    摆在「入口层」（有出口的那层，否则第 0 层），各层 NPC 按其 npc_pos。
+    """
+    view_scene_id = session_service.get_char_location(session, char_id)
+    scene, floors = _resolved_scene_floors(db, session, scene_id=view_scene_id)
+    if not scene:
+        return {"scene_id": None, "scene_name": None, "floors": []}
+    scene_id = scene.get("id")
+    entry_idx = next((i for i, f in enumerate(floors) if (f["map"].get("entrances"))), 0)
+    out_floors = []
+    for i, f in enumerate(floors):
+        ents = _floor_entities(db, session, f["map"], scene_id, include_party=(i == entry_idx))
+        out_floors.append({
+            "name": f["name"],
+            "map": {**f["map"], "npc_pos": []},  # NPC 已并入 entities，避免重复画
+            "entities": ents,
+        })
     return {
-        "scene_id": scene.get("id"),
+        "scene_id": scene_id,
         "scene_name": scene.get("name") or scene.get("title") or scene.get("id"),
-        "map": m,
-        "entities": entities,
+        "floors": out_floors,
     }
 
 
@@ -400,15 +457,21 @@ async def generate_maps_for_module(db: Session, module_id: str, force: bool = Fa
     new_scenes = []
     for s in (module.scenes or []):
         s = dict(s)
-        if force or not s.get("map"):
+        if force or not (s.get("map") or s.get("floors")):
             npcs = [n.get("name", "?") for n in (module.npcs or []) if n.get("initial_location") == s.get("id")]
             clues = [c.get("name", "?") for c in (module.clues or []) if c.get("location") == s.get("id")]
             try:
-                s["map"] = await generate_scene_map(s, npcs, clues, scene_names, assets)
+                result = await generate_scene_map(s, npcs, clues, scene_names, assets)
+                if isinstance(result, dict) and result.get("floors"):
+                    s["floors"] = result["floors"]  # 多层建筑：各层一张图
+                    s.pop("map", None)
+                else:
+                    s["map"] = result
+                    s.pop("floors", None)
             except Exception:
                 logger.exception("生成场景地图失败：scene=%s", s.get("id"))
-        # 为「结构性」状态（打破墙/进水/露出新房间…）自动据基础图生成变体地图
-        if s.get("map"):
+        # 为「结构性」状态自动生成变体地图（多层场景暂不做变体，规避复杂度）
+        if s.get("map") and not s.get("floors"):
             states = []
             for st in (s.get("states") or []):
                 st = dict(st)

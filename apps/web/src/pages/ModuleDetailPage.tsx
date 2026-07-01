@@ -436,13 +436,17 @@ function MapPanel({ scenes, sceneId, onPick, generating, onGenerate, onSaveMap, 
   const assets = useMapAssets()
   const [editing, setEditing] = useState(false)
   const [variant, setVariant] = useState(-1)   // -1=基础；否则 scene.states 下标
-  // 切换场景时退出编辑、回到基础
-  useEffect(() => { setEditing(false); setVariant(-1) }, [sceneId])
+  const [floorIdx, setFloorIdx] = useState(0)  // 多层建筑：当前查看楼层
+  // 切换场景时退出编辑、回到基础/首层
+  useEffect(() => { setEditing(false); setVariant(-1); setFloorIdx(0) }, [sceneId])
   if (scenes.length === 0) {
     return <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-secondary)' }}>暂无场景，无法生成地图</p>
   }
   const states = (scene?.states || []).filter((st) => (st.when || []).length > 0)
   const variantLabel = (st: SceneState) => `变体：${(st.when || []).join('/')}`
+  // 多层建筑：场景以 floors 存多张楼层图（此处只读预览，暂不支持逐层编辑）
+  const floors = (scene as { floors?: { name: string; map: TileMap }[] } | undefined)?.floors
+  const isMultiFloor = Array.isArray(floors) && floors.length > 0
   // 当前查看/编辑的地图：基础或变体（变体未画过则以基础为起点）
   const shownMap = variant < 0 ? scene?.map : (states[variant]?.map || scene?.map)
 
@@ -483,7 +487,7 @@ function MapPanel({ scenes, sceneId, onPick, generating, onGenerate, onSaveMap, 
         {hasAnyMap && variant < 0 && (
           <button onClick={() => onGenerate(true)} disabled={generating} className="btn-secondary text-sm" style={generating ? { opacity: 0.6 } : undefined}>全部重生成</button>
         )}
-        {scene && (
+        {scene && !isMultiFloor && (
           <button onClick={() => setEditing(true)} className="btn-secondary flex items-center gap-1 text-sm">
             <Pencil size={14} /> {shownMap ? '编辑' : (variant < 0 ? '手绘地图' : '绘制此变体')}
           </button>
@@ -492,7 +496,24 @@ function MapPanel({ scenes, sceneId, onPick, generating, onGenerate, onSaveMap, 
       {variant >= 0 && !states[variant]?.map && (
         <p className="text-xs mb-2" style={{ color: 'var(--color-text-secondary)' }}>此变体尚未单独绘制，下面显示的是基础地图——点「绘制此变体」可基于基础图改（含 AI 生成）。</p>
       )}
-      {shownMap ? (
+      {isMultiFloor ? (() => {
+        const f = floors![Math.min(floorIdx, floors!.length - 1)]
+        return (
+          <div className="rounded-md p-3 overflow-auto" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
+            <div className="flex flex-wrap gap-1 mb-2">
+              {floors!.map((fl, i) => (
+                <button key={i} onClick={() => setFloorIdx(i)} className="text-xs px-2 py-0.5 rounded border"
+                  style={{ borderColor: i === floorIdx ? 'var(--color-accent)' : 'var(--color-border)', background: i === floorIdx ? 'var(--color-accent)' : 'transparent', color: i === floorIdx ? '#fff' : 'var(--color-text-secondary)' }}>
+                  {fl.name || `第 ${i + 1} 层`}
+                </button>
+              ))}
+            </div>
+            <MapView map={f.map} assets={assets} />
+            {f.map?.notes && <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>布局说明：{f.map.notes}</p>}
+            <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>多层建筑地图（只读预览）；如需重画请「全部重生成」。</p>
+          </div>
+        )
+      })() : shownMap ? (
         <div className="rounded-md p-3 overflow-auto" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
           <MapView map={shownMap} assets={assets} />
           {shownMap.notes && <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>布局说明：{shownMap.notes}</p>}

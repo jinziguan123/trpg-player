@@ -135,6 +135,6 @@ def test_scene_map_follows_char_and_filters_party(db_factory):
     session = db.get(GameSession, sid)
     out = map_service.current_scene_map(db, session, char_id=pc_id)
     assert out["scene_id"] == "c"
-    names = {e["name"] for e in out["entities"]}
+    names = {e["name"] for f in out["floors"] for e in f["entities"]}
     assert "莫妮卡" in names
     assert "亨利" not in names    # 队友在别处，不出现在我的地图上

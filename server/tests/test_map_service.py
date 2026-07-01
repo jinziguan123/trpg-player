@@ -137,14 +137,14 @@ def test_current_scene_map_resolves_and_places_player(db_factory):
     db.add(sess); db.commit()
 
     out = map_service.current_scene_map(db, sess)
-    assert out["map"]["tiles"] == base_map["tiles"]
-    assert out["entities"] == [{"name": "阿强", "x": 0, "y": 1, "kind": "player"}]  # 落在入口门
+    assert out["floors"][0]["map"]["tiles"] == base_map["tiles"]
+    assert out["floors"][0]["entities"] == [{"name": "阿强", "x": 0, "y": 1, "kind": "player"}]  # 落在入口门
 
     # 置 flag 后用变体地图（打破墙壁→新地图）
     sess.world_state = {"flags": {"wall_broken": True}}
     db.commit()
     out2 = map_service.current_scene_map(db, sess)
-    assert out2["map"]["tiles"] == alt_map["tiles"]
+    assert out2["floors"][0]["map"]["tiles"] == alt_map["tiles"]
 
 
 def test_map_renders_npcs_and_reflects_move(db_factory):
@@ -165,16 +165,40 @@ def test_map_renders_npcs_and_reflects_move(db_factory):
     db.add(sess); db.commit()
 
     out = map_service.current_scene_map(db, sess)
-    by_name = {e["name"]: e for e in out["entities"]}
+    by_name = {e["name"]: e for e in out["floors"][0]["entities"]}
     assert by_name["阿强"]["kind"] == "player"
     assert by_name["管家"]["kind"] == "npc" and (by_name["管家"]["x"], by_name["管家"]["y"]) == (2, 1)
-    assert out["map"]["npc_pos"] == []  # NPC 改由 entities 下发，避免前端重复画
+    assert out["floors"][0]["map"]["npc_pos"] == []  # NPC 改由 entities 下发，避免前端重复画
 
     # KP 让管家走到书桌(3,1) → 落库并反映
     map_service.apply_move(db, sess, "管家", "书桌")
     out2 = map_service.current_scene_map(db, sess)
-    butler = {e["name"]: e for e in out2["entities"]}["管家"]
+    butler = {e["name"]: e for e in out2["floors"][0]["entities"]}["管家"]
     assert (butler["x"], butler["y"]) == (3, 1)
+
+
+def test_current_scene_map_multifloor(db_factory):
+    """多层建筑：scene.floors 返回多张楼层图；队伍摆在入口层，各层 NPC 按各自 npc_pos。"""
+    f1 = {"w": 5, "h": 3, "tiles": ["#####", "+...#", "#####"],
+          "entrances": [{"name": "门", "x": 0, "y": 1}], "npc_pos": []}
+    f2 = {"w": 5, "h": 3, "tiles": ["#####", "#...#", "#####"], "entrances": [],
+          "npc_pos": [{"name": "怪物", "x": 2, "y": 1, "hostile": True}]}
+    scene = {"id": "house", "name": "老宅",
+             "floors": [{"name": "一楼", "map": f1}, {"name": "地下室", "map": f2}]}
+    db = db_factory()
+    mod = Module(title="t", rule_system="coc", scenes=[scene], npcs=[], clues=[])
+    hero = Character(name="阿强", rule_system="coc", is_player=True)
+    db.add_all([mod, hero]); db.commit()
+    sess = GameSession(module_id=mod.id, player_character_id=hero.id, status="active",
+                       current_scene_id="house", world_state={"flags": {}})
+    db.add(sess); db.commit()
+
+    out = map_service.current_scene_map(db, sess)
+    assert [f["name"] for f in out["floors"]] == ["一楼", "地下室"]
+    # 队伍摆在有入口的一楼；地下室没有队伍、但有怪物
+    assert any(e["kind"] == "player" for e in out["floors"][0]["entities"])
+    assert all(e["kind"] != "player" for e in out["floors"][1]["entities"])
+    assert {e["name"] for e in out["floors"][1]["entities"]} == {"怪物"}
 
 
 def test_provider_vision_flag():

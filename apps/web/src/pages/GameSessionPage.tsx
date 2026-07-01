@@ -13,7 +13,8 @@ import { useMapAssets } from '../components/module/useMapAssets'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker } from 'react-icons/gi'
 import { Copy, Bot, Map as MapIcon, ChevronUp } from 'lucide-react'
 
-interface SceneMapPayload { scene_id: string | null; scene_name: string | null; map: TileMap | null; entities: MapEntity[] }
+interface SceneFloor { name: string; map: TileMap; entities: MapEntity[] }
+interface SceneMapPayload { scene_id: string | null; scene_name: string | null; floors: SceneFloor[] }
 interface KnownLocation { id: string; name: string; current: boolean; visited: boolean }
 
 const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE|SAY|GROUP|MOVE)[^\]]*\]|\[\/SAY\]/g
@@ -111,6 +112,7 @@ export function GameSessionPage() {
   const [splitView, setSplitView] = useState(true)            // 分头行动分栏（检测到多组时生效）
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set())  // 被收起的分组
   const [sceneMap, setSceneMap] = useState<SceneMapPayload | null>(null)
+  const [floorIdx, setFloorIdx] = useState(0)                 // 多层建筑：当前查看的楼层
   const mapAssets = useMapAssets()
 
   const primaryId = currentSession?.player_character_id ?? null
@@ -315,6 +317,9 @@ export function GameSessionPage() {
     const q = myCharId ? `?char_id=${myCharId}` : ''
     api.get<SceneMapPayload>(`/sessions/${sessionId}/scene-map${q}`).then(setSceneMap).catch(() => setSceneMap(null))
   }, [showMap, sessionId, myCharId, currentSession?.current_scene_id, refreshTick])
+
+  // 切换到新场景时，楼层回到第一层（入口层）
+  useEffect(() => { setFloorIdx(0) }, [sceneMap?.scene_id])
 
   // 大地图（已知地点）：展开时拉取，前往后/生成结束刷新
   useEffect(() => {
@@ -545,21 +550,38 @@ export function GameSessionPage() {
             </div>
           </div>
         )}
-        {showMap && (
-          <div className="pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
-            {sceneMap?.map ? (
-              <div className="rounded-md p-2 overflow-auto" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-text-accent)' }}><MapIcon size={12} />{sceneMap.scene_name || '当前场景'}</span>
-                  <button onClick={() => setShowMap(false)} title="收起地图" style={{ color: 'var(--color-text-secondary)' }}><ChevronUp size={14} /></button>
+        {showMap && (() => {
+          const floors = sceneMap?.floors || []
+          const cur = floors[Math.min(floorIdx, floors.length - 1)] || null
+          return (
+            <div className="pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
+              {cur ? (
+                <div className="rounded-md p-2 overflow-auto" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-text-accent)' }}><MapIcon size={12} />{sceneMap?.scene_name || '当前场景'}</span>
+                    <button onClick={() => setShowMap(false)} title="收起地图" style={{ color: 'var(--color-text-secondary)' }}><ChevronUp size={14} /></button>
+                  </div>
+                  {floors.length > 1 && (
+                    <div className="flex flex-wrap gap-1 mb-2">
+                      {floors.map((f, i) => (
+                        <button key={i} onClick={() => setFloorIdx(i)}
+                          className="text-xs px-2 py-0.5 rounded border"
+                          style={{
+                            borderColor: i === floorIdx ? 'var(--color-accent)' : 'var(--color-border)',
+                            background: i === floorIdx ? 'var(--color-accent)' : 'transparent',
+                            color: i === floorIdx ? '#fff' : 'var(--color-text-secondary)',
+                          }}>{f.name || `第 ${i + 1} 层`}</button>
+                      ))}
+                    </div>
+                  )}
+                  <MapView map={cur.map} entities={cur.entities} assets={mapAssets} />
                 </div>
-                <MapView map={sceneMap.map} entities={sceneMap.entities} assets={mapAssets} />
-              </div>
-            ) : (
-              <p className="text-xs text-center py-3" style={{ color: 'var(--color-text-secondary)' }}>当前场景暂无地图——可在模组「地图」视图里生成。</p>
-            )}
-          </div>
-        )}
+              ) : (
+                <p className="text-xs text-center py-3" style={{ color: 'var(--color-text-secondary)' }}>当前场景暂无地图——可在模组「地图」视图里生成。</p>
+              )}
+            </div>
+          )
+        })()}
         {!liveConnected && (
           <div className="text-center text-xs py-1 mb-1 rounded" style={{ color: 'var(--color-text-secondary)', background: 'var(--color-bg-tertiary)' }}>
             与房间连接中断，正在重连…
