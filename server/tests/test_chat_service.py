@@ -305,6 +305,13 @@ def test_group_label_tags_all_output(db_factory):
     assert groups and all(g == "图书馆" for g in groups)
 
 
+def test_split_focus_prompt_forbids_acting_for_members():
+    """分头聚焦提示词必须禁止 KP 替该场景成员（玩家角色）说话/行动，只叙述场景与 NPC 反应。"""
+    p = chat_service.SPLIT_FOCUS_PROMPT.format(label="疗养院", members="莫妮卡")
+    assert "绝不替" in p and ("说话" in p and "行动" in p)
+    assert "玩家角色" in p
+
+
 def test_location_groups_by_actual_scene(db_factory):
     """按每人真实所在场景归并：全队同处不分头；有人 travel 到别处则分头，同场景合一列。"""
     db = db_factory()
