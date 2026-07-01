@@ -79,6 +79,44 @@ def test_known_location_unlocked_by_facility_suffix(db_factory):
     assert "san" in session_service.known_scene_ids(module, session, events)
 
 
+def test_house_unlocked_by_generic_suffix_mention(db_factory):
+    """提到较宽泛的「房子」也能解锁标题以「房子」结尾的地点（如「科比特的老房子」）。"""
+    db = db_factory()
+    sid, _, _, mod_id = _seed(db)
+    module = db.get(Module, mod_id)
+    module.scenes = _SCENES + [{"id": "house", "title": "科比特的老房子", "connections": []}]
+    db.commit()
+    session = db.get(GameSession, sid)
+    events = [_Ev("narration", "他把钥匙推过来：「这栋房子就一直空着。」")]
+    assert "house" in session_service.known_scene_ids(module, session, events)
+
+
+def test_scene_change_moves_player_and_colocated_party(db_factory):
+    """[SCENE_CHANGE] 明确移动：主角切场景，同处的队友一同前往；目的地变已访问、可见。"""
+    import asyncio
+    from app.services import chat_service
+
+    db = db_factory()
+    sid, pc_id, ally_id, mod_id = _seed(db)
+    module = db.get(Module, mod_id)
+    game_session = db.get(GameSession, sid)
+    player = db.get(Character, pc_id)
+    ally = db.get(Character, ally_id)
+
+    async def run():
+        return [c async for c in chat_service._process_commands(
+            db, sid, "他们走进档案馆。[SCENE_CHANGE: scene_id=c]",
+            module, player, game_session, None, teammates=[ally],
+        )]
+
+    asyncio.run(run())
+    session = db.get(GameSession, sid)
+    assert session_service.get_char_location(session, pc_id) == "c"     # 主角移动
+    assert session_service.get_char_location(session, ally_id) == "c"   # 同处队友一同前往
+    assert "c" in (session.world_state or {}).get("visited_scenes")     # 目的地变已访问
+    assert "c" in session_service.known_scene_ids(module, session, [])  # 已访问即可见
+
+
 def test_set_char_location_moves_player(db_factory):
     db = db_factory()
     sid, pc_id, _, mod_id = _seed(db)

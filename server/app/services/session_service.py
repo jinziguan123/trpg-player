@@ -646,13 +646,15 @@ def _scene_aliases(title: str) -> set[str]:
     """
     title = (title or "").strip()
     aliases = {title} if title else set()
-    for suf in _FACILITY_SUFFIXES:
-        if title.endswith(suf) and len(title) > len(suf):
-            aliases.add(suf)
-            prefix = title[: -len(suf)].strip("·的 ")
-            if len(prefix) >= 2:
-                aliases.add(prefix)
-            break
+    # 收集标题结尾命中的所有设施类型后缀（如「科比特的老房子」→「老房子」「房子」），
+    # 这样对话里提到较宽泛的「房子」也能解锁；再用最长后缀之前的专名作前缀（「科比特」）。
+    matched = [suf for suf in _FACILITY_SUFFIXES if title.endswith(suf) and len(title) > len(suf)]
+    aliases.update(matched)
+    if matched:
+        longest = max(matched, key=len)
+        prefix = title[: -len(longest)].strip("·的 ")
+        if len(prefix) >= 2:
+            aliases.add(prefix)
     return {a for a in aliases if len(a) >= 2}
 
 

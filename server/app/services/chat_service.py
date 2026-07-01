@@ -1642,10 +1642,16 @@ async def _process_commands(
     for match in SCENE_CHANGE_RE.finditer(kp_text):
         ref = match.group(1).strip()
         sid = _resolve_scene_ref(module, ref)
-        # 只接受能对应到真实场景的 id/名字；解析不到就不动 current_scene_id，
+        # 只接受能对应到真实场景的 id/名字；解析不到就不动，
         # 避免写入脏值后地图回退到「第一个场景」造成「玩家换图了地图却没切」。
-        if sid and sid != game_session.current_scene_id:
-            session_service.update_scene(db, session_id, sid)
+        old = session_service.get_char_location(game_session, player_char.id)
+        if sid and sid != old:
+            # 主角明确移动到新场景：更新其位置（→ current_scene_id、已访问、地图跟随）；
+            # 同处一地的队友一同前往，分头在别处的队友留在原地。
+            session_service.set_char_location(db, session_id, player_char.id, sid)
+            for t in (teammates or []):
+                if session_service.get_char_location(game_session, t.id) == old:
+                    session_service.set_char_location(db, session_id, t.id, sid)
             db.refresh(game_session)
             yield _make_chunk("system", f"场景切换至：{_scene_name(module, sid)}")
         elif not sid:
