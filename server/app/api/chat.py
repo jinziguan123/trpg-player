@@ -217,6 +217,7 @@ async def travel(
         raise HTTPException(403, str(e))
 
     module = db.get(Module, game_session.module_id)
+    scene_id = (data.scene_id or "").strip()
     events = session_service.get_session_events(db, session_id)
     known = session_service.known_scene_ids(module, game_session, events) if module else set()
     if scene_id not in known:

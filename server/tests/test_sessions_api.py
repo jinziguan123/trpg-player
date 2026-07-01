@@ -110,3 +110,30 @@ def test_legacy_single_player_create_still_works(client):
     assert body["player_character_id"] == ids["hero"]
     assert len(body["participants"]) == 1
     assert body["participants"][0]["is_primary"]
+
+
+def _make_session(c, ids) -> str:
+    resp = c.post(
+        "/api/sessions",
+        json={"module_id": ids["module"],
+              "participants": [{"character_id": ids["hero"], "is_primary": True}]},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["id"]
+
+
+def test_locations_endpoint_smoke(client):
+    c, ids = client
+    sid = _make_session(c, ids)
+    r = c.get(f"/api/sessions/{sid}/locations")
+    assert r.status_code == 200, r.text
+    assert "locations" in r.json()
+
+
+def test_travel_unknown_scene_rejected(client):
+    """前往未知地点应 400（回归：此前 travel 端点漏了 scene_id 定义会 500）。"""
+    c, ids = client
+    sid = _make_session(c, ids)
+    r = c.post(f"/api/sessions/{sid}/travel", json={"scene_id": "no_such_scene"})
+    assert r.status_code == 400, r.text
+    assert "尚未知晓" in r.json()["detail"]
