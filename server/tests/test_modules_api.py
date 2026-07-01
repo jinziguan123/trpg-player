@@ -5,7 +5,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.api.modules import _convert_doc_to_text, _decode_text, _extract_doc_text, _select_pdf_images
+from app.api.modules import (
+    _convert_doc_to_text,
+    _decode_text,
+    _extract_doc_text,
+    _normalize_image,
+    _select_pdf_images,
+)
 from app.database import get_db
 from app.main import app
 from app.models import Base, Module  # noqa: F401 注册表
@@ -35,11 +41,34 @@ def test_parse_module_images(monkeypatch):
         asyncio.run(ms.parse_module_images([(b"x", "image/png")], "coc"))
 
 
-def test_select_pdf_images_filters_and_sorts():
-    """PDF 内嵌图：过滤过小图标、按体积降序、识别 mime（地图通常是最大那张）。"""
+def _png_bytes(w: int, h: int) -> bytes:
+    """生成一张带渐变纹理的真实 PNG（够大、可被 Pillow 解码）。"""
+    import io
+
+    from PIL import Image
+    im = Image.new("RGB", (w, h))
+    im.putdata([((x * 3) % 256, (y * 5) % 256, (x + y) % 256) for y in range(h) for x in range(w)])
+    b = io.BytesIO()
+    im.save(b, "PNG")
+    return b.getvalue()
+
+
+def test_normalize_image_reencodes_and_rejects_garbage():
+    """规整：合法图 → RGB JPEG（可解码）；无法解码的字节 → None。"""
+    import io
+
+    from PIL import Image
+    good = _png_bytes(120, 120)
+    norm = _normalize_image(None, good)
+    assert norm is not None and norm[1] == "image/jpeg"
+    Image.open(io.BytesIO(norm[0])).verify()      # 产出确为合法图
+    assert _normalize_image(None, b"not-an-image-at-all") is None
+
+
+def test_select_pdf_images_filters_sorts_and_normalizes():
+    """PDF 内嵌图：过滤过小图标、按原始体积降序、统一规整为合法 JPEG；畸形图跳过。"""
     class _Img:
-        def __init__(self, name, data):
-            self.name = name
+        def __init__(self, data):   # 只有 .data（无 .image），触发经 data 解码的兜底路径
             self.data = data
 
     class _Page:
@@ -50,15 +79,16 @@ def test_select_pdf_images_filters_and_sorts():
         def __init__(self, pages):
             self.pages = pages
 
+    big = _png_bytes(200, 200)      # ~1KB
+    small = _png_bytes(120, 120)    # ~0.5KB
     reader = _Reader([
-        _Page([_Img("logo.png", b"x" * 100)]),                 # 太小 → 剔除
-        _Page([_Img("map.jpg", b"y" * 9000),                    # 最大 → 排第一
-               _Img("handout.png", b"z" * 5000)]),
+        _Page([_Img(b"x" * 100)]),                 # 太小 → 剔除（min_bytes）
+        _Page([_Img(big), _Img(small), _Img(b"g" * 9000)]),  # 末个是畸形大字节 → 规整失败跳过
     ])
-    out = _select_pdf_images(reader, min_bytes=3000)
-    assert [len(d) for d, _ in out] == [9000, 5000]             # 降序，剔除了 100 字节的
-    assert out[0][1] == "image/jpeg" and out[1][1] == "image/png"
-    assert _select_pdf_images(_Reader([_Page([])])) == []       # 无图
+    out = _select_pdf_images(reader, min_bytes=300)
+    assert len(out) == 2                            # 太小的与畸形的都被排除
+    assert all(mime == "image/jpeg" for _, mime in out)  # 统一 JPEG
+    assert _select_pdf_images(_Reader([_Page([])])) == []
 
 
 def test_doc_converted_via_textutil(monkeypatch):

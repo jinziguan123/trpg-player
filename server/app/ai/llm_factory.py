@@ -74,7 +74,10 @@ class OpenAICompatProvider(LLMProvider):
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         resp = await self._client.post(self._api_url, headers=self._headers(), json=payload)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            # 把服务端返回体带上，便于定位（如图片格式/数量/尺寸被拒），并给出可读错误
+            body = (resp.text or "")[:500]
+            raise RuntimeError(f"视觉接口返回 {resp.status_code}：{body}")
         return resp.json()["choices"][0]["message"]["content"]
 
     async def stream(

@@ -36,30 +36,59 @@ def _read_pdf_text(content: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
-def _select_pdf_images(reader, max_images: int = 8, min_bytes: int = 3000) -> list[tuple[bytes, str]]:
-    """从 PdfReader 抽取内嵌位图（地图/手稿插图），按体积降序取前 N 张。
+def _normalize_image(pil, data: bytes) -> tuple[bytes, str] | None:
+    """把 PDF 里抽出的图规整成「视觉接口一定能解码」的 RGB JPEG（限尺寸），失败返回 None。
 
-    用 pypdf 自带的 page.images（无需引入额外依赖）；过滤掉过小的图标/装饰，
-    地图通常是页面里最大的那张图，故按 data 体积排序。
+    pypdf 的 img.data 对某些图（CMYK/索引色/特殊滤镜/掩膜）并非合法的独立 PNG/JPEG，
+    直接当 image/png 发出去会被接口 400 拒收。统一经 Pillow 重新编码可规避，并顺带压体积。
     """
-    imgs: list[tuple[bytes, str]] = []
+    import io
+
+    from PIL import Image
+
+    im = pil
+    if im is None:
+        try:
+            im = Image.open(io.BytesIO(data))
+        except Exception:
+            return None
+    try:
+        if im.mode not in ("RGB", "L"):
+            im = im.convert("RGB")
+        im.thumbnail((1600, 1600))  # 限制最长边，避免过大 payload
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=85)
+        return buf.getvalue(), "image/jpeg"
+    except Exception:
+        return None
+
+
+def _select_pdf_images(reader, max_images: int = 8, min_bytes: int = 3000) -> list[tuple[bytes, str]]:
+    """从 PdfReader 抽取内嵌位图（地图/手稿插图），按体积降序取前 N 张并规整为合法 JPEG。
+
+    地图通常是页面里最大的那张图，故按原始体积排序优先；每张经 Pillow 重新编码
+    （统一 RGB JPEG、限尺寸），无法解码的直接跳过——避免把畸形图发给视觉接口触发 400。
+    """
+    candidates: list[tuple[object, bytes, int]] = []
     for page in reader.pages:
         for img in getattr(page, "images", None) or []:
             data = getattr(img, "data", b"") or b""
             if len(data) < min_bytes:
                 continue
-            name = (getattr(img, "name", "") or "").lower()
-            if name.endswith(".png"):
-                mime = "image/png"
-            elif name.endswith((".jpg", ".jpeg")):
-                mime = "image/jpeg"
-            elif name.endswith(".gif"):
-                mime = "image/gif"
-            else:
-                mime = "image/png"
-            imgs.append((data, mime))
-    imgs.sort(key=lambda t: len(t[0]), reverse=True)
-    return imgs[:max_images]
+            try:
+                pil = img.image  # pypdf 已解码的 PIL Image（访问即解码，可能抛错）
+            except Exception:
+                pil = None
+            candidates.append((pil, data, len(data)))
+    candidates.sort(key=lambda t: t[2], reverse=True)
+    out: list[tuple[bytes, str]] = []
+    for pil, data, _ in candidates:
+        norm = _normalize_image(pil, data)
+        if norm:
+            out.append(norm)
+        if len(out) >= max_images:
+            break
+    return out
 
 
 def _extract_pdf_images(content: bytes, max_images: int = 8) -> list[tuple[bytes, str]]:
@@ -191,6 +220,9 @@ async def upload_module(
             parsed = await module_service.parse_module_text(raw_text, rule_system)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        # 视觉/文本接口报错（如图片被拒、超限）：回可读信息而非裸 500
+        raise HTTPException(502, f"模型解析失败：{e}")
     parsed["rule_system"] = rule_system
 
     module = module_service.create_module(db, parsed, raw_content=raw_text)
