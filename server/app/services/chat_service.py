@@ -948,6 +948,38 @@ def _team_only_groups(groups: list[dict], player_name: str) -> list[dict]:
     return out
 
 
+def _scene_grouped(
+    team_groups: list[dict], module: Module, player_char: Character, player_scene_id: str | None,
+) -> list[dict]:
+    """把队友分组 + 玩家当前场景，按「实际场景」归并成列（同场景合一列，列名＝场景名）。
+
+    解决两点：①玩家在自己场景里的行动也要有回应——她的当前场景独立成一列（用真实所在，
+    不采信意图、不移动她）；②分栏以「小地图/场景」为原子：同一场景内即使分头也不再分列，
+    且跨回合同一场景用同一稳定列名（避免「房子」「住宅」被当成两列）。
+    """
+    by_scene: dict[str, dict] = {}
+    order: list[str] = []
+
+    def add(scene_id: str, label: str, members: list[str]) -> None:
+        if scene_id not in by_scene:
+            by_scene[scene_id] = {"label": label, "members": []}
+            order.append(scene_id)
+        for m in members:
+            if m not in by_scene[scene_id]["members"]:
+                by_scene[scene_id]["members"].append(m)
+
+    if player_scene_id:
+        add(player_scene_id, _scene_name(module, player_scene_id), [player_char.name])
+    for g in team_groups:
+        sid = _resolve_scene_ref(module, g.get("label") or "")
+        if sid:
+            add(sid, _scene_name(module, sid), g.get("members") or [])
+        else:  # 解析不到真实场景，退回按原标签独立成列
+            key = g.get("label") or "?"
+            add(key, key, g.get("members") or [])
+    return [by_scene[s] for s in order]
+
+
 SPLIT_FOCUS_PROMPT = (
     "本回合队伍分头行动。现在【只】叙述以下成员在「{label}」发生的经过：{members}。\n"
     "要求：详尽完整，与其他分组同等篇幅；只写这一组，绝不要叙述或提及其他分组的人"
@@ -976,11 +1008,16 @@ async def _run_generation(
     if teammates:
         groups = await _plan_groups(llm, player_char, teammates, events)
     team_groups = _team_only_groups(groups, player_char.name)
+    scene_groups: list[dict] = []
+    if team_groups:
+        # 按「实际场景」归并：玩家当前所在独立成列（回应其场景内行动），同场景合一列。
+        p_scene = session_service.get_char_location(game_session, player_char.id)
+        scene_groups = _scene_grouped(team_groups, module, player_char, p_scene)
 
-    if len(team_groups) >= 2:
+    if len(scene_groups) >= 2:
         await _run_split_generation(
             db, session_id, game_session, module, player_char, events,
-            teammates, kp, llm, rules_enabled, matcher_npcs, team_groups,
+            teammates, kp, llm, rules_enabled, matcher_npcs, scene_groups,
         )
         return
 

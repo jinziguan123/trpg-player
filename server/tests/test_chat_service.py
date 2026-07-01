@@ -388,6 +388,36 @@ def test_team_only_groups_excludes_player():
     ]
 
 
+def test_scene_grouped_adds_player_scene_and_merges_by_scene():
+    """按场景归并：玩家当前场景独立成列；标签解析到同一场景则合并；列名＝场景名。"""
+    module = Module(
+        title="M", rule_system="coc", npcs=[],
+        scenes=[
+            {"id": "scene_office", "title": "事务所"},
+            {"id": "scene_lib", "title": "中央图书馆"},
+            {"id": "scene_house", "title": "科比特的老房子"},
+        ],
+    )
+    player = Character(name="莫妮卡·卡佩尔", rule_system="coc")
+    team_groups = [
+        {"label": "图书馆", "members": ["亨利·卡特"]},   # → 中央图书馆
+        {"label": "房子", "members": ["约翰·卡特"]},     # → 科比特的老房子
+    ]
+    out = chat_service._scene_grouped(team_groups, module, player, "scene_office")
+    labels = [g["label"] for g in out]
+    assert labels == ["事务所", "中央图书馆", "科比特的老房子"]   # 玩家所在列在前
+    assert out[0]["members"] == ["莫妮卡·卡佩尔"]
+
+    # 两个队友的标签都解析到同一场景（房子/老房子）→ 合并为一列
+    merged = chat_service._scene_grouped(
+        [{"label": "房子", "members": ["亨利·卡特"]},
+         {"label": "老房子", "members": ["约翰·卡特"]}],
+        module, player, "scene_office",
+    )
+    house = [g for g in merged if g["label"] == "科比特的老房子"]
+    assert len(house) == 1 and set(house[0]["members"]) == {"亨利·卡特", "约翰·卡特"}
+
+
 def test_plan_groups_no_split_when_single_actor():
     """本回合只有一人行动时不算分头，直接回退整队（不调用 LLM）。"""
     class _BoomLLM:
