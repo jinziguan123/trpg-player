@@ -371,6 +371,23 @@ def test_written_card_text_with_markdown_not_extracted():
     assert result[2] == []  # 卡片书写内容不被当成对话
 
 
+def test_team_only_groups_excludes_player():
+    """分头分组剔除玩家：玩家不进分头叙事（其移动只由大地图前往触发）。"""
+    groups = [
+        {"label": "疗养院", "members": ["莫妮卡·卡佩尔"]},          # 玩家所在 → 整组被移除
+        {"label": "图书馆", "members": ["亨利·卡特"]},
+        {"label": "档案馆", "members": ["约翰·卡特"]},
+    ]
+    out = chat_service._team_only_groups(groups, "莫妮卡·卡佩尔")
+    assert [g["label"] for g in out] == ["图书馆", "档案馆"]        # 疗养院（玩家）被剔除
+    assert all("莫妮卡·卡佩尔" not in g["members"] for g in out)
+    # 玩家与队友混在同一组时，只移除玩家、保留队友
+    mixed = [{"label": "门厅", "members": ["莫妮卡·卡佩尔", "亨利·卡特"]}]
+    assert chat_service._team_only_groups(mixed, "莫妮卡·卡佩尔") == [
+        {"label": "门厅", "members": ["亨利·卡特"]}
+    ]
+
+
 def test_plan_groups_no_split_when_single_actor():
     """本回合只有一人行动时不算分头，直接回退整队（不调用 LLM）。"""
     class _BoomLLM:

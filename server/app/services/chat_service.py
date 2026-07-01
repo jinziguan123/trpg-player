@@ -935,6 +935,19 @@ async def _plan_groups(
     return groups if len(groups) >= 2 else []
 
 
+def _team_only_groups(groups: list[dict], player_name: str) -> list[dict]:
+    """把玩家从分头分组里剔除，只留 AI 队友分组。
+
+    玩家的移动只由其自行经大地图触发，绝不因分头意图被叙述成已抵达；故分头叙事只覆盖队友。
+    """
+    out: list[dict] = []
+    for g in groups:
+        members = [m for m in (g.get("members") or []) if m != player_name]
+        if members:
+            out.append({"label": g["label"], "members": members})
+    return out
+
+
 SPLIT_FOCUS_PROMPT = (
     "本回合队伍分头行动。现在【只】叙述以下成员在「{label}」发生的经过：{members}。\n"
     "要求：详尽完整，与其他分组同等篇幅；只写这一组，绝不要叙述或提及其他分组的人"
@@ -957,15 +970,17 @@ async def _run_generation(
     rules_enabled = bool(events) and rulebook_service.has_rulebook(db, module.rule_system)
     matcher_npcs = _matcher_npcs(module, teammates)
 
-    # 分头行动：先规划分组，命中（≥2 组）则逐组单独生成、确定性打标签；否则走整队单遍。
+    # 分头行动：先规划分组。玩家的移动只由其自行经大地图触发——故把玩家从分头分组里剔除，
+    # 分头只对 AI 队友生成各自场景的叙事与位置；玩家留在主线，绝不因「我打算去X」被叙述成已抵达。
     groups: list[dict] = []
     if teammates:
         groups = await _plan_groups(llm, player_char, teammates, events)
+    team_groups = _team_only_groups(groups, player_char.name)
 
-    if len(groups) >= 2:
+    if len(team_groups) >= 2:
         await _run_split_generation(
             db, session_id, game_session, module, player_char, events,
-            teammates, kp, llm, rules_enabled, matcher_npcs, groups,
+            teammates, kp, llm, rules_enabled, matcher_npcs, team_groups,
         )
         return
 
