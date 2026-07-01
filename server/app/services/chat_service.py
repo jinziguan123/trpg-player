@@ -50,8 +50,9 @@ RULE_LOOKUP_RE = re.compile(
 )
 # 剧情状态推进：KP 在叙事节拍发 [SET_FLAG: flag=xxx] 置标志、[CLEAR_FLAG: flag=xxx] 清标志，
 # 场景/NPC 的状态变体据此切换（如「地下室进水后变致命」「危险消退」）。是内部控制标签，不展示给玩家。
-SET_FLAG_RE = re.compile(r"\[SET_FLAG:\s*flag=([^\]]+)\]")
-CLEAR_FLAG_RE = re.compile(r"\[CLEAR_FLAG:\s*flag=([^\]]+)\]")
+# 容忍：漏写「flag=」、冒号写成空格（如「[SET_FLAG hint_x]」）。全角括号在处理前已归一为半角。
+SET_FLAG_RE = re.compile(r"\[SET_FLAG[:：\s]\s*(?:flag=)?\s*([^\]]+?)\s*\]")
+CLEAR_FLAG_RE = re.compile(r"\[CLEAR_FLAG[:：\s]\s*(?:flag=)?\s*([^\]]+?)\s*\]")
 # 走位：KP 在叙述里就地标记角色移动到某锚点（物体/出口/NPC/其他角色/坐标）。内联剔除、不打断叙述。
 MOVE_RE = re.compile(r"\[MOVE:([^\]]*)\]")
 # 分头行动：KP 在每个分组/场景内容前标 [GROUP: scene=<场景标签>]，后续内容归该组，前端据此分栏。内联剔除。
@@ -95,6 +96,18 @@ CMD_TAG_PREFIXES = (
     "DICE_CHECK:", "OPPOSED_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:",
     "SCENE_CHANGE:", "RULE_LOOKUP:", "SET_FLAG:", "CLEAR_FLAG:",
 )
+# 指令关键词（去冒号）：用于容错识别——模型有时漏写冒号或用空格（如「SET_FLAG hint_x」），
+# 也常用全角括号【】。识别到即当指令处理（剔除/执行），避免整条指令泄漏进旁白。
+_CMD_TAG_KEYWORDS = tuple(p.rstrip(":") for p in CMD_TAG_PREFIXES)
+
+
+def _is_cmd_tag(inner: str) -> bool:
+    """inner（去掉方括号后的内容）是否为一条终止型指令标签，容忍缺冒号/用空格。"""
+    s = inner.lstrip()
+    for kw in _CMD_TAG_KEYWORDS:
+        if s == kw or s.startswith(kw + ":") or s.startswith(kw + "：") or s.startswith(kw + " "):
+            return True
+    return False
 
 # 单次生成内最多连续查阅规则书的次数（防止 KP 反复查导致长链/慢）
 MAX_RULE_LOOKUPS = 2
@@ -400,6 +413,7 @@ async def _stream_narration_filtered(
     pending = ""
     in_bracket = False
     bracket_buf = ""
+    bracket_open = ""   # 记录本次括号是 [ 还是【，非指令时按原样回吐
     tag_found = False
 
     in_say = False
@@ -555,34 +569,37 @@ async def _stream_narration_filtered(
                 continue
 
             if in_bracket:
-                bracket_buf += ch
-                if ch == "]":
-                    inner_s = bracket_buf[:-1].strip()
+                # 容忍全角括号【】：作为与 []] 等价的指令括号闭合
+                if ch in "]】":
+                    inner_s = bracket_buf.strip()
                     bracket_buf = ""
                     in_bracket = False
-                    if inner_s.startswith("MOVE:"):
+                    if inner_s.startswith("MOVE:") or inner_s.startswith("MOVE "):
                         continue
-                    if inner_s.startswith("GROUP:"):
-                        kv = _parse_tag_kv(inner_s[len("GROUP:"):])
+                    if inner_s.startswith("GROUP:") or inner_s.startswith("GROUP "):
+                        kv = _parse_tag_kv(inner_s.split(":", 1)[-1] if ":" in inner_s else inner_s[len("GROUP"):])
                         label = (kv.get("scene") or kv.get("group") or kv.get("name") or "").strip()
                         group_marks.append((len(narration), label or None))
                         continue
-                    if inner_s.startswith("SAY:"):
+                    if inner_s.startswith("SAY:") or inner_s.startswith("SAY "):
                         out = _flush_pending()
                         if out:
                             yield _mk("narration", out, actor_name="KP")
-                        rest = inner_s[len("SAY:"):].strip()
+                        rest = inner_s[len("SAY"):].lstrip(": ").strip()
                         kv = _parse_tag_kv(rest)
                         say_speaker = (kv.get("who") or kv.get("name") or kv.get("speaker") or rest).strip()
                         say_buf = ""
                         in_say = True
                         continue
-                    if any(inner_s.startswith(p) for p in CMD_TAG_PREFIXES):
+                    if _is_cmd_tag(inner_s):
                         tag_found = True
                         break
-                    pending += "[" + inner_s + "]"
-            elif ch == "[":
+                    pending += bracket_open + inner_s + ("】" if bracket_open == "【" else "]")
+                else:
+                    bracket_buf += ch
+            elif ch in "[【":
                 in_bracket = True
+                bracket_open = ch
                 bracket_buf = ""
             elif (ch in "“「『") and not in_quote:
                 # 开引号：先判说话人（基于引号前文），冲掉旁白，进入引号收集。
@@ -674,7 +691,7 @@ async def _stream_narration_filtered(
         if in_quote:
             pending += quote_open + quote_buf   # 未闭合引号：留旁白
         if in_bracket:
-            pending += "[" + bracket_buf
+            pending += (bracket_open or "[") + bracket_buf
         out = _flush_pending()
         if out:
             yield _mk("narration", out, actor_name="KP")
@@ -1442,6 +1459,8 @@ async def _process_commands(
     lookup_depth: int = 0,
     dice_depth: int = 0,
 ) -> AsyncIterator[str]:
+    # 全角括号归一为半角：模型有时用【】写指令，统一成 [] 好让下面各指令正则命中并处理（而非泄漏）。
+    kp_text = (kp_text or "").replace("【", "[").replace("】", "]")
     # 规则书查阅是终止性指令（独占一次回复的最后一行）：命中即查阅+续写，不再处理本段其余
     if allow_rule_lookup and lookup_depth < MAX_RULE_LOOKUPS:
         lookup = RULE_LOOKUP_RE.search(kp_text)

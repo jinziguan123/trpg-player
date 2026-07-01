@@ -198,6 +198,24 @@ def test_written_text_near_player_stays_in_narration():
     assert "S. KANA" in result[0]  # 字母留在旁白文本里
 
 
+def test_fullwidth_bracket_command_tag_not_leaked():
+    """模型用全角括号/漏冒号写指令（【SET_FLAG hint_x】）也应被当指令剔除，不泄漏进旁白。"""
+    text = "她一字一顿地说完那句话。\n\n【SET_FLAG hint_leviticus_25_10】"
+    result = ["", "", [], [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result)
+    ))
+    assert "SET_FLAG" not in result[0] and "hint_leviticus" not in result[0]
+    assert result[0].strip() == "她一字一顿地说完那句话。"
+
+
+def test_set_flag_regex_tolerant():
+    """SET_FLAG 正则容忍漏写 flag=／冒号写成空格（全角括号在 _process_commands 里已归一）。"""
+    assert chat_service.SET_FLAG_RE.findall("[SET_FLAG: flag=basement_flooded]") == ["basement_flooded"]
+    assert chat_service.SET_FLAG_RE.findall("[SET_FLAG hint_x]") == ["hint_x"]
+    assert chat_service.SET_FLAG_RE.findall("[SET_FLAG:door_open]") == ["door_open"]
+
+
 def test_resolve_scene_ref_id_or_name():
     """SCENE_CHANGE 的引用按 id 或场景名稳健解析；解析不到返回 None（不乱改当前场景）。"""
     mod = Module(title="t", rule_system="coc", scenes=[
