@@ -1,10 +1,40 @@
+import asyncio
+import logging
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.schemas.module import ModuleRead, ModuleUploadResponse, ModuleWrite
 from app.services import map_service, module_service
+
+logger = logging.getLogger(__name__)
+
+# 后台地图生成任务：持引用防 GC；in-flight 去重，避免同一模组并发全量生成。
+_map_gen_tasks: set = set()
+_map_gen_inflight: set[str] = set()
+
+
+def _kick_background_map_gen(module_id: str) -> None:
+    """上传解析成功后，非阻塞地在后台为模组生成全部场景地图（不阻塞上传响应）。"""
+    if not module_id or module_id in _map_gen_inflight:
+        return
+    _map_gen_inflight.add(module_id)
+
+    async def _run():
+        db = SessionLocal()
+        try:
+            await map_service.generate_maps_for_module(db, module_id)
+        except Exception:
+            logger.exception("后台生成模组地图失败：module=%s", module_id)
+        finally:
+            db.close()
+            _map_gen_inflight.discard(module_id)
+
+    task = asyncio.create_task(_run())
+    _map_gen_tasks.add(task)
+    task.add_done_callback(_map_gen_tasks.discard)
 
 
 class VariantMapRequest(BaseModel):
@@ -226,6 +256,9 @@ async def upload_module(
     parsed["rule_system"] = rule_system
 
     module = module_service.create_module(db, parsed, raw_content=raw_text)
+
+    # 解析成功后在后台自动生成全部场景地图（非阻塞：上传立即返回，地图稍后陆续就绪）
+    _kick_background_map_gen(module.id)
 
     return ModuleUploadResponse(
         id=module.id,

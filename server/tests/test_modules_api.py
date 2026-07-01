@@ -53,6 +53,33 @@ def _png_bytes(w: int, h: int) -> bytes:
     return b.getvalue()
 
 
+def test_kick_background_map_gen_dedups(monkeypatch):
+    """上传后后台自动生成地图：同一模组并发只跑一次（in-flight 去重）。"""
+    import asyncio
+
+    from app.api import modules as mod
+
+    calls: list[str] = []
+
+    async def fake_gen(db, module_id, force=False):
+        calls.append(module_id)
+
+    class _DB:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mod.map_service, "generate_maps_for_module", fake_gen)
+    monkeypatch.setattr(mod, "SessionLocal", lambda: _DB())
+
+    async def run():
+        mod._kick_background_map_gen("m1")
+        mod._kick_background_map_gen("m1")   # 仍在进行中 → 不重复调度
+        await asyncio.sleep(0.02)
+
+    asyncio.run(run())
+    assert calls == ["m1"]
+
+
 def test_normalize_image_reencodes_and_rejects_garbage():
     """规整：合法图 → RGB JPEG（可解码）；无法解码的字节 → None。"""
     import io
