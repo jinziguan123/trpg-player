@@ -14,6 +14,7 @@ from app.models.character import Character
 from app.models.event_log import EventLog  # noqa: F401 — 注册建表
 from app.models.module import Module
 from app.models.session import GameSession
+from app.models.session_participant import SessionParticipant  # noqa: F401 — 注册建表
 from app.services import chat_service, session_service
 
 
@@ -426,6 +427,74 @@ def test_detect_check_request_routes_only_real_requests():
     assert none is None
 
 
+def test_check_request_generation_includes_intent(db_factory, monkeypatch):
+    """/check 申请检定时，玩家顺带说明的目标要真正进到 KP 的裁定提示词里——否则场景里同时
+    有多条线索/多个可疑点时，KP 光看技能名猜不出玩家的具体目标。"""
+    _patch_runtime(monkeypatch, db_factory)
+    captured = {}
+
+    async def fake_run_kp_turn(db, session_id, game_session, module, player_char, party_others, user_prompt):
+        captured["prompt"] = user_prompt
+
+    monkeypatch.setattr(chat_service, "_run_kp_turn", fake_run_kp_turn)
+
+    db = db_factory()
+    session_id = _seed_session(db)
+    actor_id = db.get(GameSession, session_id).player_character_id
+
+    asyncio.run(chat_service.run_check_request_generation(session_id, actor_id, "侦查", "搜查书桌暗格"))
+
+    assert "搜查书桌暗格" in captured["prompt"]
+    assert "侦查" in captured["prompt"]
+
+
+def test_check_request_generation_without_intent_prompts_kp_to_infer(db_factory, monkeypatch):
+    """不带 intent 时（旧客户端未传/未填写），提示词要明确要求 KP 自行结合情境判断，而非留空。"""
+    _patch_runtime(monkeypatch, db_factory)
+    captured = {}
+
+    async def fake_run_kp_turn(db, session_id, game_session, module, player_char, party_others, user_prompt):
+        captured["prompt"] = user_prompt
+
+    monkeypatch.setattr(chat_service, "_run_kp_turn", fake_run_kp_turn)
+
+    db = db_factory()
+    session_id = _seed_session(db)
+    actor_id = db.get(GameSession, session_id).player_character_id
+
+    asyncio.run(chat_service.run_check_request_generation(session_id, actor_id, "侦查"))
+
+    assert "结合当前情境自行判断意图" in captured["prompt"]
+
+
+def test_generation_check_intent_detection_forwards_player_text(db_factory, monkeypatch):
+    """自由文本触发的检定申请（如「我用侦查看看书桌暗格」）同样要把这句话带进裁定提示词，
+    这条路径此前和 /check 端点一样漏了这一环。"""
+    _patch_runtime(monkeypatch, db_factory)
+    captured = {}
+
+    async def fake_detect(llm, text, char):
+        return "侦查"
+
+    async def fake_run_kp_turn(db, session_id, game_session, module, player_char, party_others, user_prompt):
+        captured["prompt"] = user_prompt
+
+    monkeypatch.setattr(chat_service, "_detect_check_request", fake_detect)
+    monkeypatch.setattr(chat_service, "_run_kp_turn", fake_run_kp_turn)
+
+    db = db_factory()
+    session_id = _seed_session(db)
+    actor_id = db.get(GameSession, session_id).player_character_id
+    session_service.add_event(
+        db, session_id, "action", "我用侦查看看书桌暗格",
+        actor_id=actor_id, actor_name="测试角色",
+    )
+
+    asyncio.run(chat_service.run_chat_generation(session_id))
+
+    assert "书桌暗格" in captured["prompt"]
+
+
 def test_persisted_order_interleaves_narration_and_dialogue(db_factory):
     """落库要保留「旁白/对话交错」的原始顺序（与流式渲染一致），而非旁白全在前、对话全在后。"""
     npcs = [{"name": "史蒂芬·诺特"}]
@@ -616,6 +685,160 @@ def test_generation_injects_turn_plan(db_factory, monkeypatch):
     assert "【本轮裁定计划】" in text
     assert "搜查书桌" in text
     assert "管家的秘密" in text
+
+
+def test_generation_patches_narration_when_validator_flags_violation(db_factory, monkeypatch):
+    """回合校验器（阶段 2）判定违规时，落库版本应换成改写文本，不把汇报体/内部 flag id
+    永久留在会话记录里；对话仍要保留（交错偏移已失真，改走「整段旁白+对话追加」回退路径）。"""
+    _patch_runtime(monkeypatch, db_factory)
+
+    async def fake_run_turn_planner(llm, messages):
+        return chat_service.turn_planner.TurnPlan(
+            safety=chat_service.turn_planner.SafetyPolicy(do_not_reveal=["管家的秘密"]),
+        )
+
+    async def fake_stream(kp, messages, result, npcs=None):
+        result[0] = "【场景状态更新】\n- flag hint_x 仍需调查员获取管家的秘密。"
+        result[1] = result[0]
+        result[2] = [("管家", "别问我。")]
+        result[3] = [(0, "管家", "别问我。")]
+        yield chat_service._make_chunk("narration", result[0], actor_name="KP")
+
+    async def fake_validate(llm, plan, narration):
+        return chat_service.turn_validator.TurnValidation(
+            violated=True, reason="汇报体+泄露", corrected_narration="房间陷入了短暂的沉默。",
+        )
+
+    async def fake_process(*args, **kwargs):
+        if False:
+            yield None
+
+    monkeypatch.setattr(chat_service.turn_planner, "run_turn_planner", fake_run_turn_planner)
+    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+    monkeypatch.setattr(chat_service.turn_validator, "validate_turn_narration", fake_validate)
+    monkeypatch.setattr(chat_service, "_process_commands", fake_process)
+
+    db = db_factory()
+    session_id = _seed_session(db)
+    session_service.add_event(db, session_id, "action", "我搜查书桌", actor_name="测试角色")
+
+    asyncio.run(chat_service.run_chat_generation(session_id))
+
+    evs = session_service.get_session_events(db_factory(), session_id)
+    narrations = [e.content for e in evs if e.event_type == "narration"]
+    dialogues = [e.content for e in evs if e.event_type == "dialogue"]
+    assert narrations == ["房间陷入了短暂的沉默。"]
+    assert "flag hint_x" not in "".join(narrations)
+    assert dialogues == ["别问我。"]  # 对话仍保留，不因改写而丢失
+
+
+def test_split_generation_injects_turn_plan_into_each_group(db_factory, monkeypatch):
+    """分头行动（队伍身处不同场景）不应退化回纯提示词——每个分组也要收到本轮裁定计划。"""
+    _patch_runtime(monkeypatch, db_factory)
+    captured = []
+
+    async def fake_run_turn_planner(llm, messages):
+        return chat_service.turn_planner.TurnPlan(
+            turn_kind="mixed",
+            player_intent="分头行动",
+            safety=chat_service.turn_planner.SafetyPolicy(do_not_reveal=["管家的秘密"]),
+        )
+
+    async def fake_stream(kp, messages, result, npcs=None, group_label=None):
+        captured.append((group_label, messages))
+        result[0] = f"{group_label} 的叙事"
+        result[1] = result[0]
+        yield chat_service._make_chunk("narration", result[0], actor_name="KP")
+
+    async def fake_process(*args, **kwargs):
+        if False:
+            yield None
+
+    monkeypatch.setattr(chat_service.turn_planner, "run_turn_planner", fake_run_turn_planner)
+    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+    monkeypatch.setattr(chat_service, "_process_commands", fake_process)
+
+    db = db_factory()
+    module = Module(
+        title="M", rule_system="coc", npcs=[],
+        scenes=[{"id": "scene_office", "name": "事务所"}, {"id": "scene_lib", "name": "图书馆"}],
+    )
+    pc = Character(name="莫妮卡", rule_system="coc")
+    teammate = Character(name="亨利", rule_system="coc")
+    db.add_all([module, pc, teammate])
+    db.flush()
+    session = GameSession(
+        module_id=module.id, player_character_id=pc.id, status="active",
+        current_scene_id="scene_office", world_state={},
+    )
+    db.add(session)
+    db.commit()
+    session_service.set_char_location(db, session.id, teammate.id, "scene_lib")
+    session = db.get(GameSession, session.id)
+    session_service.add_event(db, session.id, "action", "我们分头行动", actor_name="莫妮卡")
+    events = session_service.get_session_events(db, session.id)
+
+    asyncio.run(chat_service._run_generation(
+        db, session.id, session, module, pc, events, teammates=[teammate],
+    ))
+
+    assert len(captured) == 2  # 两个分组各生成一次
+    for _label, messages in captured:
+        text = "\n".join(m["content"] for m in messages)
+        assert "【本轮裁定计划】" in text
+        assert "管家的秘密" in text
+
+
+def test_travel_runs_team_turn_so_teammates_speak(db_factory, monkeypatch):
+    """玩家经大地图前往后，应紧接一轮 AI 队友回合——否则这条路（不经 run_chat_generation）
+    的队友永远没有发言机会，表现为「一转移地点队友就全程哑火」。"""
+    _patch_runtime(monkeypatch, db_factory)
+
+    async def fake_stream(kp, messages, result, npcs=None, group_label=None):
+        result[0] = "你推开门，眼前是一排落满灰尘的书架。"
+        result[1] = result[0]
+        yield chat_service._make_chunk("narration", result[0], actor_name="KP")
+
+    async def fake_process(*args, **kwargs):
+        if False:
+            yield None
+
+    decided = {"n": 0}
+
+    async def fake_decide(self, messages):
+        decided["n"] += 1
+        return '{"action":"speak","content":"这地方不太对劲。"}'
+
+    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+    monkeypatch.setattr(chat_service, "_process_commands", fake_process)
+    monkeypatch.setattr(chat_service.TeamAgent, "decide", fake_decide)
+
+    db = db_factory()
+    module = Module(
+        title="M", rule_system="coc", npcs=[],
+        scenes=[{"id": "office", "name": "事务所"}, {"id": "library", "name": "图书馆"}],
+    )
+    hero = Character(name="莫妮卡", rule_system="coc", is_player=True)
+    ai = Character(name="亨利", rule_system="coc", is_player=False)
+    db.add_all([module, hero, ai])
+    db.commit()
+    session = session_service.create_session(
+        db, module.id,
+        [{"character_id": hero.id, "is_primary": True},
+         {"character_id": ai.id, "role": "ai"}],
+    )
+    session.current_scene_id = "office"
+    db.commit()
+
+    asyncio.run(chat_service.run_travel_generation(session.id, hero.id, "library"))
+
+    assert decided["n"] == 1  # 前往后队友确实获得了一次决策机会
+    evs = session_service.get_session_events(db_factory(), session.id)
+    tm_dialogues = [
+        e for e in evs if e.event_type == "dialogue" and e.actor_id == ai.id
+    ]
+    assert len(tm_dialogues) == 1  # 队友发言落库，不再哑火
+    assert tm_dialogues[0].content == "这地方不太对劲。"
 
 
 def test_opening_generation_skips_turn_planner(db_factory, monkeypatch):

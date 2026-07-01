@@ -93,6 +93,63 @@ def test_turn_plan_messages_include_trigger_condition(db_factory):
     assert "地下室手记" not in text
 
 
+def test_turn_plan_messages_apply_flag_resolved_npc_state(db_factory):
+    """NPC 的位置/秘密可能因剧情 flag 变化（states 机制）。build_kp_context 会先按已激活
+    flags 解析出『当前样貌』再喂给 KP；planner 必须看到同一份解析结果，否则会因为看着模组
+    里的初始定义，把已经因剧情变化搬到别处、换了秘密的 NPC 判断错。"""
+    db = db_factory()
+    module = Module(
+        title="状态测试",
+        rule_system="coc",
+        scenes=[
+            {"id": "hall", "name": "门厅"},
+            {"id": "study", "name": "书房"},
+        ],
+        npcs=[
+            {
+                "id": "butler",
+                "name": "管家",
+                "description": "老管家",
+                "personality": "谦卑",
+                "secrets": ["知道地下室入口"],
+                "initial_location": "hall",
+                "states": [
+                    {
+                        "when": ["butler_suspicious"],
+                        "initial_location": "study",
+                        "secrets": ["管家就是纵火者"],
+                    }
+                ],
+            }
+        ],
+        clues=[],
+        world_setting={},
+    )
+    hero = Character(name="调查员", rule_system="coc", is_player=True)
+    db.add_all([module, hero])
+    db.commit()
+    session = GameSession(
+        module_id=module.id,
+        player_character_id=hero.id,
+        status="active",
+        current_scene_id="study",
+        world_state={
+            "visited_scenes": ["hall", "study"],
+            "flags": ["butler_suspicious"],
+        },
+    )
+    db.add(session)
+    db.commit()
+
+    messages = turn_planner.build_turn_plan_messages(
+        session, module, hero, [], teammates=[], rules_lookup_enabled=False,
+    )
+    payload = json.loads(messages[1]["content"].split("\n", 1)[1])
+    npc = next(n for n in payload["visible_npcs"] if n["id"] == "butler")
+    assert npc["location"] == "study"  # 因 flag 已搬到书房，不是模组里定义的门厅
+    assert npc["secrets"] == ["管家就是纵火者"]  # 秘密也随 flag 更新，不是初始定义
+
+
 def test_turn_plan_messages_include_recent_actor_names(db_factory):
     db = db_factory()
     module, hero, session = _seed(db)
@@ -142,3 +199,8 @@ async def test_run_turn_planner_parses_json_plan():
     assert injected["role"] == "system"
     assert "调查书桌" in injected["content"]
     assert "管家秘密" in injected["content"]
+    # 计划是内部工作稿：必须明确禁止把它的结构/字段名/内部 id 汇报体输出给玩家
+    # （曾出现过 KP 把计划当成要念的报告，输出【场景状态更新】等标题+要点列表并泄露 flag 名）
+    assert "内部工作稿" in injected["content"]
+    assert "汇报体" in injected["content"]
+    assert "do_not_reveal" in injected["content"]

@@ -137,3 +137,45 @@ def test_travel_unknown_scene_rejected(client):
     r = c.post(f"/api/sessions/{sid}/travel", json={"scene_id": "no_such_scene"})
     assert r.status_code == 400, r.text
     assert "尚未知晓" in r.json()["detail"]
+
+
+def test_check_endpoint_logs_intent_alongside_skill(client, monkeypatch):
+    """申请检定要带上『想对什么检定』的描述并落成可见行动记录——否则场景里同时有多条线索/
+    多个可疑点时，KP 光看技能名猜不出玩家的具体目标。"""
+    import app.api.chat as chat_module
+
+    captured = {}
+
+    def fake_start(session_id, coro, prelude=None):
+        captured["session_id"] = session_id
+        coro.close()  # 不真正触发生成（不碰 LLM），只验证 HTTP 层落地的行为
+
+    monkeypatch.setattr(chat_module.generation_manager, "start", fake_start)
+
+    c, ids = client
+    sid = _make_session(c, ids)
+    resp = c.post(
+        f"/api/sessions/{sid}/check",
+        json={"skill": "侦查", "intent": "搜查书桌暗格"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["session_id"] == sid
+
+    events = c.get(f"/api/sessions/{sid}/events").json()["events"]
+    actions = [e["content"] for e in events if e["event_type"] == "action"]
+    assert any("侦查" in a and "搜查书桌暗格" in a for a in actions)
+
+
+def test_check_endpoint_intent_optional(client, monkeypatch):
+    """不填 intent 仍应正常申请检定（向后兼容旧客户端）。"""
+    import app.api.chat as chat_module
+
+    def fake_start(session_id, coro, prelude=None):
+        coro.close()
+
+    monkeypatch.setattr(chat_module.generation_manager, "start", fake_start)
+
+    c, ids = client
+    sid = _make_session(c, ids)
+    resp = c.post(f"/api/sessions/{sid}/check", json={"skill": "侦查"})
+    assert resp.status_code == 200, resp.text

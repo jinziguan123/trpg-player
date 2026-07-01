@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.ai.context import _active_flags, _resolve_state
 from app.models import Character, GameSession, Module
 
 logger = logging.getLogger(__name__)
@@ -119,13 +120,19 @@ def build_turn_plan_messages(
     """构建 KP 回合规划器消息。
 
     规划器需要看到线索触发条件，但仍遵守运行时可见场景边界，避免提前读取
-    玩家尚未到达区域的线索。
+    玩家尚未到达区域的线索；场景/NPC 先按已激活 flags 解析成「当前样貌」——
+    与 ``build_kp_context`` 用同一套 ``_active_flags``/``_resolve_state``，
+    避免 planner 看到的画像和 KP 实际收到的不一致（如 NPC 位置/秘密因剧情变化）。
     """
+    flags = _active_flags(session)
+    resolved_scenes = [_resolve_state(scene, flags) for scene in (module.scenes or [])]
+    resolved_npcs = [_resolve_state(npc, flags) for npc in (module.npcs or [])]
+
     visible_ids = _visible_scene_ids(session)
     visible_clues = _filter_visible_items(module.clues, visible_ids)
-    visible_npcs = _filter_visible_items(module.npcs, visible_ids)
+    visible_npcs = _filter_visible_items(resolved_npcs, visible_ids)
     current_scene = next(
-        (scene for scene in (module.scenes or []) if scene.get("id") == session.current_scene_id),
+        (scene for scene in resolved_scenes if scene.get("id") == session.current_scene_id),
         None,
     )
     teammates = teammates or []
@@ -221,9 +228,13 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
     return {
         "role": "system",
         "content": (
-            "【本轮裁定计划】\n"
-            "你必须按此计划生成叙事和内部指令。隐藏信息只用于约束，不能写给玩家。"
-            "若 requires_check 为 true，只描述尝试过程，并以计划指定的检定指令收尾。\n"
+            "【本轮裁定计划】（内部工作稿，仅供你裁定参考——不是要念给玩家听的内容）\n"
+            "你必须据此计划生成本回合叙事和内部指令，但绝不能把下面 JSON 的字段名、结构、"
+            "或 flag/线索/NPC 的内部 id 等技术性标识，以任何形式（复述、总结、列表、标题）"
+            "写进给玩家看的文本；看到这份结构化计划**不代表要改用「汇报体」输出**——回复必须"
+            "仍是紧贴情境的自然语言叙事，不得另起标题分段或项目符号列表汇报状态。\n"
+            "若 requires_check 为 true，只描述尝试过程，并以计划指定的检定指令收尾。"
+            "safety.do_not_reveal 的内容不能通过任何暗示性总结泄露。\n"
             + json.dumps(content, ensure_ascii=False, indent=2)
         ),
     }

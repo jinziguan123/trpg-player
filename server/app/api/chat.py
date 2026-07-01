@@ -134,10 +134,20 @@ async def check(
     except ValueError as e:
         raise HTTPException(403, str(e))
 
+    skill = data.skill.strip()
+    intent = data.intent.strip()
+    # 落一条可见行动记录：申请检定这件事本身要留痕（供其他玩家看到、KP 后续上下文也能看到），
+    # 带上 intent 是因为光报技能名时，现场若同时有多条线索/多个可疑点，KP 猜不出具体目标。
+    content = f"（申请「{skill}」检定：{intent}）" if intent else f"（申请「{skill}」检定）"
+    ev = session_service.add_event(
+        db, session_id, "action", content,
+        actor_id=actor.id, actor_name=actor.name,
+    )
+    room_hub.broadcast(session_id, event_to_chunk(ev))
     room_hub.broadcast(session_id, _make_chunk("generating"))
     generation_manager.start(
         session_id,
-        run_check_request_generation(session_id, actor.id, data.skill.strip()),
+        run_check_request_generation(session_id, actor.id, skill, intent),
     )
     return {"ok": True}
 

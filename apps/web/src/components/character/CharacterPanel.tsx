@@ -29,8 +29,9 @@ interface CharacterData {
 
 interface CharacterPanelProps {
   character: CharacterData
-  /** 提供时（在场、查看自己的卡）技能可点击「申请检定」——难度由 KP 裁定，玩家不指定 */
-  onSkillCheck?: (skill: string) => void
+  /** 提供时（在场、查看自己的卡）技能可点击「申请检定」——难度由 KP 裁定，玩家不指定。
+   * intent 是玩家顺带说明的检定目标（可选，如「书桌暗格」），场景里线索不止一处时帮 KP 判断具体目标 */
+  onSkillCheck?: (skill: string, intent: string) => void
 }
 
 const ATTR_LABELS: Record<string, string> = {
@@ -205,9 +206,57 @@ function BasicInfoTab({ character }: { character: CharacterData }) {
   )
 }
 
+/** 单个技能行：自己持有「检定目标」输入框的状态，互不影响。 */
+function SkillCheckRow({
+  name, value, onSkillCheck,
+}: { name: string; value: number; onSkillCheck: (skill: string, intent: string) => void }) {
+  const [intent, setIntent] = useState('')
+  const row = (
+    <>
+      <span>{name}</span>
+      <span className="font-mono font-bold" style={{
+        color: value >= 50 ? 'var(--color-success)' : value >= 25 ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+      }}>
+        {value}
+      </span>
+    </>
+  )
+  return (
+    <ConfirmDialog
+      title="申请检定"
+      description={`就「${name}」（当前值 ${value}）向 KP 申请检定？难度由 KP 据情境裁定，随后你再投骰。`}
+      confirmLabel="申请"
+      onConfirm={() => {
+        onSkillCheck(name, intent.trim())
+        setIntent('')
+      }}
+      extra={
+        <textarea
+          value={intent}
+          onChange={(e) => setIntent(e.target.value)}
+          placeholder="（可选）想对什么做检定？如「书桌暗格」「他刚才那句话」——现场不止一处线索时能帮 KP 判断具体目标"
+          rows={2}
+          className="w-full px-2 py-1 rounded text-xs resize-none"
+          style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}
+        />
+      }
+    >
+      {(open) => (
+        <button
+          onClick={open}
+          title={`申请 ${name} 检定`}
+          className="w-full flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-accent)] hover:bg-opacity-10 cursor-pointer transition-colors"
+        >
+          {row}
+        </button>
+      )}
+    </ConfirmDialog>
+  )
+}
+
 function SkillsTab({
   character, onSkillCheck,
-}: { character: CharacterData; onSkillCheck?: (skill: string) => void }) {
+}: { character: CharacterData; onSkillCheck?: (skill: string, intent: string) => void }) {
   const skills = character.skills || {}
   const [query, setQuery] = useState('')
   const sorted = Object.entries(skills).sort((a, b) => b[1] - a[1])
@@ -231,42 +280,19 @@ function SkillsTab({
       )}
       <div className="space-y-0.5">
         {filtered.map(([name, value]) => {
-          const row = (
-            <>
-              <span>{name}</span>
-              <span className="font-mono font-bold" style={{
-                color: value >= 50 ? 'var(--color-success)' : value >= 25 ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-              }}>
-                {value}
-              </span>
-            </>
-          )
           if (!onSkillCheck) {
             return (
               <div key={name} className="flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-bg-tertiary)]">
-                {row}
+                <span>{name}</span>
+                <span className="font-mono font-bold" style={{
+                  color: value >= 50 ? 'var(--color-success)' : value >= 25 ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                }}>
+                  {value}
+                </span>
               </div>
             )
           }
-          return (
-            <ConfirmDialog
-              key={name}
-              title="申请检定"
-              description={`就「${name}」（当前值 ${value}）向 KP 申请检定？难度由 KP 据情境裁定，随后你再投骰。`}
-              confirmLabel="申请"
-              onConfirm={() => onSkillCheck(name)}
-            >
-              {(open) => (
-                <button
-                  onClick={open}
-                  title={`申请 ${name} 检定`}
-                  className="w-full flex items-center justify-between py-1 px-1 rounded text-xs hover:bg-[var(--color-accent)] hover:bg-opacity-10 cursor-pointer transition-colors"
-                >
-                  {row}
-                </button>
-              )}
-            </ConfirmDialog>
-          )
+          return <SkillCheckRow key={name} name={name} value={value} onSkillCheck={onSkillCheck} />
         })}
         {filtered.length === 0 && (
           <p className="text-xs text-center py-4" style={{ color: 'var(--color-text-secondary)' }}>

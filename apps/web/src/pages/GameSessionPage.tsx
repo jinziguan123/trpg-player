@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
+import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -124,6 +124,7 @@ export function GameSessionPage() {
   // 生成已开始但还没吐出第一段内容（推理类模型先思考、此时无 token）→ 显示"KP 思考中"
   const [thinking, setThinking] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const pinActive = useRef(false)   // 初次加载「持续钉底」窗口是否进行中（期间抑制平滑滚动，避免抢滚）
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const openingTriggered = useRef(false)
   const composingRef = useRef(false)
@@ -338,9 +339,55 @@ export function GameSessionPage() {
     finally { setConfirmTravel(null) }
   }
 
+  // 初次加载/刷新落底：此刻 markdown 等内容布局会在随后一段时间里持续膨胀，单次（甚至两帧）
+  // 滚动都会朝偏小的 scrollHeight 落在半空。改为在一个有限窗口内「持续钉底」——每帧把主区与各
+  // 分栏列都钉到底，直到用户主动滚动或窗口结束，内容再怎么回流也能兜住。用 hasMessages（布尔）
+  // 驱动：只在「消息从无到有」时启动一次，加载期间消息增多不会重跑本副作用、也就不会中断钉底。
+  const hasMessages = messages.length > 0
   useEffect(() => {
+    if (!hasMessages) return
+    const el = scrollRef.current
+    if (!el) return
+    pinActive.current = true
+    let raf = 0
+    const deadline = performance.now() + 1200
+    const pin = () => {
+      const e = scrollRef.current
+      if (e) {
+        e.scrollTop = e.scrollHeight
+        e.querySelectorAll<HTMLElement>('[data-scene-col]').forEach((c) => { c.scrollTop = c.scrollHeight })
+      }
+      if (pinActive.current && performance.now() < deadline) raf = requestAnimationFrame(pin)
+      else pinActive.current = false
+    }
+    raf = requestAnimationFrame(pin)
+    const stop = () => { pinActive.current = false }  // 用户一动就停，别打断他往上翻
+    el.addEventListener('wheel', stop, { passive: true })
+    el.addEventListener('touchmove', stop, { passive: true })
+    return () => {
+      pinActive.current = false
+      if (raf) cancelAnimationFrame(raf)
+      el.removeEventListener('wheel', stop)
+      el.removeEventListener('touchmove', stop)
+    }
+  }, [hasMessages])
+
+  // 后续新消息：平滑到底（初次钉底窗口期间交给钉底循环，避免两者抢滚）。
+  useEffect(() => {
+    if (!hasMessages || pinActive.current) return
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [messages.length])
+
+  // 分头行动的每个场景列是各自独立滚动的容器，主页面的「滚到底」管不到它们。初次钉底窗口
+  // 期间由上面的钉底循环负责；窗口结束后（如实时新增的分栏内容）在此把各列各自滚到底。
+  useLayoutEffect(() => {
+    if (!splitView || pinActive.current) return
+    const snap = () => scrollRef.current
+      ?.querySelectorAll<HTMLElement>('[data-scene-col]')
+      .forEach((el) => { el.scrollTop = el.scrollHeight })
+    snap()
+    requestAnimationFrame(snap)
+  }, [messages.length, splitView])
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
@@ -364,8 +411,9 @@ export function GameSessionPage() {
     return () => el.removeEventListener('scroll', handleScroll)
   }, [handleScroll])
 
-  // 玩家「申请」检定：只报技能，难度交 KP 裁定（玩家不指定）。
-  const rollCheck = async (skill: string) => {
+  // 玩家「申请」检定：只报技能，难度交 KP 裁定（玩家不指定）；intent 是顺带说明的检定目标，
+  // 场景里同时有多条线索/多个可疑点时，光报技能名 KP 猜不出玩家具体想查什么。
+  const rollCheck = async (skill: string, intent: string) => {
     if (!currentSession || streaming) {
       if (streaming) toast.error('KP 正在叙事，请稍候')
       return
@@ -373,7 +421,7 @@ export function GameSessionPage() {
     try {
       setStreaming(true)
       await api.post(`/sessions/${currentSession.id}/check`, {
-        skill, acting_character_id: myCharId,
+        skill, intent, acting_character_id: myCharId,
       })
     } catch (e: unknown) {
       setStreaming(false)
@@ -761,7 +809,7 @@ export function GameSessionPage() {
               <div key={`c${i}`} className="flex gap-3 overflow-x-auto items-start my-1">
                 {shown.map((g) => (
                   // 每个场景列各自独立滚动：长短不一时互不牵连，可单独翻看某一条线
-                  <div key={g} className="flex-1 min-w-[280px] overflow-y-auto chat-scroll pr-1"
+                  <div key={g} data-scene-col className="flex-1 min-w-[280px] overflow-y-auto chat-scroll pr-1"
                     style={{ borderLeft: '2px solid var(--color-border)', paddingLeft: 10, maxHeight: 'calc(100vh - 230px)' }}>
                     <div className="text-xs font-semibold mb-1 sticky top-0 z-10 py-1"
                       style={{ color: 'var(--color-text-accent)', background: 'var(--color-bg-primary)' }}>

@@ -10,10 +10,12 @@ interface ConfirmDialogProps {
   confirmLabel?: string
   onConfirm: () => void | Promise<void>
   children: (open: () => void) => React.ReactNode
+  /** 描述和按钮之间的额外内容（如一个可选输入框），默认无 */
+  extra?: React.ReactNode
 }
 
 export function ConfirmDialog({
-  title, description, confirmLabel = '确认', onConfirm, children,
+  title, description, confirmLabel = '确认', onConfirm, children, extra,
 }: ConfirmDialogProps) {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -37,6 +39,7 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
+        {extra}
         <DialogFooter>
           <button onClick={() => setOpen(false)} className="btn-secondary" disabled={loading}>
             取消

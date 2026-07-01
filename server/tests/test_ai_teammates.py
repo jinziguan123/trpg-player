@@ -145,6 +145,68 @@ def test_team_turn_holds_on_silent_and_bad_json(db_factory, monkeypatch):
     assert teammate_events == []  # silent + 解析失败都 hold，不落库
 
 
+def test_team_context_switches_guidance_by_separation(db_factory):
+    """同处一地 → 克制补位（宁缺毋滥）；分头独处 → 主动推进本场景（全靠自己）。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    events = session_service.get_session_events(db, session.id)
+
+    together = ctx.build_team_context(
+        teammates[0], session, module, events, hero,
+        all_teammates=teammates, separated=False,
+    )[0]["content"]
+    apart = ctx.build_team_context(
+        teammates[0], session, module, events, hero,
+        all_teammates=teammates, separated=True,
+    )[0]["content"]
+
+    assert "补位与响应" in together and "宁缺毋滥" in together
+    assert "全靠你自己" in apart and "主动" in apart
+    assert "补位与响应" not in apart  # 分头时不再是补位定位
+
+
+def test_team_turn_marks_separated_teammate_proactive(db_factory, monkeypatch):
+    """_run_team_turn 按各队友「所在场景 vs 主队锚点」判定分头：分头者收到主动推进指引，
+    同处者收到克制补位指引。"""
+    db = db_factory()
+    module = Module(
+        title="宅邸", rule_system="coc", npcs=[],
+        scenes=[{"id": "hall", "name": "大厅"}, {"id": "cellar", "name": "地窖"}],
+    )
+    hero = Character(name="主角", rule_system="coc", is_player=True)
+    a1 = Character(name="阿尔法", rule_system="coc", is_player=False)
+    a2 = Character(name="贝塔", rule_system="coc", is_player=False)
+    db.add_all([module, hero, a1, a2])
+    db.commit()
+    session = session_service.create_session(
+        db, module.id,
+        [{"character_id": hero.id, "is_primary": True},
+         {"character_id": a1.id, "role": "ai"},
+         {"character_id": a2.id, "role": "ai"}],
+    )
+    session.current_scene_id = "hall"
+    db.commit()
+    session_service.set_char_location(db, session.id, hero.id, "hall")
+    session_service.set_char_location(db, session.id, a1.id, "cellar")  # 分头独处
+    session_service.set_char_location(db, session.id, a2.id, "hall")    # 与主队同处
+    session = db.get(GameSession, session.id)
+
+    seen: dict[str, str] = {}
+
+    async def fake_decide(self, messages):
+        seen[self.character_id] = messages[0]["content"]
+        return '{"action": "silent", "content": ""}'
+
+    monkeypatch.setattr(chat_service.TeamAgent, "decide", fake_decide)
+
+    asyncio.run(_collect(chat_service._run_team_turn(
+        db, session.id, session, module, hero, [a1, a2], llm=None,
+    )))
+
+    assert "全靠你自己" in seen[a1.id]     # 分头 → 主动推进
+    assert "补位与响应" in seen[a2.id]     # 同处 → 克制补位
+
+
 def test_parse_team_decision():
     assert chat_service._parse_team_decision('{"action":"act","content":"查看"}') == {
         "action": "act",

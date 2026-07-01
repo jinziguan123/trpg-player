@@ -15,7 +15,11 @@ from app.ai.prompts.kp_system import (
     PLOT_FLAG_INSTRUCTION,
 )
 from app.ai.prompts.npc_system import NPC_SYSTEM_PROMPT
-from app.ai.prompts.team_system import TEAM_SYSTEM_PROMPT
+from app.ai.prompts.team_system import (
+    TEAM_MODE_SEPARATED,
+    TEAM_MODE_TOGETHER,
+    TEAM_SYSTEM_PROMPT,
+)
 
 CONTEXT_TOKEN_BUDGET = 24000
 RESERVE_FOR_OUTPUT = 4096
@@ -594,8 +598,14 @@ def build_team_context(
     events: list[EventLog],
     player_char: Character,
     all_teammates: list[Character] | None = None,
+    separated: bool = False,
 ) -> list[dict]:
-    """构建单个 AI 队友的决策上下文：场景 + 队伍 + 最近事件。"""
+    """构建单个 AI 队友的决策上下文：场景 + 队伍 + 最近事件。
+
+    ``separated``：该队友是否已与大部队分头（身处与主队不同的场景）。分头时下达「主动推进
+    本场景」的指引（没人替他推动剧情，全靠自己）；同处一地时仍是「补位与响应、宁缺毋滥」，
+    避免抢戏。
+    """
     from app.services import session_service  # 局部导入避免顶层循环依赖
 
     flags = _active_flags(session)
@@ -615,6 +625,11 @@ def build_team_context(
     known = session_service.list_known_locations(module, session, char_id=teammate.id, events=events)
     known_locations = "、".join(loc["name"] for loc in known if not loc["current"]) or "（暂无其他已知地点）"
 
+    mode_guidance = (
+        TEAM_MODE_SEPARATED.format(current_location=current_location)
+        if separated
+        else TEAM_MODE_TOGETHER
+    )
     system_content = TEAM_SYSTEM_PROMPT.format(
         rule_system=module.rule_system.upper(),
         name=teammate.name,
@@ -623,6 +638,7 @@ def build_team_context(
         scene=_format_json(current_scene) if current_scene else "初始场景",
         party_info=party_info,
         known_locations=known_locations,
+        mode_guidance=mode_guidance,
     )
 
     digest = _format_recent_events_digest(

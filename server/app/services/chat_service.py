@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 
 from sqlalchemy.orm import Session
 
-from app.ai import turn_planner
+from app.ai import turn_planner, turn_validator
 from app.ai.agents.kp_agent import KPAgent
 from app.ai.agents.npc_agent import NPCAgent
 from app.ai.agents.team_agent import TeamAgent
@@ -754,13 +754,26 @@ async def _run_team_turn(
     """玩家输入后的一轮 AI 队友自动响应。
 
     每个队友只决策一次；结果写入事件流，并依次让后续队友 / KP 看到。
-    本函数只由 ``run_chat_generation`` 调用，不会自触发，故不存在递归链式生成。
+    本函数只由 ``run_chat_generation`` / ``run_travel_generation`` 调用，不会自触发，
+    故不存在递归链式生成。
+
+    分头判定：队友所在场景 ≠ 主队锚点场景（主角所在）即视为「分头独处」，据此让
+    ``build_team_context`` 下达「主动推进本场景」指引；同处一地仍是克制补位。
     """
+    anchor_scene = (
+        session_service.get_char_location(game_session, player_char.id)
+        or game_session.current_scene_id
+    )
     for teammate in teammates[:MAX_TEAMMATES_PER_TURN]:
         events = session_service.get_session_events(db, session_id)
+        tm_scene = (
+            session_service.get_char_location(game_session, teammate.id)
+            or game_session.current_scene_id
+        )
+        separated = bool(tm_scene and anchor_scene and tm_scene != anchor_scene)
         messages = build_team_context(
             teammate, game_session, module, events, player_char,
-            all_teammates=teammates,
+            all_teammates=teammates, separated=separated,
         )
         agent = TeamAgent(llm, teammate.id)
         try:
@@ -928,6 +941,28 @@ SPLIT_FOCUS_PROMPT = (
 )
 
 
+async def _validate_and_patch_narration(
+    llm, plan: turn_planner.TurnPlan | None, result: list,
+) -> None:
+    """校验本轮旁白是否违反裁定计划的硬约束（泄露 do_not_reveal / 汇报体+内部标识泄露），
+    违反则用改写版本替换落库文本，防止违规内容永久留在会话记录里。
+
+    无法收回已经流式广播出去的内容，但能保证重连、其他玩家、复盘看到的是干净版本。
+    只替换 result[0]（落库/展示用的旁白），result[1]（供 _process_commands 解析指令）不动。
+    改写后原文的「对话插入偏移」(result[3]) 已失真，落库改走 _persist_narration 的回退路径
+    （整段旁白 + 对话追加，牺牲交错顺序换正确性）。
+    """
+    if plan is None:
+        return
+    validation = await turn_validator.validate_turn_narration(llm, plan, result[0])
+    if validation is None or not validation.violated:
+        return
+    logger.warning("KP 回合校验发现违规，已改写落库版本：%s", validation.reason)
+    result[0] = validation.corrected_narration
+    if len(result) > 3:
+        del result[3:]
+
+
 async def _run_generation(
     db: Session,
     session_id: str,
@@ -943,6 +978,16 @@ async def _run_generation(
     rules_enabled = bool(events) and rulebook_service.has_rulebook(db, module.rule_system)
     matcher_npcs = _matcher_npcs(module, teammates)
 
+    # 回合裁定计划：先跑一次结构化 planner（分头与否都需要——分头场景 NPC/线索并行推进，
+    # 反而更需要 clue_policy/npc_policy/safety 兜底），失败/开场（无事件）则不注入，KP 走原逻辑。
+    plan = None
+    if events:
+        plan_messages = turn_planner.build_turn_plan_messages(
+            game_session, module, player_char, events, teammates=teammates,
+            rules_lookup_enabled=rules_enabled,
+        )
+        plan = await turn_planner.run_turn_planner(llm, plan_messages)
+
     # 分头行动：按各成员「真实所在场景」归并（玩家经大地图、队友经 travel 动作更新的确定性位置）。
     # 身处 ≥2 个场景即分头 → 逐场景生成叙事。不再靠 LLM 猜分组、也不因「打算去X」误判。
     scene_groups = _location_groups(game_session, module, player_char, teammates)
@@ -951,6 +996,7 @@ async def _run_generation(
         await _run_split_generation(
             db, session_id, game_session, module, player_char, events,
             teammates, kp, llm, rules_enabled, matcher_npcs, scene_groups,
+            plan=plan,
         )
         return
 
@@ -958,14 +1004,8 @@ async def _run_generation(
         game_session, module, player_char, events, teammates=teammates,
         rules_lookup_enabled=rules_enabled,
     )
-    if events:
-        plan_messages = turn_planner.build_turn_plan_messages(
-            game_session, module, player_char, events, teammates=teammates,
-            rules_lookup_enabled=rules_enabled,
-        )
-        plan = await turn_planner.run_turn_planner(llm, plan_messages)
-        if plan is not None:
-            messages.append(turn_planner.build_turn_plan_message(plan))
+    if plan is not None:
+        messages.append(turn_planner.build_turn_plan_message(plan))
 
     result = ["", "", [], [], []]
     # 取消（硬取消 task）或流式中途报错（如供应商抖动断流）时，已生成的叙事都要落库，
@@ -979,6 +1019,7 @@ async def _run_generation(
         # CancelledError(继承 BaseException) 与普通异常都先把已生成片段落库再上抛
         _persist_narration(db, session_id, result)
         raise
+    await _validate_and_patch_narration(llm, plan, result)
     _persist_narration(db, session_id, result)
 
     async for chunk in _process_commands(
@@ -1036,17 +1077,22 @@ async def _run_split_generation(
     rules_enabled: bool,
     matcher_npcs: list[dict],
     groups: list[dict],
+    plan: turn_planner.TurnPlan | None = None,
 ) -> None:
     """分头行动：对每个分组各跑一次聚焦叙事，后端确定性地把产物归入该组。
 
     每组单独生成 → 篇幅均衡、不会「只详写最后一个场景」；分组标签由后端注入 →
     前端实时/重连都能稳定分栏，不靠模型自觉打 [GROUP]。
     命令（检定/HP/旗标/场景）在所有分组叙事完成后，对合并文本统一处理一次。
+    ``plan`` 是本回合唯一的裁定计划（跨分组共用），每组都注入一份、也各自校验一次——
+    分头场景 NPC/线索并行推进，同样需要 clue_policy/safety 兜底，不能因为分头
+    就退化回纯提示词。
     """
     # 先把本回合各角色的行动/对话/掷骰也归入其所在场景列：这样每一列＝该场景里
     # 「玩家行动 + KP 叙事」自成一体（而非行动全挤在主线、叙事另起一列）。
     # 位置已由显式移动（玩家大地图 / 队友 travel 动作）确定性写入，此处不再据分组反推搬人。
     _tag_turn_events_by_group(db, _current_turn_events(events), groups)
+    plan_message = turn_planner.build_turn_plan_message(plan) if plan is not None else None
 
     combined: list[str] = []
     for grp in groups:
@@ -1056,6 +1102,8 @@ async def _run_split_generation(
             game_session, module, player_char, events, teammates=teammates,
             rules_lookup_enabled=rules_enabled,
         )
+        if plan_message is not None:
+            messages.append(plan_message)
         messages.append({
             "role": "user",
             "content": SPLIT_FOCUS_PROMPT.format(label=label, members=members),
@@ -1069,6 +1117,7 @@ async def _run_split_generation(
         except BaseException:
             _persist_narration(db, session_id, result)
             raise
+        await _validate_and_patch_narration(llm, plan, result)
         _persist_narration(db, session_id, result)
         combined.append(result[1])
 
@@ -1176,7 +1225,7 @@ async def run_chat_generation(session_id: str) -> None:
             if skill:
                 await _run_kp_turn(
                     db, session_id, game_session, module, player_char, party_others,
-                    CHECK_REQUEST_PROMPT.format(actor=acting.name, skill=skill),
+                    CHECK_REQUEST_PROMPT.format(actor=acting.name, skill=skill, intent=player_text),
                 )
                 return
 
@@ -1204,8 +1253,13 @@ async def run_chat_generation(session_id: str) -> None:
 
 async def _run_kp_turn(
     db, session_id, game_session, module, player_char, party_others, user_prompt: str,
+    then_team_turn: list[Character] | None = None,
 ) -> None:
-    """跑一轮 KP：注入 user_prompt → 流式叙事 → 处理指令（待定检定/掷骰/场景等）→ done。"""
+    """跑一轮 KP：注入 user_prompt → 流式叙事 → 处理指令（待定检定/掷骰/场景等）→ done。
+
+    ``then_team_turn`` 给定时（如玩家大地图前往后），在 KP 叙事与指令处理之后、``done`` 之前
+    再跑一轮 AI 队友回合——否则这条路（不经 run_chat_generation）的队友永远没有发言机会。
+    """
     llm = get_llm()
     events = session_service.get_session_events(db, session_id)
     rules_enabled = rulebook_service.has_rulebook(db, module.rule_system)
@@ -1232,14 +1286,24 @@ async def _run_kp_turn(
         teammates=party_others,
     ):
         room_hub.broadcast(session_id, chunk)
+
+    if then_team_turn:
+        db.refresh(game_session)  # 叙事里可能有 [SCENE_CHANGE]/[MOVE] 改了位置，重取再判分头
+        async for chunk in _run_team_turn(
+            db, session_id, game_session, module, player_char, then_team_turn, llm,
+        ):
+            room_hub.broadcast(session_id, chunk)
+
     room_hub.broadcast(session_id, _make_chunk("done"))
 
 
 async def run_check_request_generation(
-    session_id: str, actor_id: str, skill: str,
+    session_id: str, actor_id: str, skill: str, intent: str = "",
 ) -> None:
     """玩家『申请』检定：交 KP 裁定本次是否需要检定、用什么难度（玩家不指定难度）。
 
+    ``intent`` 是玩家顺带说明的检定目标（如「查书桌暗格」）——现场同时有多条线索/多个
+    可疑点时，光报技能名 KP 猜不出具体针对什么，必须带上这句话才能裁定到位。
     KP 若判定需要，会输出 [DICE_CHECK]，经 _process_commands 挂成「待玩家投骰」；
     若判定无需检定，则直接简短叙述。"""
     from app.database import SessionLocal
@@ -1255,7 +1319,10 @@ async def run_check_request_generation(
         )
         await _run_kp_turn(
             db, session_id, game_session, module, player_char, party_others,
-            CHECK_REQUEST_PROMPT.format(actor=actor.name, skill=skill),
+            CHECK_REQUEST_PROMPT.format(
+                actor=actor.name, skill=skill,
+                intent=intent.strip() or "（未说明，需你结合当前情境自行判断意图）",
+            ),
         )
     except asyncio.CancelledError:
         logger.info("检定申请生成被取消: session=%s", session_id)
@@ -1411,6 +1478,7 @@ async def run_travel_generation(session_id: str, actor_id: str, scene_id: str) -
         party_others = session_service.get_party_members(
             db, session_id, exclude_id=game_session.player_character_id,
         )
+        ai_teammates = session_service.get_ai_teammates(db, session_id)
         scene = next((s for s in (module.scenes or []) if s.get("id") == scene_id), None)
         scene_name = (scene or {}).get("title") or (scene or {}).get("name") or scene_id
 
@@ -1427,7 +1495,12 @@ async def run_travel_generation(session_id: str, actor_id: str, scene_id: str) -
             f"{actor.name} 抵达了【{scene_name}】。请描述此地此刻的见闻与气氛，自然承接前文；"
             "不要触发任何检定，也不要替其他玩家角色行动或代言。"
         )
-        await _run_kp_turn(db, session_id, game_session, module, player_char, party_others, prompt)
+        # 前往后紧接一轮 AI 队友回合：留在原地/另处的队友据「分头」处境各自推进本场景，
+        # 不再因为这条路不经 run_chat_generation 而全程哑火。
+        await _run_kp_turn(
+            db, session_id, game_session, module, player_char, party_others, prompt,
+            then_team_turn=ai_teammates,
+        )
     except asyncio.CancelledError:
         logger.info("前往生成被取消: session=%s", session_id)
     except Exception:

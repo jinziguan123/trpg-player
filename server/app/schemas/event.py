@@ -31,6 +31,8 @@ class CheckRequest(BaseModel):
     """玩家『申请』技能/属性检定——只报技能，难度由 KP 裁定（玩家不指定）。"""
 
     skill: str
+    # 想对什么做检定的简短描述（可选）：场景里有多条线索时，光报技能名 KP 猜不出目标是哪个。
+    intent: str = ""
     acting_character_id: str | None = None
 
 
