@@ -1152,6 +1152,70 @@ async def _run_split_generation(
     room_hub.broadcast(session_id, _make_chunk("done"))
 
 
+def _skill_names(char: Character) -> list[str]:
+    """从角色身上尽可能取出技能名（skills / system_data.skills，兼容 dict 或 list 形态）。"""
+    names: set[str] = set()
+
+    def _harvest(obj):
+        if isinstance(obj, dict):
+            names.update(str(k) for k in obj.keys())
+        elif isinstance(obj, list):
+            for it in obj:
+                if isinstance(it, dict) and it.get("name"):
+                    names.add(str(it["name"]))
+
+    _harvest(getattr(char, "skills", None))
+    sd = getattr(char, "system_data", None)
+    if isinstance(sd, dict):
+        _harvest(sd.get("skills"))
+    return sorted(names)
+
+
+_CHECK_INTENT_SYS = "你是 TRPG 意图分诊器，只输出 JSON，不要解释。"
+
+
+async def _detect_check_request(llm, text: str, char: Character) -> str | None:
+    """轻量意图分诊：玩家本轮是否在【主动申请一次技能/属性检定】。是→返回技能名，否→None。
+
+    单个模型包揽叙事+裁定时，容易把玩家夹带的检定请求当普通叙事顺过去；先分诊出来，直接走
+    确定性的检定裁定流程，避免「说了要检定却被无视」。判不准/出错则回退常规叙事（返回 None）。
+    """
+    skills = _skill_names(char)
+    user = (
+        f"玩家这轮的输入：\n{text}\n\n"
+        + (f"该角色可用技能：{'、'.join(skills)}\n" if skills else "")
+        + "判断玩家是否在【主动要求做一次技能/属性检定】"
+        "（如「我用心理学看看他说的真假」「我要过一个侦查检定」「掷个聆听」）。\n"
+        '是 → {"check": true, "skill": "技能名（尽量用上面列表里的原名）"}\n'
+        '否（只是普通说话/行动/移动/环境互动）→ {"check": false}\n只输出 JSON。'
+    )
+    try:
+        raw = await llm.complete(
+            [{"role": "system", "content": _CHECK_INTENT_SYS}, {"role": "user", "content": user}],
+            temperature=0,
+        )
+    except Exception:
+        logger.exception("意图分诊失败，回退常规流程")
+        return None
+    data = None
+    if isinstance(raw, dict):
+        data = raw
+    elif isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            m = re.search(r"\{.*\}", raw, re.S)
+            if m:
+                try:
+                    data = json.loads(m.group(0))
+                except json.JSONDecodeError:
+                    data = None
+    if isinstance(data, dict) and data.get("check"):
+        skill = str(data.get("skill") or "").strip()
+        return skill or "（未指明技能）"
+    return None
+
+
 async def run_chat_generation(session_id: str) -> None:
     from app.database import SessionLocal
 
@@ -1165,10 +1229,30 @@ async def run_chat_generation(session_id: str) -> None:
         party_others = session_service.get_party_members(
             db, session_id, exclude_id=game_session.player_character_id,
         )
+        llm = get_llm()
+
+        # 意图分诊：玩家本轮是否在申请技能检定？是 → 直接走确定性检定裁定（避免被 KP 当叙事顺过去），
+        # 不再跑队友回合与常规叙事。取本轮该玩家的行动/台词文本做判断。
+        turn = _current_turn_events(session_service.get_session_events(db, session_id))
+        actor_id = next(
+            (e.actor_id for e in turn if e.event_type in ("action", "dialogue") and e.actor_id), None,
+        )
+        acting = (db.get(Character, actor_id) if actor_id else None) or player_char
+        player_text = " ".join(
+            (e.content or "") for e in turn
+            if e.event_type in ("action", "dialogue") and e.actor_id == acting.id and (e.content or "").strip()
+        )
+        if player_text:
+            skill = await _detect_check_request(llm, player_text, acting)
+            if skill:
+                await _run_kp_turn(
+                    db, session_id, game_session, module, player_char, party_others,
+                    CHECK_REQUEST_PROMPT.format(actor=acting.name, skill=skill),
+                )
+                return
 
         # 玩家输入后：先跑一轮 AI 队友自动响应（仅 AI 席、仅一轮、不自触发），再交 KP 收束
         if ai_teammates:
-            llm = get_llm()
             async for chunk in _run_team_turn(
                 db, session_id, game_session, module, player_char, ai_teammates, llm,
             ):

@@ -418,6 +418,31 @@ def test_scene_grouped_adds_player_scene_and_merges_by_scene():
     assert len(house) == 1 and set(house[0]["members"]) == {"亨利·卡特", "约翰·卡特"}
 
 
+def test_skill_names_from_dict_and_system_data():
+    c1 = Character(name="a", rule_system="coc", skills={"心理学": 65})
+    assert "心理学" in chat_service._skill_names(c1)
+    c2 = Character(name="b", rule_system="coc", system_data={"skills": {"侦查": 60}})
+    assert "侦查" in chat_service._skill_names(c2)
+
+
+def test_detect_check_request_routes_only_real_requests():
+    """意图分诊：玩家主动申请检定 → 返回技能名；普通行动 → None（走常规叙事）。"""
+    class _LLM:
+        def __init__(self, resp):
+            self.resp = resp
+
+        async def complete(self, messages, temperature=0.7, **kw):
+            return self.resp
+
+    char = Character(name="莫妮卡", rule_system="coc", skills={"心理学": 65, "侦查": 60})
+    got = asyncio.run(chat_service._detect_check_request(
+        _LLM('{"check": true, "skill": "心理学"}'), "我用心理学看看他说的是真是假", char))
+    assert got == "心理学"
+    none = asyncio.run(chat_service._detect_check_request(
+        _LLM('{"check": false}'), "我走进房间四处看看", char))
+    assert none is None
+
+
 def test_plan_groups_no_split_when_single_actor():
     """本回合只有一人行动时不算分头，直接回退整队（不调用 LLM）。"""
     class _BoomLLM:
