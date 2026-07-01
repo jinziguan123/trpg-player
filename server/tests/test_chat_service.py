@@ -131,6 +131,22 @@ def test_prefix_speaker_label_not_duplicated_in_narration():
     assert "他顿了顿。" in result[0]
 
 
+def test_long_speaker_name_prefix_fully_stripped():
+    """长说话人名（超 6 字，如「加布里埃尔·马卡里奥：」）抽成气泡后，前缀应整体抹掉，
+    不残留半截名字（「加布里埃」）在旁白里。"""
+    text = (
+        "她的声音压得极低，仿佛害怕被什么东西听见。\n\n"
+        "加布里埃尔·马卡里奥：“不是……不是鬼魂。它古老。”"
+    )
+    npcs = [{"name": "加布里埃尔·马卡里奥"}]
+    result = ["", "", [], [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    assert [n for n, _ in result[2]] == ["加布里埃尔·马卡里奥"]   # 全名归属
+    assert "加布里埃" not in result[0]                          # 无半截名残留
+
+
 def test_last_speaker_released_after_paragraph_break():
     """上一位说话人不应跨段把后文（如另一场景读到的报纸短讯）吸成自己的台词。"""
     text = (

@@ -74,6 +74,19 @@ _REFERENCE_BEFORE_RE = re.compile(
 _SAY_PREFIX_RE = re.compile(
     r"([一-龥·]{2,6})(?:说道|说|问道|问|答道|答|开口道|开口|低声道|低声|喊道|叫道|笑道|沉声道|轻声道|道|：|:)[：:，,]?\s*$"
 )
+_SPEAK_VERB_ALT = (
+    r"(?:说道|说|问道|问|答道|答|开口道|开口|低声道|低声|喊道|叫道|笑道|沉声道|轻声道|道)?"
+)
+
+
+def _strip_speaker_prefix(text: str, speaker: str) -> str:
+    """抹掉旁白行尾的「<说话人名>[说道]：」前缀（按完整名/局部名删，长名也不残留半截）。"""
+    names = [speaker] + [p for p in speaker.split("·") if len(p) >= 2]
+    for nm in sorted(names, key=len, reverse=True):
+        new = re.sub(re.escape(nm) + _SPEAK_VERB_ALT + r"[：:，,]?\s*$", "", text)
+        if new != text:
+            return new
+    return text
 # 句首/小句边界后充当「主语·动作」的 NPC 名（如「诺特点点头」「史蒂芬转过身」），用于
 # 在说话人以代词「他/她」承接、附近又有玩家名时，仍能把台词归给真正在行动的 NPC。
 _SUBJECT_BOUNDARY = "。！？!?\n　 ”」』）)】"
@@ -586,9 +599,10 @@ async def _stream_narration_filtered(
                     pending_speaker, pending_weak, from_prefix, is_written = _resolve_speaker(narration + pending)
                     written_run = is_written
                 # 经显式前缀（「史蒂芬·诺特：」）判定说话人时，把该前缀从旁白里抹掉——
-                # 否则说话人名会既作旁白文字、又作气泡署名，重复显示。
+                # 否则说话人名会既作旁白文字、又作气泡署名，重复显示。按「完整说话人名」抹，
+                # 避免长名（如「加布里埃尔·马卡里奥」）只被删掉后半截、残留「加布里埃」。
                 if pending_speaker and from_prefix:
-                    pending = _SAY_PREFIX_RE.sub("", pending)
+                    pending = _strip_speaker_prefix(pending, pending_speaker)
                 out = _flush_pending()
                 if out:
                     yield _mk("narration", out, actor_name="KP")
