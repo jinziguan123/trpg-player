@@ -579,6 +579,69 @@ def test_generation_saves_once_on_success(db_factory, monkeypatch):
     assert narrations[0].content == "完整的开场叙事"
 
 
+def test_generation_injects_turn_plan(db_factory, monkeypatch):
+    """常规 KP 生成前应先运行回合规划器，并把裁定计划注入 KP 上下文。"""
+    _patch_runtime(monkeypatch, db_factory)
+    captured = {}
+
+    async def fake_run_turn_planner(llm, messages):
+        return chat_service.turn_planner.TurnPlan(
+            turn_kind="investigate",
+            player_intent="搜查书桌",
+            requires_check=True,
+            check=chat_service.turn_planner.CheckPlan(skill="侦查"),
+            safety=chat_service.turn_planner.SafetyPolicy(do_not_reveal=["管家的秘密"]),
+        )
+
+    async def fake_stream(kp, messages, result, npcs=None):
+        captured["messages"] = messages
+        result[0] = "你开始检查书桌。"
+        yield chat_service._make_chunk("narration", "你开始检查书桌。", actor_name="KP")
+
+    async def fake_process(*args, **kwargs):
+        if False:
+            yield None
+
+    monkeypatch.setattr(chat_service.turn_planner, "run_turn_planner", fake_run_turn_planner)
+    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+    monkeypatch.setattr(chat_service, "_process_commands", fake_process)
+
+    db = db_factory()
+    session_id = _seed_session(db)
+    session_service.add_event(db, session_id, "action", "我搜查书桌", actor_name="测试角色")
+
+    asyncio.run(chat_service.run_chat_generation(session_id))
+
+    text = "\n".join(message["content"] for message in captured["messages"])
+    assert "【本轮裁定计划】" in text
+    assert "搜查书桌" in text
+    assert "管家的秘密" in text
+
+
+def test_opening_generation_skips_turn_planner(db_factory, monkeypatch):
+    """开场不是玩家行动回合，不应额外运行回合规划器。"""
+    _patch_runtime(monkeypatch, db_factory)
+    called = {"planner": False}
+
+    async def fake_run_turn_planner(llm, messages):
+        called["planner"] = True
+        return None
+
+    async def fake_stream(kp, messages, result, npcs=None):
+        result[0] = "开场叙事"
+        yield chat_service._make_chunk("narration", "开场叙事", actor_name="KP")
+
+    monkeypatch.setattr(chat_service.turn_planner, "run_turn_planner", fake_run_turn_planner)
+    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+
+    db = db_factory()
+    session_id = _seed_session(db)
+
+    asyncio.run(chat_service.run_opening_generation(session_id))
+
+    assert called["planner"] is False
+
+
 def test_opening_idempotent(db_factory, monkeypatch):
     """已有事件的会话再次触发 opening 不应重复生成。"""
     _patch_runtime(monkeypatch, db_factory)

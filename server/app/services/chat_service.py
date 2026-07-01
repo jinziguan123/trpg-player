@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 
 from sqlalchemy.orm import Session
 
+from app.ai import turn_planner
 from app.ai.agents.kp_agent import KPAgent
 from app.ai.agents.npc_agent import NPCAgent
 from app.ai.agents.team_agent import TeamAgent
@@ -957,6 +958,14 @@ async def _run_generation(
         game_session, module, player_char, events, teammates=teammates,
         rules_lookup_enabled=rules_enabled,
     )
+    if events:
+        plan_messages = turn_planner.build_turn_plan_messages(
+            game_session, module, player_char, events, teammates=teammates,
+            rules_lookup_enabled=rules_enabled,
+        )
+        plan = await turn_planner.run_turn_planner(llm, plan_messages)
+        if plan is not None:
+            messages.append(turn_planner.build_turn_plan_message(plan))
 
     result = ["", "", [], [], []]
     # 取消（硬取消 task）或流式中途报错（如供应商抖动断流）时，已生成的叙事都要落库，
