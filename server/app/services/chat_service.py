@@ -88,6 +88,14 @@ _TRAILING_SAY_VERB_RE = re.compile(
 # 说话人后置且用代词时的兜底署名（判不出具名 NPC 时，用代词也好过把台词混进旁白）。
 _PRONOUN_SPEAKERS = ("她", "他", "它", "您", "咱")
 
+# 暗投/暗骰的裁定结果本应「仅 KP 可见」，但模型偶尔会把它错写进方括号泄漏给玩家
+# （如 `[暗投结束 - X·心理学检定 失败]`、`【暗骰·NPC·潜行 成功】`）。这类元信息括号一律
+# 丢弃、绝不回吐进旁白。匹配：含「暗投/暗骰」，或「检定」紧邻成败判词（含大成功/大失败）。
+_BLIND_LEAK_RE = re.compile(
+    r"暗投|暗骰|检定[^\[\]【】]{0,8}(大成功|大失败|成功|失败)"
+    r"|(大成功|大失败|成功|失败)[^\[\]【】]{0,4}检定"
+)
+
 
 def _strip_speaker_prefix(text: str, speaker: str) -> str:
     """抹掉旁白行尾的「<说话人名>[说道]：」前缀（按完整名/局部名删，长名也不残留半截）。"""
@@ -650,6 +658,9 @@ async def _stream_narration_filtered(
                     if _is_cmd_tag(inner_s):
                         tag_found = True
                         break
+                    if _BLIND_LEAK_RE.search(inner_s):
+                        # 暗投/暗骰裁定结果被 KP 误写进括号 → 丢弃，绝不回吐给玩家
+                        continue
                     pending += bracket_open + inner_s + ("】" if bracket_open == "【" else "]")
                 else:
                     bracket_buf += ch

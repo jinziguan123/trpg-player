@@ -210,6 +210,30 @@ def test_fullwidth_bracket_command_tag_not_leaked():
     assert result[0].strip() == "她一字一顿地说完那句话。"
 
 
+def test_blind_roll_result_not_leaked_to_narration():
+    """暗投/暗骰的裁定结果（仅 KP 可见）若被模型误写进方括号，绝不能回吐进旁白。
+    覆盖：半角/全角括号、结尾成败、暗骰 NPC 结果。"""
+    text = (
+        "你注视着加布里埃尔的双眼，试图捕捉更深的情绪。"
+        "[暗投结束 - 伊芙琳·哈特·心理学检定 失败]"
+        "她整个人像被掏空后又勉强拼凑起来。\n\n"
+        "护士站在门边。【暗骰·护士·潜行 成功】她的脚步没有发出声响。"
+    )
+    npcs = [{"name": "加布里埃尔·马卡里奥"}]
+    result = ["", "", [], [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    # 泄漏标记整体被丢弃：既无「暗投/暗骰」字样，也无「检定 失败/潜行 成功」成败
+    assert "暗投" not in result[0] and "暗骰" not in result[0]
+    assert "心理学检定" not in result[0] and "失败" not in result[0]
+    assert "潜行" not in result[0] and "成功" not in result[0]
+    # 正常叙述文字保留、不被误删
+    assert "试图捕捉更深的情绪" in result[0]
+    assert "勉强拼凑起来" in result[0]
+    assert "脚步没有发出声响" in result[0]
+
+
 def test_set_flag_regex_tolerant():
     """SET_FLAG 正则容忍漏写 flag=／冒号写成空格（全角括号在 _process_commands 里已归一）。"""
     assert chat_service.SET_FLAG_RE.findall("[SET_FLAG: flag=basement_flooded]") == ["basement_flooded"]
