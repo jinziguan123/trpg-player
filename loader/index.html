@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TRPG Player</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #f3ead6; color: #6b4f2a;
+    }
+    .title { font-size: 20px; font-weight: 700; letter-spacing: 2px; margin-bottom: 14px; }
+    .msg { font-size: 13px; color: #97865f; }
+    .dot { display: inline-block; animation: blink 1.2s infinite; }
+    @keyframes blink { 0%,100%{opacity:.3} 50%{opacity:1} }
+  </style>
+</head>
+<body>
+  <div class="title">TRPG Player</div>
+  <div class="msg" id="msg">正在启动本地服务<span class="dot">…</span></div>
+  <script>
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const setMsg = (t) => { document.getElementById('msg').textContent = t; };
+
+    async function invokePort() {
+      try { return await window.__TAURI__.core.invoke('backend_port'); }
+      catch (e) { return null; }
+    }
+
+    async function boot() {
+      // 1) 等 Rust 侧拿到 sidecar 打印的端口（首次启动 sidecar 解压+导入约 20s）
+      let port = null;
+      for (let i = 0; i < 240; i++) { port = await invokePort(); if (port) break; await sleep(500); }
+      if (!port) { setMsg('本地服务启动失败，请重开应用'); return; }
+      const base = `http://127.0.0.1:${port}`;
+      // 2) 轮询健康检查，就绪后整窗跳到后端同源页面
+      for (let i = 0; i < 240; i++) {
+        try { const r = await fetch(base + '/api/health'); if (r.ok) { location.replace(base); return; } }
+        catch (e) { /* not up yet */ }
+        await sleep(500);
+      }
+      setMsg('本地服务未就绪，请重开应用');
+    }
+    boot();
+  </script>
+</body>
+</html>
