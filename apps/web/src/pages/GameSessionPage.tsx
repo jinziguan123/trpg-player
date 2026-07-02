@@ -11,7 +11,7 @@ import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { useMapAssets } from '../components/module/useMapAssets'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker } from 'react-icons/gi'
-import { Copy, Bot, Map as MapIcon, ChevronUp, RotateCcw, Search, X } from 'lucide-react'
+import { Copy, Bot, Map as MapIcon, ChevronUp, RotateCcw, Search, X, PanelRightOpen, PanelRightClose } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 
 interface SceneFloor { name: string; map: TileMap; entities: MapEntity[] }
@@ -590,12 +590,15 @@ export function GameSessionPage() {
             >
               <MapIcon size={12} /> {showMap ? '收起地图' : '地图'}
             </button>
-            <button
-              onClick={() => setShowPanel(!showPanel)}
-              className="text-xs btn-secondary !px-2 !py-0.5"
-            >
-              {showPanel ? '收起角色卡' : '展开角色卡'}
-            </button>
+            {!(showPanel && panelChar) && (
+              <button
+                onClick={() => setShowPanel(true)}
+                className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
+                title="展开角色卡"
+              >
+                <PanelRightOpen size={13} />
+              </button>
+            )}
           </div>
         </div>
         {showSearch && (
@@ -1029,20 +1032,32 @@ export function GameSessionPage() {
           className="w-64 flex-shrink-0 border-l overflow-y-auto"
           style={{ borderColor: 'var(--color-border)', background: 'var(--color-bg-card)' }}
         >
-          {shownCharId !== myCharId && (
-            <div
-              className="flex items-center justify-between px-3 py-1.5 text-xs border-b"
-              style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
-            >
-              <span className="inline-flex items-center gap-1"><Bot size={12} /> 其他角色卡</span>
+          <div
+            className="flex items-center justify-between px-3 py-1.5 text-xs border-b"
+            style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
+          >
+            <span className="inline-flex items-center gap-1">
+              {shownCharId !== myCharId ? (<><Bot size={12} /> 其他角色卡</>) : '角色卡'}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              {shownCharId !== myCharId && (
+                <button
+                  onClick={() => setPanelCharId(null)}
+                  className="btn-secondary !px-2 !py-0.5"
+                >
+                  看我的角色
+                </button>
+              )}
               <button
-                onClick={() => setPanelCharId(null)}
-                className="btn-secondary !px-2 !py-0.5"
+                onClick={() => setShowPanel(false)}
+                title="收起角色卡"
+                className="p-0.5 rounded hover:opacity-80"
+                style={{ color: 'var(--color-text-secondary)' }}
               >
-                看我的角色
+                <PanelRightClose size={15} />
               </button>
-            </div>
-          )}
+            </span>
+          </div>
           <CharacterPanel
             character={panelChar}
             onSkillCheck={shownCharId === myCharId ? rollCheck : undefined}
