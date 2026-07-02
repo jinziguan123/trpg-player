@@ -5,7 +5,8 @@ import { api } from '../api/client'
 import { useModuleStore } from '../stores/moduleStore'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
-import { GiUpCard, GiScrollUnfurled, GiReturnArrow } from 'react-icons/gi'
+import { GiUpCard, GiScrollUnfurled, GiReturnArrow, GiArchiveResearch } from 'react-icons/gi'
+import { Loader2 } from 'lucide-react'
 
 const ALLOWED_EXTS = ['txt', 'md', 'pdf', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']
 
@@ -20,6 +21,23 @@ export function ModulePage() {
   useEffect(() => {
     fetchModules()
   }, [fetchModules])
+
+  // 有模组在建原文索引时轮询刷新，直到 indexing → ready/failed
+  useEffect(() => {
+    if (!modules.some((m) => m.rag_status === 'indexing')) return
+    const t = setTimeout(() => fetchModules(), 3000)
+    return () => clearTimeout(t)
+  }, [modules, fetchModules])
+
+  const rebuildRag = async (id: string) => {
+    try {
+      await api.post(`/modules/${id}/rag/rebuild`)
+      toast.success('已开始重建原文索引')
+      fetchModules()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '重建索引失败')
+    }
+  }
 
   const addFiles = (fileList: FileList | File[]) => {
     const valid: File[] = []
@@ -188,6 +206,35 @@ export function ModulePage() {
                 </h3>
                 <div className="flex items-center gap-2">
                   <span className="badge">{m.rule_system.toUpperCase()}</span>
+                  {m.rag_status === 'ready' && (
+                    <span className="badge flex items-center gap-1" title="模组原文已建索引，跑团时 KP 可引用原文">
+                      <GiArchiveResearch /> 原文索引
+                    </span>
+                  )}
+                  {m.rag_status === 'indexing' && (
+                    <span className="badge flex items-center gap-1" title="正在为模组原文建索引">
+                      <Loader2 className="animate-spin" size={12} /> 索引中
+                    </span>
+                  )}
+                  {m.rag_status === 'failed' && (
+                    <span
+                      className="badge flex items-center gap-1"
+                      style={{ background: 'var(--color-danger)', color: '#fff' }}
+                      title="原文索引构建失败，可点「重建索引」重试"
+                    >
+                      <GiArchiveResearch /> 索引失败
+                    </span>
+                  )}
+                  {m.rag_status !== 'indexing' && (
+                    <button
+                      onClick={() => rebuildRag(m.id)}
+                      className="text-xs px-1.5 py-0.5 rounded transition-colors hover:bg-[var(--color-accent)] hover:text-white flex items-center gap-1"
+                      style={{ color: 'var(--color-text-accent)', border: '1px solid var(--color-border)' }}
+                      title="（重）建模组原文索引：让 KP 跑团时能检索并引用模组原文"
+                    >
+                      <GiArchiveResearch /> 重建索引
+                    </button>
+                  )}
                   <ConfirmDialog
                     title="查看 / 编辑模组（含剧透）"
                     description={`「${m.title}」的内容包含 NPC 秘密、线索与剧情真相。若你打算亲自游玩本模组，请不要查看。确定继续吗？`}

@@ -9,6 +9,8 @@ from app.models.session import GameSession
 from app.ai.prompts.kp_system import (
     KP_SYSTEM_PROMPT,
     KP_OPENING_PROMPT,
+    MODULE_EXCERPT_SECTION,
+    MODULE_LOOKUP_INSTRUCTION,
     MOVE_INSTRUCTION,
     GROUP_INSTRUCTION,
     RULE_LOOKUP_INSTRUCTION,
@@ -27,6 +29,8 @@ MAX_SYSTEM_TOKENS = 6000
 MAX_SUMMARY_TOKENS = 1500
 MIN_RECENT_EVENTS = 10
 MAX_RECENT_EVENTS = 60
+# 被动注入的模组原文摘录：单块截断 400 字（摘录段计入 MAX_SYSTEM_TOKENS 预算）
+MODULE_EXCERPT_MAX_CHARS = 400
 
 
 def _estimate_tokens(text: str) -> int:
@@ -356,6 +360,19 @@ def _format_party_member(char: Character) -> str:
     return line
 
 
+def _format_module_excerpts(excerpts: list[dict]) -> str:
+    """把检索到的原文片段渲染成摘录小节正文：逐块截断 + 编号平铺。"""
+    lines: list[str] = []
+    for i, ex in enumerate(excerpts, start=1):
+        text = (ex.get("text") or "").strip()
+        if not text:
+            continue
+        if len(text) > MODULE_EXCERPT_MAX_CHARS:
+            text = text[:MODULE_EXCERPT_MAX_CHARS] + "…"
+        lines.append(f"[摘录 {i}] {text}")
+    return "\n".join(lines)
+
+
 def build_kp_context(
     session: GameSession,
     module: Module,
@@ -364,7 +381,11 @@ def build_kp_context(
     teammates: list[Character] | None = None,
     rules_lookup_enabled: bool = False,
     viewer_scene_id: str | None = None,
+    module_excerpts: list[dict] | None = None,
+    module_lookup_enabled: bool = False,
 ) -> list[dict]:
+    # 本函数保持纯粹（不触数据库）：module_excerpts 是调用方（chat_service）检索好的
+    # 模组原文片段（[{"text", ...}]），未建索引/检索失败时传 None → 行为与无此特性时完全一致。
     # 分头行动时，每个分组各以「该组所在场景」为锚构建上下文（current_scene / 可见 NPC / 线索 /
     # 场景清单），否则所有分组都拿到主角场景的资料，KP 只能把主角场景重复叙述一遍。
     # 默认 None → 回落主角所在场景（session.current_scene_id），非分头场景行为不变。
@@ -426,9 +447,19 @@ def build_kp_context(
         player_info=player_info,
     )
 
+    # 模组原文摘录（被动注入）：调用方检索好才有，独立小节、带泄密警示措辞。
+    if module_excerpts:
+        excerpt_body = _format_module_excerpts(module_excerpts)
+        if excerpt_body:
+            system_content += MODULE_EXCERPT_SECTION.format(excerpts=excerpt_body)
+
     # 仅在挂载了规则书时广告 [RULE_LOOKUP] 能力（无书时不让 KP 发空查询）。
     if rules_lookup_enabled:
         system_content += RULE_LOOKUP_INSTRUCTION
+
+    # 仅在模组原文索引就绪时广告 [MODULE_LOOKUP] 能力（未建索引不让 KP 发空查询）。
+    if module_lookup_enabled:
+        system_content += MODULE_LOOKUP_INSTRUCTION
 
     # 仅当模组确有「随剧情改变」的场景/NPC 时，且非开场，才广告 [SET_FLAG]/[CLEAR_FLAG] 推进能力。
     if not is_opening and _has_plot_state(module):

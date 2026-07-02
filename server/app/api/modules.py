@@ -1,13 +1,13 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, get_db
 from app.schemas.module import ModuleRead, ModuleUploadResponse, ModuleWrite
-from app.services import map_service, module_service
+from app.services import map_service, module_rag_service, module_service
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,32 @@ def _kick_background_map_gen(module_id: str) -> None:
     task = asyncio.create_task(_run())
     _map_gen_tasks.add(task)
     task.add_done_callback(_map_gen_tasks.discard)
+
+
+def _rag_index_bg(module_id: str) -> None:
+    """后台建模组原文索引：自开会话（请求会话已随响应关闭），失败状态由 service 落库。
+
+    与规则书入库同一模式：同步函数交给 BackgroundTasks（在线程池执行），
+    嵌入是 CPU 密集操作、不占事件循环。
+    """
+    from app.models.module import Module
+
+    db = SessionLocal()
+    try:
+        module = db.get(Module, module_id)
+        if module:
+            module_rag_service.ingest_module(db, module)
+    finally:
+        db.close()
+
+
+def _kick_rag_index(background, db: Session, module) -> None:
+    """把模组置为 indexing 并安排后台建索引；无原文则跳过（fail-open，不阻塞上传/重建响应）。"""
+    if not (module.raw_content or "").strip():
+        return
+    module.rag_status = "indexing"
+    db.commit()
+    background.add_task(_rag_index_bg, module.id)
 
 
 class VariantMapRequest(BaseModel):
@@ -202,6 +228,7 @@ def _extract_doc_text(content: bytes, filename: str) -> str:
 
 @router.post("/upload", response_model=ModuleUploadResponse)
 async def upload_module(
+    background: BackgroundTasks,
     files: list[UploadFile],
     rule_system: str = "coc",
     db: Session = Depends(get_db),
@@ -259,6 +286,8 @@ async def upload_module(
 
     # 解析成功后在后台自动生成全部场景地图（非阻塞：上传立即返回，地图稍后陆续就绪）
     _kick_background_map_gen(module.id)
+    # 解析成功后在后台自动建原文 RAG 索引（同样非阻塞；失败只落 rag_status，不影响模组可用）
+    _kick_rag_index(background, db, module)
 
     return ModuleUploadResponse(
         id=module.id,
@@ -306,6 +335,26 @@ def get_module(module_id: str, db: Session = Depends(get_db)):
     module = module_service.get_module(db, module_id)
     if not module:
         raise HTTPException(404, "模组不存在")
+    return module
+
+
+@router.post("/{module_id}/rag/rebuild", response_model=ModuleRead)
+def rebuild_module_rag(
+    module_id: str,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """（重）建模组原文 RAG 索引：存量模组补建 / 失败后重试。
+
+    立即置 rag_status=indexing 并返回，嵌入在后台进行；前端轮询模组的
+    rag_status 观察 indexing → ready/failed。
+    """
+    module = module_service.get_module(db, module_id)
+    if not module:
+        raise HTTPException(404, "模组不存在")
+    if not (module.raw_content or "").strip():
+        raise HTTPException(400, "该模组没有留存原文（raw_content 为空），无法建原文索引")
+    _kick_rag_index(background, db, module)
     return module
 
 

@@ -22,6 +22,8 @@ class ModuleRead(BaseModel):
     npcs: list
     clues: list
     triggers: list = []
+    # 原文 RAG 索引状态：""=未建 / indexing / ready / failed
+    rag_status: str = ""
     created_at: datetime
     updated_at: datetime
 

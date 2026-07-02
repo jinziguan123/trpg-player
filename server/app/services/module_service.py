@@ -216,6 +216,10 @@ def delete_module(db: Session, module_id: str) -> bool:
     module = db.get(Module, module_id)
     if not module:
         return False
+    # 显式删原文切块（SQLite 默认不强制级联，且测试库未必开外键），与规则书删除同理
+    from app.models.module import ModuleChunk
+
+    db.query(ModuleChunk).filter(ModuleChunk.module_id == module_id).delete()
     db.delete(module)
     db.commit()
     return True
