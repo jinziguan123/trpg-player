@@ -1,8 +1,11 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 
@@ -38,3 +41,31 @@ app.include_router(api_router)
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+# 单服务 / 打包模式：若存在前端构建产物（apps/web/dist），由后端同源托管，Tauri 窗口直接指向
+# 本机后端即可（同源 → /api、SSE 都不涉及跨域）。dev 下 dist 不存在则跳过，前端仍走 vite。
+# 打包（PyInstaller frozen）时前端会被放到 sys._MEIPASS，下面按需覆盖。
+def _frontend_dist() -> Path:
+    import sys
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "web_dist"  # type: ignore[attr-defined]
+    return Path(__file__).resolve().parents[2] / "apps" / "web" / "dist"
+
+
+_DIST = _frontend_dist()
+if _DIST.is_dir():
+    _assets = _DIST / "assets"
+    if _assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=_assets), name="assets")
+
+    @app.get("/{full_path:path}")
+    def _spa(full_path: str):
+        # /api/* 未命中的一律 404（交给 API 层语义），其余非 API 路径回退到 SPA 入口，
+        # 由前端路由接管（刷新 /game/:id 等深链也能正常返回 index.html）。
+        if full_path.startswith("api"):
+            raise HTTPException(status_code=404)
+        candidate = (_DIST / full_path).resolve()
+        if full_path and candidate.is_file() and _DIST in candidate.parents:
+            return FileResponse(candidate)
+        return FileResponse(_DIST / "index.html")
