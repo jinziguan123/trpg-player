@@ -11,12 +11,13 @@ import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { useMapAssets } from '../components/module/useMapAssets'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker } from 'react-icons/gi'
-import { Copy, Bot, Map as MapIcon, ChevronUp, RotateCcw } from 'lucide-react'
+import { Copy, Bot, Map as MapIcon, ChevronUp, RotateCcw, Search, X } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 
 interface SceneFloor { name: string; map: TileMap; entities: MapEntity[] }
 interface SceneMapPayload { scene_id: string | null; scene_name: string | null; floors: SceneFloor[] }
 interface KnownLocation { id: string; name: string; current: boolean; visited: boolean }
+interface SearchHit { id: string; sequence_num: number; event_type: string; actor_name: string; content: string }
 
 const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE|SAY|GROUP|MOVE)[^\]]*\]|\[\/SAY\]/g
 const OOC_RE = /（[^（）]*）|\([^()]*\)/g
@@ -124,6 +125,11 @@ export function GameSessionPage() {
   const [streaming, setStreaming] = useState(false)
   // 生成已开始但还没吐出第一段内容（推理类模型先思考、此时无 token）→ 显示"KP 思考中"
   const [thinking, setThinking] = useState(false)
+  // 历史检索：模糊搜索本局历史 + 跳转到对应消息
+  const [showSearch, setShowSearch] = useState(false)
+  const [searchQ, setSearchQ] = useState('')
+  const [searchResults, setSearchResults] = useState<SearchHit[]>([])
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinActive = useRef(false)   // 初次加载「持续钉底」窗口是否进行中（期间抑制平滑滚动，避免抢滚）
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -448,6 +454,41 @@ export function GameSessionPage() {
     }
   }
 
+  // 历史检索：输入防抖后查后端；结果点击可跳转到对应消息。
+  const runSearch = (q: string) => {
+    setSearchQ(q)
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+    if (!q.trim() || !currentSession) { setSearchResults([]); return }
+    const sid = currentSession.id
+    searchTimer.current = setTimeout(async () => {
+      try {
+        const r = await api.get<{ results: SearchHit[] }>(
+          `/sessions/${sid}/search?q=${encodeURIComponent(q.trim())}`,
+        )
+        setSearchResults(r.results || [])
+      } catch { setSearchResults([]) }
+    }, 250)
+  }
+
+  // 跳转到某条历史：若未加载则不断向前翻页直到出现，再滚动居中并短暂高亮。
+  const jumpToEvent = async (eventId: string) => {
+    if (!currentSession) return
+    setShowSearch(false)
+    const find = () => document.querySelector<HTMLElement>(`[data-mid="${eventId}"]`)
+    let el = find()
+    let guard = 0
+    while (!el && useSessionStore.getState().hasMoreHistory && guard < 80) {
+      await loadOlderEvents(currentSession.id)
+      await new Promise((res) => requestAnimationFrame(() => res(null)))
+      el = find()
+      guard++
+    }
+    if (!el) { toast.error('未能定位到该记录'); return }
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('search-hit')
+    setTimeout(() => el?.classList.remove('search-hit'), 2200)
+  }
+
   // 玩家点「投骰」：对一个待定检定掷骰。
   const submitRoll = async (checkId: string) => {
     if (!currentSession || streaming) {
@@ -530,6 +571,13 @@ export function GameSessionPage() {
           )}
           <div className="ml-auto flex items-center gap-2">
             <button
+              onClick={() => setShowSearch((v) => !v)}
+              className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
+              title="检索本局历史记录"
+            >
+              <Search size={12} /> 检索
+            </button>
+            <button
               onClick={() => { setConfirmTravel(null); setShowBigMap((v) => !v) }}
               className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
               title="大地图：前往已知地点"
@@ -550,6 +598,47 @@ export function GameSessionPage() {
             </button>
           </div>
         </div>
+        {showSearch && (
+          <div className="pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
+            <div className="flex items-center gap-2">
+              <Search size={14} style={{ color: 'var(--color-text-secondary)' }} />
+              <input
+                autoFocus
+                value={searchQ}
+                onChange={(e) => runSearch(e.target.value)}
+                placeholder="模糊检索本局历史（旁白 / 对话 / 行动 / 骰子 / 场外）…"
+                className="input flex-1 !py-1 text-sm"
+              />
+              <button
+                onClick={() => { setShowSearch(false); setSearchQ(''); setSearchResults([]) }}
+                title="关闭检索"
+                style={{ color: 'var(--color-text-secondary)' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+            {searchQ.trim() && (
+              <div className="mt-2 max-h-60 overflow-y-auto chat-scroll flex flex-col gap-1">
+                {searchResults.length === 0 ? (
+                  <div className="text-xs px-2 py-1" style={{ color: 'var(--color-text-secondary)' }}>
+                    无匹配记录
+                  </div>
+                ) : searchResults.map((h) => (
+                  <button
+                    key={h.id}
+                    onClick={() => jumpToEvent(h.id)}
+                    className="text-left text-xs px-2 py-1 rounded hover:opacity-80"
+                    style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}
+                    title="跳转到该记录"
+                  >
+                    <span style={{ color: 'var(--color-text-accent)' }}>{h.actor_name || '旁白'}</span>
+                    <span className="ml-1" style={{ color: 'var(--color-text-secondary)' }}>{h.content}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {currentSession.participants && currentSession.participants.length > 1 && (
           <div className="pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
             <PartyRoster
@@ -682,6 +771,12 @@ export function GameSessionPage() {
             </div>
           )}
           {(() => {
+          // 每条消息外包一层带 data-mid 的容器，供历史检索「跳转到该记录」定位。
+          const renderRow = (msg: ChatMessage) => (
+            <div key={msg.id || `s${msg.sequence_num ?? ''}`} data-mid={msg.id || undefined}>
+              {renderOne(msg)}
+            </div>
+          )
           const renderOne = (msg: ChatMessage) => {
             const isPlayer = !!msg.metadata?.is_player
             const showLabel = msg.actor_name && (msg.type === 'dialogue' || msg.type === 'action')
@@ -809,7 +904,7 @@ export function GameSessionPage() {
           // 这样每个场景列＝该场景的「玩家行动 + KP 叙事」自成一体，主线穿插其间保序。
           const sceneOf = (m: ChatMessage) => String(m.metadata?.group || '').trim()
           if (!splitView || sceneGroups.length < 2) {
-            return messages.map(renderOne)
+            return messages.map(renderRow)
           }
           type Seg = { split: boolean; msgs: ChatMessage[] }
           const segments: Seg[] = []
@@ -820,7 +915,7 @@ export function GameSessionPage() {
             else last.msgs.push(m)
           }
           return segments.map((seg, i) => {
-            if (!seg.split) return <div key={`s${i}`}>{seg.msgs.map(renderOne)}</div>
+            if (!seg.split) return <div key={`s${i}`}>{seg.msgs.map(renderRow)}</div>
             const labels: string[] = []
             for (const m of seg.msgs) { const g = sceneOf(m); if (!labels.includes(g)) labels.push(g) }
             const shown = labels.filter((g) => !hiddenGroups.has(g))
@@ -834,7 +929,7 @@ export function GameSessionPage() {
                       style={{ color: 'var(--color-text-accent)', background: 'var(--color-bg-primary)' }}>
                       {g}
                     </div>
-                    {seg.msgs.filter((m) => sceneOf(m) === g).map(renderOne)}
+                    {seg.msgs.filter((m) => sceneOf(m) === g).map(renderRow)}
                   </div>
                 ))}
               </div>

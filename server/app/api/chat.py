@@ -212,6 +212,27 @@ async def regenerate(
     return {"ok": True, "removed": removed}
 
 
+@router.get("/{session_id}/search")
+def search_history(session_id: str, q: str = "", db: Session = Depends(get_db)):
+    """在本局历史里模糊检索，返回匹配事件（含 sequence_num 供前端定位/跳转）。"""
+    game_session = db.get(GameSession, session_id)
+    if not game_session:
+        raise HTTPException(404, "会话不存在")
+    rows = session_service.search_events(db, session_id, q)
+    return {
+        "results": [
+            {
+                "id": e.id,
+                "sequence_num": e.sequence_num,
+                "event_type": e.event_type,
+                "actor_name": e.actor_name or "",
+                "content": (e.content or "")[:140],
+            }
+            for e in rows
+        ]
+    }
+
+
 @router.get("/{session_id}/scene-map")
 def scene_map(session_id: str, char_id: str | None = None, db: Session = Depends(get_db)):
     """某角色所在场景的（按剧情 flags 解析后的）像素地图 + 实体位置，供游戏内地图面板渲染。

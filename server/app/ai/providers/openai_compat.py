@@ -49,7 +49,9 @@ class OpenAICompatProvider(LLMProvider):
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        # content 可能为 null（推理模型只填 reasoning_content、内容被过滤等）→ 归一为空串，
+        # 免得下游把 None 当合法输出。
+        return data["choices"][0]["message"].get("content") or ""
 
     # 视觉能力按模型名启发式判断（deepseek-chat 等纯文本模型返回 False）
     _VISION_HINTS = ("gpt-4o", "gpt-4.1", "gpt-4-vision", "o4", "vision", "claude",

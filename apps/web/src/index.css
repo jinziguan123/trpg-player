@@ -484,6 +484,16 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* 历史检索跳转后的短暂高亮 */
+.search-hit {
+  animation: searchHit 2.2s ease-out;
+  border-radius: 6px;
+}
+@keyframes searchHit {
+  0%, 55% { background: var(--color-bg-tertiary); box-shadow: 0 0 0 2px var(--color-text-accent) inset; }
+  100% { background: transparent; box-shadow: none; }
+}
+
 /* ===== Select styling ===== */
 select.input {
   appearance: none;

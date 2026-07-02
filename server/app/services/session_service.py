@@ -542,6 +542,28 @@ def get_latest_events(
     return results, has_more
 
 
+def search_events(
+    db: Session, session_id: str, query: str, limit: int = 30,
+) -> list[EventLog]:
+    """在本局历史里模糊检索（content LIKE），按时间倒序返回匹配的叙事/对话/行动/骰子/场外
+    事件（排除系统提示等噪音）。空查询返回空列表。"""
+    q = (query or "").strip()
+    if not q:
+        return []
+    like = f"%{q}%"
+    return (
+        db.query(EventLog)
+        .filter(
+            EventLog.session_id == session_id,
+            EventLog.content.like(like),
+            EventLog.event_type.in_(["narration", "dialogue", "action", "dice", "ooc"]),
+        )
+        .order_by(EventLog.sequence_num.desc())
+        .limit(limit)
+        .all()
+    )
+
+
 def get_next_sequence_num(db: Session, session_id: str) -> int:
     result = (
         db.query(EventLog.sequence_num)

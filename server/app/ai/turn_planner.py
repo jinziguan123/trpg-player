@@ -231,10 +231,11 @@ def _extract_json_object(raw: Any) -> dict | None:
 
 async def run_turn_planner(llm: Any, messages: list[dict]) -> TurnPlan | None:
     try:
+        # 不设 max_tokens 硬上限：推理类模型的 reasoning 会占输出预算，硬上限（原为 1200）会让
+        # content 被 reasoning 耗空、返回空串（表现为「原始片段为空」）。交由服务端默认上限。
         raw = await llm.complete(
             messages,
             temperature=0,
-            max_tokens=1200,
             response_format={"type": "json_object"},
         )
     except Exception:
@@ -243,10 +244,16 @@ async def run_turn_planner(llm: Any, messages: list[dict]) -> TurnPlan | None:
 
     data = _extract_json_object(raw)
     if data is None:
-        # 打印原始片段便于定位是哪个 provider/格式没遵守 JSON 约定
-        logger.warning(
-            "KP 回合规划器输出无法解析为 JSON，已回退旧流程；原始片段：%s", str(raw)[:200],
-        )
+        snippet = str(raw)[:200]
+        if not snippet.strip():
+            logger.warning(
+                "KP 回合规划器返回空内容，已回退旧流程（多为推理模型预算被 reasoning 耗尽，"
+                "或供应商异常）",
+            )
+        else:
+            logger.warning(
+                "KP 回合规划器输出无法解析为 JSON，已回退旧流程；原始片段：%s", snippet,
+            )
         return None
     try:
         return TurnPlan.model_validate(data)

@@ -166,6 +166,33 @@ def test_check_endpoint_logs_intent_alongside_skill(client, monkeypatch):
     assert any("侦查" in a and "搜查书桌暗格" in a for a in actions)
 
 
+def test_search_history_matches_and_returns_seq(client):
+    """历史检索：模糊匹配本局的叙事/对话/行动等，返回 sequence_num 供前端跳转；排除系统噪音。"""
+    from app.services import session_service
+
+    c, ids = client
+    sid = _make_session(c, ids)
+    # 直接落几条事件（不触发生成）
+    db_dep = app.dependency_overrides[get_db]
+    gen = db_dep()
+    db = next(gen)
+    session_service.add_event(db, sid, "narration", "护士长站在走廊尽头，神色紧张。", actor_name="KP")
+    session_service.add_event(db, sid, "dialogue", "地下室的钥匙在我这里。", actor_name="管家")
+    session_service.add_event(db, sid, "system", "系统提示：地下室相关", actor_name="系统")
+    gen.close()
+
+    r = c.get(f"/api/sessions/{sid}/search", params={"q": "地下室"})
+    assert r.status_code == 200, r.text
+    results = r.json()["results"]
+    contents = [x["content"] for x in results]
+    assert any("钥匙" in x for x in contents)          # 命中对话
+    assert all("系统提示" not in x for x in contents)   # 排除 system 噪音
+    assert all("sequence_num" in x for x in results)   # 带定位信息
+
+    # 空查询 → 空结果
+    assert c.get(f"/api/sessions/{sid}/search", params={"q": ""}).json()["results"] == []
+
+
 def test_regenerate_endpoint_cancels_and_restarts(client, monkeypatch):
     """重新生成：打断卡住的旧生成（cancel）→ 回滚 → 重启一次生成（start）。"""
     import app.api.chat as chat_module
