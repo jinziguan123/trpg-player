@@ -108,6 +108,84 @@ def record_npc_interaction(ws: dict, npc_id: str, seq: int, summary: str) -> dic
     return ws
 
 
+# 抽取器允许写入的 NPC 态度枚举——超出集合的值视为幻觉，丢弃不写。
+_VALID_ATTITUDES = set(_ATTITUDE_LABEL)
+
+
+def _append_unique(existing, additions) -> list[str]:
+    """把 ``additions`` 里的非空文本追加进 ``existing`` 列表，去重且保留原顺序。"""
+    out = [str(p) for p in (existing or []) if str(p).strip()]
+    seen = set(out)
+    for item in additions or []:
+        item = str(item or "").strip()
+        if item and item not in seen:
+            out.append(item)
+            seen.add(item)
+    return out
+
+
+def apply_memory_delta(
+    ws: dict,
+    npc_updates: dict | None = None,
+    clue_notes: dict | None = None,
+) -> dict:
+    """把 MemoryKeeper 抽取器产出的差量合并进 world_state（v2，低温兜底）。
+
+    安全边界（防抽取器幻觉污染确定性台账）：
+    - **只允许改已存在的 NPC**：``npc_updates`` 里不在 ``npc_memory`` 的 key 一律忽略——
+      NPC 记忆的「诞生」仍由 v1 确定性钩子（说话/被看穿）负责，抽取器只做增量修饰。
+    - 每个 NPC 只允许改 ``attitude``（须落在枚举内）/ ``attitude_reason`` /
+      追加 ``new_promises`` 到 ``promises`` / 追加 ``new_lies`` 到 ``lies_told``；
+      追加均去重保序，绝不触碰 ``interactions`` 环形缓冲。
+    - **严禁改 ``clue_ledger`` 的 status**：``clue_notes`` 只允许更新**已存在**线索条目的
+      ``note`` 备注，绝不新建条目、绝不改状态——玩家是否已知一律以 v1 确定性来源为准。
+
+    纯函数：不改入参，返回更新后的新 dict；无有效差量则原样返回（保持原记忆不变）。
+    """
+    ws = dict(ws or {})
+    if npc_updates:
+        memory = dict(ws.get("npc_memory") or {})
+        changed = False
+        for nid, upd in npc_updates.items():
+            nid = str(nid or "").strip()
+            # 只修饰已存在的 NPC：抽取器不得凭空造出未被玩家触碰过的 NPC 记忆
+            if not nid or nid not in memory or not isinstance(upd, dict):
+                continue
+            entry = dict(memory[nid])
+            attitude = str(upd.get("attitude") or "").strip().lower()
+            if attitude in _VALID_ATTITUDES:
+                entry["attitude"] = attitude
+                reason = str(upd.get("attitude_reason") or "").strip()
+                if reason:
+                    entry["attitude_reason"] = _truncate(reason)
+            entry["promises"] = _append_unique(
+                entry.get("promises"), upd.get("new_promises"),
+            )
+            entry["lies_told"] = _append_unique(
+                entry.get("lies_told"), upd.get("new_lies"),
+            )
+            memory[nid] = entry
+            changed = True
+        if changed:
+            ws["npc_memory"] = memory
+    if clue_notes:
+        ledger = dict(ws.get("clue_ledger") or {})
+        changed = False
+        for cid, note in clue_notes.items():
+            cid = str(cid or "").strip()
+            note = _truncate(note)
+            # 只更新已存在线索的备注：不新建条目、不碰 status（是否已知以确定性来源为准）
+            if not cid or cid not in ledger or not note:
+                continue
+            entry = dict(ledger[cid])
+            entry["note"] = note
+            ledger[cid] = entry
+            changed = True
+        if changed:
+            ws["clue_ledger"] = ledger
+    return ws
+
+
 def discovered_clue_status(ws: dict) -> dict[str, str]:
     """{clue_id: status}，只含已被触碰的线索——给 planner 做 candidate 过滤输入。"""
     out: dict[str, str] = {}
@@ -178,6 +256,26 @@ def format_npc_memory_brief(ws: dict, npc_id: str) -> str:
     if recent:
         parts.append("最近互动：" + "；".join(recent))
     return "。".join(parts)
+
+
+def format_npc_memory_all_brief(ws: dict, npc_names: dict[str, str] | None = None) -> str:
+    """把 npc_memory 里所有 NPC 的记忆各渲一行，喂给 MemoryKeeper 抽取器当输入。
+
+    与需要 npc_defs 的 ``format_npc_memory_section`` 不同：抽取点（滚动摘要处）手边未必有
+    module，这里直接遍历记忆字典，行首用 npc_id（抽取器差量的 key 必须是 id），可选带上名字。
+    无记忆返回空串。
+    """
+    memory = dict((ws or {}).get("npc_memory") or {})
+    if not memory:
+        return ""
+    names = npc_names or {}
+    lines: list[str] = []
+    for nid in sorted(memory):
+        brief = format_npc_memory_brief(ws, nid)
+        name = names.get(nid)
+        head = f"{nid}（{name}）" if name else nid
+        lines.append(f"- {head}：{brief}" if brief else f"- {head}：（暂无记忆细节）")
+    return "\n".join(lines)
 
 
 def format_npc_memory_section(ws: dict, npc_defs: list[dict] | None) -> str:
