@@ -515,8 +515,16 @@ def update_session_status(db: Session, session_id: str, status: str) -> GameSess
 
 
 def get_session_events(
-    db: Session, session_id: str, limit: int = 100, offset: int = 0
+    db: Session, session_id: str, limit: int = 0, offset: int = 0
 ) -> list[EventLog]:
+    """按 sequence_num 升序返回会话事件；默认 limit=0 即全量。
+
+    默认必须是「全量」而非截断：本函数只服务于生成/上下文构建路径，它们要的是完整对话史
+    （由 build_kp_context 的 token 预算 + 滚动摘要游标负责裁剪成实际喂给 LLM 的窗口）。
+    早先默认 limit=100 会因升序取到「最早的 100 条」——会话过百条后 KP 上下文里全是旧事件、
+    看不到最新玩家输入，导致跑团错乱。前端历史/重连分页走的是另一个 get_latest_events
+    （带 before_seq），不受此默认影响。
+    """
     q = (
         db.query(EventLog)
         .filter(EventLog.session_id == session_id)
