@@ -42,6 +42,12 @@ class RollRequest(BaseModel):
     check_id: str
 
 
+class AdvanceRequest(BaseModel):
+    """玩家点『推进本回合』确认——所有真人都确认后才整批交 KP。"""
+
+    acting_character_id: str | None = None
+
+
 class TravelRequest(BaseModel):
     """玩家经大地图『前往』某已知地点（显式移动，确定性切换该角色所在场景）。"""
 

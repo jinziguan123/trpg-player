@@ -5,7 +5,7 @@ from app.api.deps import player_token
 from app.database import get_db
 from app.models.module import Module
 from app.models.session import GameSession
-from app.schemas.event import ChatRequest, CheckRequest, RollRequest, TravelRequest
+from app.schemas.event import AdvanceRequest, ChatRequest, CheckRequest, RollRequest, TravelRequest
 from app.services import map_service, session_service
 from app.services.chat_service import (
     _make_chunk,
@@ -88,23 +88,29 @@ async def chat(
     # 引号内=说出口的台词，引号外=行动；不含引号则整条按行动。
     # 玩家事件的广播随生成一起进 in-flight buffer（见 generation_manager.start 的 prelude），
     # 这样断线重连能重放，避免「点了发送但自己的消息没显示、只剩思考中」的吞消息问题。
+    # 回合确认制：玩家发言只进入「本回合暂存」（打 pending_turn 标记、实时广播给同桌），
+    # 不立即触发 KP。要等所有真人各自点「推进」确认后（见 /advance），才整批交 KP。
     segments = split_speech_action(in_character) or [("action", in_character)]
-    prelude: list[str] = []
     for kind, seg_text in segments:
         ev = session_service.add_event(
             db, session_id, kind, seg_text,
             actor_id=player_char.id, actor_name=player_char.name,
+            metadata={"pending_turn": True},
         )
-        prelude.append(event_to_chunk(ev))
+        room_hub.broadcast(session_id, event_to_chunk(ev))
     if ooc:
         ev_ooc = session_service.add_event(
             db, session_id, "ooc", ooc,
             actor_id=player_char.id, actor_name=player_char.name,
         )
-        prelude.append(event_to_chunk(ev_ooc))
+        room_hub.broadcast(session_id, event_to_chunk(ev_ooc))
 
-    prelude.append(_make_chunk("generating"))
-    generation_manager.start(session_id, run_chat_generation(session_id), prelude=prelude)
+    # 有新发言即撤销本人已有的「确认」（改动后需重新确认），并把最新确认进度广播给同桌。
+    session_service.set_turn_confirm(db, session_id, player_char.id, False)
+    room_hub.broadcast(
+        session_id,
+        _make_chunk("turn_state", metadata=session_service.turn_confirm_state(db, session_id)),
+    )
     return {"ok": True}
 
 
@@ -210,6 +216,39 @@ async def regenerate(
     room_hub.broadcast(session_id, _make_chunk("generating"))
     generation_manager.start(session_id, run_regenerate_generation(session_id))
     return {"ok": True, "removed": removed}
+
+
+@router.post("/{session_id}/advance")
+async def advance(
+    session_id: str,
+    data: AdvanceRequest,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """玩家点『推进本回合』：记录该真人的确认；所有真人都确认后，把本回合暂存发言整批交 KP
+    （先跑 AI 队友回合，再 KP 叙事）。"""
+    game_session = db.get(GameSession, session_id)
+    if not game_session:
+        raise HTTPException(404, "会话不存在")
+    if game_session.status != "active":
+        raise HTTPException(400, "会话未处于活跃状态")
+    if generation_manager.is_generating(session_id):
+        raise HTTPException(409, "KP 正在叙事，请稍候")
+    try:
+        actor = session_service.resolve_actor(db, session_id, token, data.acting_character_id)
+    except ValueError as e:
+        raise HTTPException(403, str(e))
+
+    session_service.set_turn_confirm(db, session_id, actor.id, True)
+    state = session_service.turn_confirm_state(db, session_id)
+    room_hub.broadcast(session_id, _make_chunk("turn_state", metadata=state))
+
+    if state["ready"]:
+        # 所有真人已确认：暂存发言转正 + 清确认，然后触发一轮（队友回合 + KP）。
+        session_service.commit_turn(db, session_id)
+        room_hub.broadcast(session_id, _make_chunk("generating"))
+        generation_manager.start(session_id, run_chat_generation(session_id))
+    return {"ok": True, "ready": state["ready"]}
 
 
 @router.get("/{session_id}/search")

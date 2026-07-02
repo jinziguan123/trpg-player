@@ -130,6 +130,8 @@ export function GameSessionPage() {
   const [searchQ, setSearchQ] = useState('')
   const [searchResults, setSearchResults] = useState<SearchHit[]>([])
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 回合确认制：本回合各真人的确认进度
+  const [turnState, setTurnState] = useState<{ confirmed_ids: string[]; total: number; ready: boolean } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinActive = useRef(false)   // 初次加载「持续钉底」窗口是否进行中（期间抑制平滑滚动，避免抢滚）
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -192,9 +194,11 @@ export function GameSessionPage() {
     if (t === 'ready') { setLiveConnected(true); return }
     if (t === 'replay_done') return
     if (t === 'generating') { setStreaming(true); setThinking(true); return }
+    if (t === 'turn_state') { setTurnState((chunk.metadata as { confirmed_ids: string[]; total: number; ready: boolean }) || null); return }
     if (t === 'done') {
       endStream(); liveTypeRef.current = ''
       setStreaming(false); setThinking(false); setRefreshTick((x) => x + 1)
+      setTurnState(null)  // 新回合开始：确认进度归零
       // 生成结束后从 DB 对齐：用持久化的最终叙述替换流式拼接的内容，
       // 同时兜住「刷新落在生成完成瞬间」时丢失的那段叙述。
       void resyncHistory()
@@ -454,6 +458,16 @@ export function GameSessionPage() {
     }
   }
 
+  // 回合确认制：点「推进本回合」——记录本人确认；所有真人都确认后由后端整批交 KP。
+  const advanceTurn = async () => {
+    if (!currentSession || streaming) return
+    try {
+      await api.post(`/sessions/${currentSession.id}/advance`, { acting_character_id: myCharId })
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : '推进失败')
+    }
+  }
+
   // 历史检索：输入防抖后查后端；结果点击可跳转到对应消息。
   const runSearch = (q: string) => {
     setSearchQ(q)
@@ -518,11 +532,10 @@ export function GameSessionPage() {
       if (!inChar) {
         await api.post(`/sessions/${currentSession.id}/ooc`, body)
       } else {
-        setStreaming(true)
+        // 回合确认制：发言只进入「本回合暂存」（不进 streaming），等点「推进」且所有真人确认后才交 KP。
         await api.post(`/sessions/${currentSession.id}/chat`, body)
       }
     } catch (e: unknown) {
-      setStreaming(false)
       const msg = e instanceof Error ? e.message : '发送失败'
       toast.error(msg)
     }
@@ -970,25 +983,47 @@ export function GameSessionPage() {
             {typingName} 正在输入…
           </div>
         )}
-        {!streaming && messages.some((m) => m.type === 'narration') && (
-          <div className="px-3 pb-1 flex justify-end">
-            <ConfirmDialog
-              title="重新生成最新一轮"
-              description="将删除最新一轮 KP 的叙事（旁白与 NPC 台词），用本轮玩家与队友的既有输入重新生成；已投出的骰子结果会保留、不重掷。此操作会打断当前生成、可能明显改变剧情走向——仅在生成卡住或结果明显有问题时使用。"
-              confirmLabel="重新生成"
-              onConfirm={regenerate}
-            >
-              {(open) => (
-                <button
-                  onClick={open}
-                  title="重新生成最新一轮 KP 叙事（高风险，慎用）"
-                  className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors hover:opacity-80"
-                  style={{ color: 'var(--color-text-secondary)' }}
-                >
-                  <RotateCcw size={12} /> 重新生成
-                </button>
+        {!streaming && (
+          <div className="px-3 pb-1 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={advanceTurn}
+                disabled={!!(turnState && myCharId && turnState.confirmed_ids.includes(myCharId))}
+                className="text-xs px-3 py-1 rounded font-semibold transition-colors cursor-pointer"
+                style={{
+                  background: 'var(--color-text-accent)',
+                  color: '#f0e6d3',
+                  opacity: (turnState && myCharId && turnState.confirmed_ids.includes(myCharId)) ? 0.5 : 1,
+                }}
+                title="所有真人都点「推进」后，本回合发言才整批交给 KP"
+              >
+                {turnState && myCharId && turnState.confirmed_ids.includes(myCharId) ? '已确认 · 等待其他人' : '推进本回合'}
+              </button>
+              {turnState && turnState.total > 0 && (
+                <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                  已确认 {turnState.confirmed_ids.length}/{turnState.total}
+                </span>
               )}
-            </ConfirmDialog>
+            </div>
+            {messages.some((m) => m.type === 'narration') && (
+              <ConfirmDialog
+                title="重新生成最新一轮"
+                description="将删除最新一轮 KP 的叙事（旁白与 NPC 台词），用本轮玩家与队友的既有输入重新生成；已投出的骰子结果会保留、不重掷。此操作会打断当前生成、可能明显改变剧情走向——仅在生成卡住或结果明显有问题时使用。"
+                confirmLabel="重新生成"
+                onConfirm={regenerate}
+              >
+                {(open) => (
+                  <button
+                    onClick={open}
+                    title="重新生成最新一轮 KP 叙事（高风险，慎用）"
+                    className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors hover:opacity-80"
+                    style={{ color: 'var(--color-text-secondary)' }}
+                  >
+                    <RotateCcw size={12} /> 重新生成
+                  </button>
+                )}
+              </ConfirmDialog>
+            )}
           </div>
         )}
         <div className="chat-input-bar">

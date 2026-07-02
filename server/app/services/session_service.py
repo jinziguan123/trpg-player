@@ -564,6 +564,64 @@ def search_events(
     )
 
 
+def human_character_ids(db: Session, session_id: str) -> set[str]:
+    """本会话所有真人席位的角色 id（回合确认制里需要逐个确认推进的主体）。"""
+    return {
+        p.character_id
+        for p in get_participants(db, session_id)
+        if p.role == "human" and p.character_id
+    }
+
+
+def set_turn_confirm(db: Session, session_id: str, char_id: str, confirmed: bool) -> None:
+    """记录/撤销某真人角色对『本回合推进』的确认（存 world_state.turn_confirm）。"""
+    session = db.get(GameSession, session_id)
+    if not session or not char_id:
+        return
+    ws = dict(session.world_state or {})
+    tc = dict(ws.get("turn_confirm") or {})
+    if confirmed:
+        tc[char_id] = True
+    else:
+        tc.pop(char_id, None)
+    ws["turn_confirm"] = tc
+    session.world_state = ws
+    db.commit()
+
+
+def turn_confirm_state(db: Session, session_id: str) -> dict:
+    """当前回合确认进度：{confirmed_ids, total, ready}。ready＝所有真人都已确认。"""
+    session = db.get(GameSession, session_id)
+    humans = human_character_ids(db, session_id)
+    tc = (session.world_state or {}).get("turn_confirm") if session else None
+    tc = tc or {}
+    confirmed = sorted(cid for cid in humans if tc.get(cid))
+    total = len(humans)
+    return {
+        "confirmed_ids": confirmed,
+        "total": total,
+        "ready": total > 0 and len(confirmed) >= total,
+    }
+
+
+def commit_turn(db: Session, session_id: str) -> None:
+    """推进：把本回合所有『暂存发言』(metadata.pending_turn) 转正（去标记），并清空确认状态。"""
+    session = db.get(GameSession, session_id)
+    if not session:
+        return
+    for ev in get_session_events(db, session_id, limit=0):
+        meta = ev.metadata_ or {}
+        if meta.get("pending_turn"):
+            m = dict(meta)
+            m.pop("pending_turn", None)
+            ev.metadata_ = m
+            flag_modified(ev, "metadata_")
+    ws = dict(session.world_state or {})
+    ws["turn_confirm"] = {}
+    session.world_state = ws
+    db.commit()
+
+
 def get_next_sequence_num(db: Session, session_id: str) -> int:
     result = (
         db.query(EventLog.sequence_num)

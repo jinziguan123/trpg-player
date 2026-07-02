@@ -193,6 +193,60 @@ def test_search_history_matches_and_returns_seq(client):
     assert c.get(f"/api/sessions/{sid}/search", params={"q": ""}).json()["results"] == []
 
 
+def test_chat_stashes_and_single_human_advance_triggers(client, monkeypatch):
+    """回合确认制：/chat 只暂存（pending_turn）不触发；唯一真人 /advance 确认即整批交 KP，
+    并把暂存发言转正。"""
+    import app.api.chat as chat_module
+
+    started = {"n": 0}
+
+    def fake_start(session_id, coro, prelude=None):
+        started["n"] += 1
+        coro.close()
+
+    monkeypatch.setattr(chat_module.generation_manager, "start", fake_start)
+
+    c, ids = client
+    sid = _make_session(c, ids)
+    assert c.post(f"/api/sessions/{sid}/chat", json={"content": "我推开门"}).status_code == 200
+    assert started["n"] == 0  # 发言不触发生成
+    evs = c.get(f"/api/sessions/{sid}/events").json()["events"]
+    assert any(e["event_type"] == "action" and (e.get("metadata_") or {}).get("pending_turn") for e in evs)
+
+    r = c.post(f"/api/sessions/{sid}/advance", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["ready"] is True and started["n"] == 1  # 唯一真人确认 → 触发
+    evs2 = c.get(f"/api/sessions/{sid}/events").json()["events"]
+    assert not any((e.get("metadata_") or {}).get("pending_turn") for e in evs2)  # 已转正
+
+
+def test_advance_waits_for_all_humans(client, monkeypatch):
+    """多真人：需所有真人都确认后才触发；先确认的一方不 ready、不触发。"""
+    import app.api.chat as chat_module
+
+    started = {"n": 0}
+
+    def fake_start(session_id, coro, prelude=None):
+        started["n"] += 1
+        coro.close()
+
+    monkeypatch.setattr(chat_module.generation_manager, "start", fake_start)
+
+    c, ids = client
+    sid = c.post("/api/sessions", json={
+        "module_id": ids["module"],
+        "participants": [
+            {"character_id": ids["hero"], "role": "human", "is_primary": True},
+            {"character_id": ids["ally"], "role": "human"},
+        ],
+    }).json()["id"]
+
+    r1 = c.post(f"/api/sessions/{sid}/advance", json={"acting_character_id": ids["hero"]})
+    assert r1.json()["ready"] is False and started["n"] == 0  # 还差 ally
+    r2 = c.post(f"/api/sessions/{sid}/advance", json={"acting_character_id": ids["ally"]})
+    assert r2.json()["ready"] is True and started["n"] == 1  # 全确认 → 触发
+
+
 def test_regenerate_endpoint_cancels_and_restarts(client, monkeypatch):
     """重新生成：打断卡住的旧生成（cancel）→ 回滚 → 重启一次生成（start）。"""
     import app.api.chat as chat_module
