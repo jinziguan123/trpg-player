@@ -206,6 +206,43 @@ async def test_run_turn_planner_parses_json_plan():
     assert "do_not_reveal" in injected["content"]
 
 
+def test_build_turn_plan_message_requires_check_硬约束():
+    """requires_check=true 时，注入必须包含「照发的 [DICE_CHECK] 指令原文 + 不许提前泄结果」硬约束。
+
+    这是评估回路里 plan_adherence 连续不过的根因修复：措辞太软时 KP 会把动作叙述
+    「讲完」（敲出空层/摸到暗缝）却不发指令，既漏检定又提前泄露线索位置。
+    """
+    from app.ai.turn_planner import CheckPlan, TurnPlan
+
+    plan = TurnPlan(
+        requires_check=True,
+        check=CheckPlan(skill="侦查", difficulty="normal", visibility="open"),
+    )
+    content = turn_planner.build_turn_plan_message(plan)["content"]
+    # 必须把照发的指令原文喂给 KP（含技能名，open 明骰不赘写 visibility）
+    assert "[DICE_CHECK: skill=侦查, difficulty=normal]" in content
+    # 必须是「最后一行」硬约束，且明确禁止指令之前泄露结果/线索位置
+    assert "最后一行" in content
+    assert "凌驾叙事完整性" in content
+    # 暗骰时 visibility 要写进指令原文
+    blind_plan = TurnPlan(
+        requires_check=True,
+        check=CheckPlan(skill="心理学", difficulty="hard", visibility="blind"),
+    )
+    blind_content = turn_planner.build_turn_plan_message(blind_plan)["content"]
+    assert "[DICE_CHECK: skill=心理学, difficulty=hard, visibility=blind]" in blind_content
+
+
+def test_build_turn_plan_message_不需检定时无检定硬约束():
+    """requires_check=false 时不注入检定硬约束，避免让 KP 无中生有地发检定。"""
+    from app.ai.turn_planner import TurnPlan
+
+    plan = TurnPlan(requires_check=False)
+    content = turn_planner.build_turn_plan_message(plan)["content"]
+    assert "本轮必须发起检定" not in content
+    assert "[DICE_CHECK:" not in content
+
+
 class _RawLLM:
     """按预设原始字符串/对象作 complete 返回值的桩 LLM。"""
     def __init__(self, raw):

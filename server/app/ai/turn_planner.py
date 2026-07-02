@@ -299,6 +299,23 @@ async def run_turn_planner(llm: Any, messages: list[dict]) -> TurnPlan | None:
         return None
 
 
+# 供 KPAgent 识别「本轮是必发检定的裁定轮」的稳定标记：出现在注入消息里即代表本轮
+# requires_check=true。检定轮对「只写尝试、以指令收尾、不提前泄结果」的服从度要求极高，
+# 高温采样会让模型忍不住把「敲出空响、摸到暗缝」写出来——故 KP 见此标记时压低采样温度，
+# 让指令遵循压过创造性发挥。改这里的字面量要同步 KPAgent。
+REQUIRES_CHECK_MARKER = "【本轮必须发起检定"
+
+
+def _check_directive(check: CheckPlan) -> str:
+    """按计划里的 check 拼出本轮必须发的 [DICE_CHECK] 指令原文，直接喂给 KP 照发。"""
+    parts = [f"skill={check.skill or '侦查'}"]
+    if check.difficulty:
+        parts.append(f"difficulty={check.difficulty}")
+    if check.visibility and check.visibility != "open":
+        parts.append(f"visibility={check.visibility}")
+    return f"[DICE_CHECK: {', '.join(parts)}]"
+
+
 def build_turn_plan_message(plan: TurnPlan) -> dict:
     content = {
         "turn_kind": plan.turn_kind,
@@ -312,6 +329,50 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
         "safety": plan.safety.model_dump(),
         "direction": plan.direction.model_dump(),
     }
+
+    # requires_check=true 时，把「必须发检定、且发之前不许泄结果/线索位置」写成不可绕过的硬约束，
+    # 单独成段、给出照发的指令原文——否则模型容易把动作叙述「讲完」（敲出空层、摸到暗缝），
+    # 既不发指令又提前泄露了本该靠检定才发现的线索存在与位置。这是本文件评估回路里
+    # plan_adherence 连续不过的根因。
+    check_block = ""
+    if plan.requires_check:
+        directive = _check_directive(plan.check)
+        check_block = (
+            "\n\n----------------------------------------\n"
+            + REQUIRES_CHECK_MARKER
+            + "——最高优先级硬约束，凌驾叙事完整性，违反即为严重错误】\n"
+            "本轮 requires_check=true。你这次回复的唯一正确结束方式，是原样输出下面这行检定指令"
+            "并就此停笔——把它当作你回复的**最后一行**逐字照抄，一个字都不要改：\n"
+            f"    {directive}\n"
+            "（skill/difficulty/visibility 一律照计划 check 字段，不得改动、不得省略、不得替换成别的技能。）\n"
+            "\n硬性要求，逐条遵守：\n"
+            "1. 指令之后不许有任何文字；这一整段回复里，指令**之前**也**绝不允许**写出或暗示检定结果——"
+            "不得叙述玩家已经「找到 / 发现 / 摸到 / 听到 / 看懂 / 察觉 / 注意到」任何东西，"
+            "更不得点出线索的存在、位置或形态（例如「某处回音发空」「摸到一条暗缝」"
+            "「那块木板不对劲」「有什么东西藏在里面」「似乎是空的」都属于提前泄露，一律禁止）。\n"
+            "2. 你**只能**描写玩家「正在尝试」的过程动作本身（俯身、伸手、指节叩击、逐寸摸索），"
+            "以及与答案无关的固定环境（家具材质、房间光线气味）。**特别注意**：叩击/触摸所得到的"
+            "「反馈」本身就是检定要揭晓的答案——绝不能描述这次叩击「回音发空 / 声音不同 / 某处发虚」，"
+            "也不能描述摸到「接缝 / 细缝 / 松动 / 空腔」；这些哪怕写得再含蓄，都等于替检定给出了结果。"
+            "把「敲/摸到底反馈出了什么」完全留给检定结果去揭晓。\n"
+            "3. 哪怕这样叙事看起来「没讲完」「戛然而止」，也必须就此以该指令收尾——"
+            "发起检定本身就是本轮的正确收束；不要为了把动作叙述写「完整」而抢先给出结果或线索，"
+            "也不要用「你开始仔细检查……」这类没有指令的句子代替它。\n"
+            "4. narration_brief 里若有「描写反馈 / 声音 / 反应」之类措辞，只表示要渲染尝试当下的"
+            "**中性**氛围，绝不是允许你写出检定的答案（如「回音发空」「像是空的」＝答案，禁止）；"
+            "本硬约束的优先级高于 narration_brief 与任何叙事完整性的考量。\n"
+            "\n对照示例（务必学会「在动作抬手处就收尾发指令」）：\n"
+            "  【错误写法】（写出了叩击的反馈/发现、且没发指令）：「……你敲到侧板下方，回音发空，"
+            "摸到一条暗缝，你准备进一步探查这处可疑的地方。」\n"
+            f"  【正确写法】：「你俯身，借着窗外的天光凑近那张深色橡木书桌，指节沿着侧板逐寸叩下、"
+            f"再用指腹贴着雕花细细摸索。」换行，然后最后一行写：{directive}\n"
+            "注意：正确写法只写到「玩家伸手去敲/去摸」的动作就停住并发指令，绝不写这一敲/一摸「反馈出了什么」"
+            "（不写回响是否发空、不写有没有缝隙）。\n"
+            "再强调一次：本次回复务必以这一行结束，且这必须是回复真正的最后一行 —— " + directive + "\n"
+        )
+
+    # check_block 放在 JSON 之后收尾：模型对「上下文最末尾的指令」权重最高，把这条硬约束
+    # 作为最后读到的内容，能显著提升「照发 [DICE_CHECK] 收尾、不提前泄结果」的遵循率。
     return {
         "role": "system",
         "content": (
@@ -320,12 +381,12 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
             "或 flag/线索/NPC 的内部 id 等技术性标识，以任何形式（复述、总结、列表、标题）"
             "写进给玩家看的文本；看到这份结构化计划**不代表要改用「汇报体」输出**——回复必须"
             "仍是紧贴情境的自然语言叙事，不得另起标题分段或项目符号列表汇报状态。\n"
-            "若 requires_check 为 true，只描述尝试过程，并以计划指定的检定指令收尾。"
             "safety.do_not_reveal 的内容不能通过任何暗示性总结泄露。\n"
             "direction 是导演笔记（内部指引，严禁向玩家复述原文）：pacing 是本轮节奏"
             "（tighten=收紧推进/release=放松换气/hold=保持）；spotlight 列出的角色本轮要"
             "自然地给到戏份或点名；nudge 是解卡手段，只能让线索更显眼或让 NPC 主动接触，"
             "绝不能替玩家决定或直接宣布检定成功；foreshadow 是可择机埋设/回收的悬念。\n"
             + json.dumps(content, ensure_ascii=False, indent=2)
+            + check_block
         ),
     }
