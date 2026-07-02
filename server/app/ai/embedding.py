@@ -46,7 +46,13 @@ class FastEmbedEmbedder(Embedder):
         if self._model is None:
             from fastembed import TextEmbedding  # 懒导入，未装也不影响其余功能
 
-            self._model = TextEmbedding(model_name=self.model_name)
+            from app.config import settings
+
+            # 模型缓存放数据目录（dev=server/models；打包=app-data/models）：可写、持久，
+            # 首次用到时下载一次（约百 MB），之后复用——绝不每次重下、也不在启动路径上。
+            cache_dir = settings.db_path.parent / "models"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            self._model = TextEmbedding(model_name=self.model_name, cache_dir=str(cache_dir))
         return self._model
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:

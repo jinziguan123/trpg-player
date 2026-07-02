@@ -25,6 +25,7 @@ target/
 .claude/
 .worktrees/
 
-# Tauri 打包：Rust 产物、生成的 schema、以及按平台构建的 sidecar 二进制（由脚本重建）
+# Tauri 打包：Rust 产物、生成的 schema、以及按平台构建的后端产物（由脚本重建）
 src-tauri/gen/
 src-tauri/binaries/
+src-tauri/resources/

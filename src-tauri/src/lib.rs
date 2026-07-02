@@ -32,9 +32,27 @@ pub fn run() {
                 )?;
             }
 
-            // 拉起打包进来的后端 sidecar（PyInstaller 二进制）。
+            // 拉起打包进来的后端（PyInstaller onedir，放在 resources/trpg-server/）。
             let handle = app.handle().clone();
-            let (mut rx, child) = app.shell().sidecar("trpg-server")?.spawn()?;
+            let resource_dir = handle.path().resource_dir()?;
+            let exe = resource_dir
+                .join("resources")
+                .join("trpg-server")
+                .join("trpg-server");
+            // 资源拷贝后可能丢掉可执行位，补上，否则 spawn 会失败。
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(&exe) {
+                    let mut perm = meta.permissions();
+                    perm.set_mode(perm.mode() | 0o755);
+                    let _ = std::fs::set_permissions(&exe, perm);
+                }
+            }
+            let (mut rx, child) = app
+                .shell()
+                .command(exe.to_string_lossy().to_string())
+                .spawn()?;
             handle
                 .state::<Backend>()
                 .child
