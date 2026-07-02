@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.ai.context import _active_flags, _resolve_state
 from app.models import Character, GameSession, Module
+from app.services import world_memory
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,9 @@ def build_turn_plan_messages(
         None,
     )
     teammates = teammates or []
+    # 线索台账：已发现的线索不再是 candidate——known 的直接标记 discovered，
+    # 并把台账整体给 planner 做 clue_policy 判断输入（partial 的可升级为完整揭示）。
+    clue_ledger = world_memory.discovered_clue_status(session.world_state or {})
     payload = {
         "module": {
             "title": module.title,
@@ -170,10 +174,14 @@ def build_turn_plan_messages(
                 "description": clue.get("description", ""),
                 "location": clue.get("location", ""),
                 "trigger_condition": clue.get("trigger_condition", ""),
-                "discovered": clue.get("discovered", False),
+                "discovered": bool(
+                    clue.get("discovered", False)
+                    or clue_ledger.get(clue.get("id", "")) == "known"
+                ),
             }
             for clue in visible_clues
         ],
+        "clue_ledger": clue_ledger,
     }
 
     return [
@@ -190,7 +198,10 @@ def build_turn_plan_messages(
             "content": (
                 "请基于以下运行时资料生成本轮裁定计划。"
                 "线索只有在玩家行动匹配 trigger_condition 时才可进入 candidate_clue_ids。"
-                "不得使用 visible_clues 以外的线索。\n"
+                "不得使用 visible_clues 以外的线索。"
+                "clue_ledger 是玩家已掌握线索的台账：status=known（或 discovered=true）"
+                "的线索已完全揭示，不得再进入 candidate_clue_ids；"
+                "status=partial 的仅在玩家行动继续深入时可作为升级揭示的 candidate。\n"
                 + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             ),
         },
