@@ -599,35 +599,49 @@ export function GameSessionPage() {
           </div>
         </div>
         {showSearch && (
-          <div className="pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
-            <div className="flex items-center gap-2">
-              <Search size={14} style={{ color: 'var(--color-text-secondary)' }} />
-              <input
-                autoFocus
-                value={searchQ}
-                onChange={(e) => runSearch(e.target.value)}
-                placeholder="模糊检索本局历史（旁白 / 对话 / 行动 / 骰子 / 场外）…"
-                className="input flex-1 !py-1 text-sm"
-              />
-              <button
-                onClick={() => { setShowSearch(false); setSearchQ(''); setSearchResults([]) }}
-                title="关闭检索"
-                style={{ color: 'var(--color-text-secondary)' }}
-              >
-                <X size={16} />
-              </button>
-            </div>
-            {searchQ.trim() && (
-              <div className="mt-2 max-h-60 overflow-y-auto chat-scroll flex flex-col gap-1">
-                {searchResults.length === 0 ? (
-                  <div className="text-xs px-2 py-1" style={{ color: 'var(--color-text-secondary)' }}>
+          // 历史检索悬浮窗：遮罩 + 居中浮层，点遮罩 / Esc / X 关闭；不占据聊天区布局。
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center"
+            style={{ paddingTop: '12vh', background: 'rgba(0,0,0,0.35)' }}
+            onClick={() => setShowSearch(false)}
+          >
+            <div
+              className="w-full max-w-xl mx-4 rounded-lg overflow-hidden shadow-2xl"
+              style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2 px-3 py-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
+                <Search size={16} style={{ color: 'var(--color-text-secondary)' }} />
+                <input
+                  autoFocus
+                  value={searchQ}
+                  onChange={(e) => runSearch(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Escape') setShowSearch(false) }}
+                  placeholder="模糊检索本局历史（旁白 / 对话 / 行动 / 骰子 / 场外）…"
+                  className="input flex-1 !py-1 text-sm"
+                />
+                <button
+                  onClick={() => { setShowSearch(false); setSearchQ(''); setSearchResults([]) }}
+                  title="关闭检索（Esc）"
+                  style={{ color: 'var(--color-text-secondary)' }}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="max-h-[55vh] overflow-y-auto chat-scroll p-2 flex flex-col gap-1">
+                {!searchQ.trim() ? (
+                  <div className="text-xs px-2 py-4 text-center" style={{ color: 'var(--color-text-secondary)' }}>
+                    输入关键词以检索本局历史记录，点结果可跳转到对应位置
+                  </div>
+                ) : searchResults.length === 0 ? (
+                  <div className="text-xs px-2 py-4 text-center" style={{ color: 'var(--color-text-secondary)' }}>
                     无匹配记录
                   </div>
                 ) : searchResults.map((h) => (
                   <button
                     key={h.id}
                     onClick={() => jumpToEvent(h.id)}
-                    className="text-left text-xs px-2 py-1 rounded hover:opacity-80"
+                    className="text-left text-xs px-2 py-1.5 rounded hover:opacity-80"
                     style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}
                     title="跳转到该记录"
                   >
@@ -636,7 +650,7 @@ export function GameSessionPage() {
                   </button>
                 ))}
               </div>
-            )}
+            </div>
           </div>
         )}
         {currentSession.participants && currentSession.participants.length > 1 && (
