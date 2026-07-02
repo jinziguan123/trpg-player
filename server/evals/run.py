@@ -1,0 +1,221 @@
+"""评估运行器：重放 fixture（build_kp_context → narrate），跑确定性检查 + 裁判打分。
+
+用法（在 server/ 目录下）：
+    python -m evals.run                      # 跑全部 fixture
+    python -m evals.run --suite kp_core      # 只跑带某 tag 的
+    python -m evals.run --fixture opening_x  # 只跑一个
+    python -m evals.run --no-judge           # 只跑确定性检查（不花裁判调用）
+    python -m evals.run --smoke              # 不调 LLM，只验证 fixture 可重建、上下文可构建
+
+fixture 未预存 plan 时，重放会现跑一次 turn_planner（评的是 planner+KP 端到端）；
+预存了 plan 则只评 KP 叙事本身（跨版本对比更稳）。
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+from app.ai import turn_planner
+from app.ai.agents.kp_agent import KPAgent
+from app.ai.context import build_kp_context
+from app.ai.llm_factory import get_llm
+
+from evals import checks, judge
+from evals.common import RESULTS_DIR, ReplayCase, iter_fixtures, load_fixture
+
+
+def _git_sha() -> str:
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "nogit"
+
+
+def _active_model_name() -> str:
+    try:
+        from app.api.ai_settings import load_active_profile
+        profile = load_active_profile()
+        return profile.model_name if profile else "env-fallback"
+    except Exception:
+        return "unknown"
+
+
+def build_replay_messages(case: ReplayCase) -> list[dict]:
+    """与 chat_service._run_generation 的单场景路径对齐：上下文 + 计划注入。"""
+    messages = build_kp_context(
+        case.session, case.module, case.player_char, case.events,
+        teammates=case.teammates or None,
+        rules_lookup_enabled=case.rules_lookup_enabled,
+    )
+    if case.plan is not None:
+        messages.append(turn_planner.build_turn_plan_message(case.plan))
+    return messages
+
+
+async def run_case(case: ReplayCase, llm, use_judge: bool) -> dict:
+    plan = case.plan
+    plan_source = "fixture" if plan is not None else "live"
+    if plan is None and case.events:
+        plan_messages = turn_planner.build_turn_plan_messages(
+            case.session, case.module, case.player_char, case.events,
+            teammates=case.teammates or None,
+            rules_lookup_enabled=case.rules_lookup_enabled,
+        )
+        plan = await turn_planner.run_turn_planner(llm, plan_messages)
+
+    messages = build_kp_context(
+        case.session, case.module, case.player_char, case.events,
+        teammates=case.teammates or None,
+        rules_lookup_enabled=case.rules_lookup_enabled,
+    )
+    if plan is not None:
+        messages.append(turn_planner.build_turn_plan_message(plan))
+
+    kp = KPAgent(llm)
+    narration = "".join([token async for token in kp.narrate(messages)])
+
+    findings = checks.run_all_checks(narration, case.player_names)
+    judge_result = None
+    if use_judge:
+        judge_result = await judge.run_judge(llm, case, plan, narration)
+
+    errors = [f for f in findings if f.severity == "error"]
+    judge_failed = (
+        [k for k, v in judge_result.items() if not v["pass"]] if judge_result else []
+    )
+    passed = not errors and not judge_failed and (judge_result is not None or not use_judge)
+
+    return {
+        "fixture": case.name,
+        "tags": case.tags,
+        "plan_source": plan_source,
+        "plan": plan.model_dump() if plan else None,
+        "narration": narration,
+        "findings": [f.to_dict() for f in findings],
+        "judge": judge_result,
+        "judge_error": use_judge and judge_result is None,
+        "passed": passed,
+    }
+
+
+def run_smoke(paths: list[Path]) -> int:
+    """不调 LLM：验证 fixture 可加载、ORM 可重建、KP/planner 上下文可构建。"""
+    failed = 0
+    for path in paths:
+        try:
+            case = load_fixture(path)
+            messages = build_replay_messages(case)
+            plan_messages = (
+                turn_planner.build_turn_plan_messages(
+                    case.session, case.module, case.player_char, case.events,
+                    teammates=case.teammates or None,
+                ) if case.events else []
+            )
+            total_chars = sum(len(m.get("content") or "") for m in messages)
+            print(
+                f"  ok  {case.name}: kp_messages={len(messages)} "
+                f"({total_chars} chars), plan_messages={len(plan_messages)}, "
+                f"events={len(case.events)}"
+            )
+        except Exception as exc:  # noqa: BLE001 —— smoke 就是要把问题全暴露出来
+            failed += 1
+            print(f"FAIL  {path.stem}: {type(exc).__name__}: {exc}")
+    print(f"\nsmoke: {len(paths) - failed}/{len(paths)} 通过")
+    return 1 if failed else 0
+
+
+def _print_summary(results: list[dict]) -> None:
+    print(f"\n{'fixture':<28} {'结果':<6} 明细")
+    print("-" * 72)
+    for r in results:
+        errors = [f for f in r["findings"] if f["severity"] == "error"]
+        warns = [f for f in r["findings"] if f["severity"] == "warn"]
+        judge_failed = (
+            [k for k, v in r["judge"].items() if not v["pass"]] if r["judge"] else []
+        )
+        detail_parts = []
+        if errors:
+            detail_parts.append(f"检查错误 {len(errors)}")
+        if judge_failed:
+            detail_parts.append(f"裁判不过: {','.join(judge_failed)}")
+        if r["judge_error"]:
+            detail_parts.append("裁判失败")
+        if warns:
+            detail_parts.append(f"警告 {len(warns)}")
+        status = "PASS" if r["passed"] else "FAIL"
+        print(f"{r['fixture']:<28} {status:<6} {'; '.join(detail_parts) or '-'}")
+    passed = sum(1 for r in results if r["passed"])
+    print("-" * 72)
+    print(f"共 {len(results)} 个，通过 {passed}，不通过 {len(results) - passed}")
+
+
+async def main_async(args: argparse.Namespace) -> int:
+    paths = iter_fixtures(suite=args.suite, name=args.fixture)
+    if not paths:
+        print("没有匹配的 fixture。先用 python -m evals.snapshot 从真实会话导出。")
+        return 1
+
+    if args.smoke:
+        return run_smoke(paths)
+
+    llm = get_llm()
+    results = []
+    for path in paths:
+        case = load_fixture(path)
+        print(f"运行 {case.name} …", flush=True)
+        try:
+            results.append(await run_case(case, llm, use_judge=not args.no_judge))
+        except Exception as exc:  # noqa: BLE001 —— 单个 fixture 失败不中断整套
+            print(f"  出错: {type(exc).__name__}: {exc}")
+            results.append({
+                "fixture": case.name, "tags": case.tags, "plan_source": None,
+                "plan": None, "narration": "", "findings": [],
+                "judge": None, "judge_error": True, "passed": False,
+                "run_error": f"{type(exc).__name__}: {exc}",
+            })
+
+    scorecard = {
+        "meta": {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "git_sha": _git_sha(),
+            "model": _active_model_name(),
+            "suite": args.suite,
+            "judge": not args.no_judge,
+        },
+        "results": results,
+        "summary": {
+            "total": len(results),
+            "passed": sum(1 for r in results if r["passed"]),
+        },
+    }
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    out = RESULTS_DIR / f"{stamp}-{scorecard['meta']['git_sha']}.json"
+    out.write_text(json.dumps(scorecard, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    _print_summary(results)
+    print(f"\nscorecard 已写入 {out}")
+    return 0 if scorecard["summary"]["passed"] == len(results) else 1
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="重放 fixture 评估 KP 生成质量")
+    parser.add_argument("--suite", help="只跑带此 tag 的 fixture")
+    parser.add_argument("--fixture", help="只跑指定名字的 fixture")
+    parser.add_argument("--no-judge", action="store_true", help="跳过裁判模型（只跑确定性检查）")
+    parser.add_argument("--smoke", action="store_true", help="不调 LLM，只验证 fixture 可重建")
+    args = parser.parse_args()
+    sys.exit(asyncio.run(main_async(args)))
+
+
+if __name__ == "__main__":
+    main()

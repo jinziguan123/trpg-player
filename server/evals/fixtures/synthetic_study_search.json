@@ -1,0 +1,241 @@
+{
+  "meta": {
+    "name": "synthetic_study_search",
+    "tags": ["synthetic", "smoke", "kp_core", "check"],
+    "note": "合成用例：玩家在书房搜查暗格，典型侦查检定轮。书桌暗格线索未发现、管家的秘密不可泄露。",
+    "source": {"session_id": "synthetic", "turn": 6}
+  },
+  "module": {
+    "id": "mod_synthetic_manor",
+    "title": "灰雾庄园（合成评测模组）",
+    "rule_system": "coc",
+    "description": "1925 年新英格兰乡间庄园，庄园主暴毙，调查员受托查明死因。",
+    "theme": "default",
+    "world_setting": {
+      "era": "1925 年",
+      "location": "新英格兰乡间",
+      "tone": "哥特式悬疑",
+      "intro": "灰雾终年不散的庄园里，老主人韦尔登死在了书房。",
+      "player_brief": "你们受韦尔登家族之托，调查老主人的死因。"
+    },
+    "raw_content": "",
+    "scenes": [
+      {
+        "id": "scene_hall",
+        "title": "门厅",
+        "description": "挑高的门厅挂着褪色的家族画像，灰尘在光柱里浮动。",
+        "danger": "calm",
+        "atmosphere": "阴郁而安静",
+        "connections": ["scene_study"]
+      },
+      {
+        "id": "scene_study",
+        "title": "书房",
+        "description": "老韦尔登死去的地方。深色橡木书桌居中，身后是顶到天花板的书架。地毯上还留着未清理干净的暗色污渍。",
+        "danger": "uneasy",
+        "atmosphere": "压抑，空气里有淡淡的药味",
+        "connections": ["scene_hall"],
+        "states": [
+          {
+            "when_flags": ["flag_secret_drawer_open"],
+            "description": "书桌侧面的暗格敞开着，里面的丝绒衬垫上有一个长条形的凹陷——原本放着什么东西。"
+          }
+        ]
+      }
+    ],
+    "npcs": [
+      {
+        "id": "npc_butler_graves",
+        "name": "格雷夫斯",
+        "description": "侍奉韦尔登家三十年的老管家，背微驼，言辞恭敬而滴水不漏。",
+        "personality": "谨慎、忠诚、习惯性回避正面回答",
+        "background": "他知道老主人晚年沉迷降神会，一直替主人遮掩。",
+        "secrets": "案发当晚他听到书房里有第二个人的声音，但为了家族名誉守口如瓶。",
+        "initial_location": "scene_hall",
+        "attributes": {"STR": 45, "CON": 50, "SIZ": 55, "DEX": 40, "APP": 50, "INT": 65, "POW": 55, "EDU": 60, "LUCK": 50},
+        "skills": {"聆听": 60, "话术": 55, "图书馆使用": 40}
+      }
+    ],
+    "maps": [],
+    "clues": [
+      {
+        "id": "clue_secret_drawer",
+        "name": "书桌暗格",
+        "description": "书桌侧板内藏着一个暗格，衬垫上的凹陷显示曾放过一本厚册子，如今不翼而飞。",
+        "location": "scene_study",
+        "trigger_condition": "仔细搜查书桌并通过侦查检定"
+      },
+      {
+        "id": "clue_seance_invitation",
+        "name": "降神会请柬",
+        "description": "一张烫金请柬，落款是「黄昏兄弟会」，日期正是案发前夜。",
+        "location": "scene_study",
+        "trigger_condition": "翻查书架上的书籍夹层"
+      }
+    ],
+    "triggers": [
+      {
+        "id": "trig_drawer_found",
+        "when": "玩家发现书桌暗格",
+        "set_flags": ["flag_secret_drawer_open"],
+        "description": "暗格被打开后，书房状态更新。"
+      }
+    ],
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:00:00"
+  },
+  "session": {
+    "id": "sess_synthetic_manor",
+    "module_id": "mod_synthetic_manor",
+    "status": "active",
+    "room_code": null,
+    "player_character_id": "char_henry",
+    "current_scene_id": "scene_study",
+    "world_state": {
+      "visited_scenes": ["scene_hall", "scene_study"],
+      "flags": [],
+      "story_summary": "",
+      "story_summary_seq": 0
+    },
+    "turn_state": null,
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:30:00"
+  },
+  "player_char": {
+    "id": "char_henry",
+    "name": "亨利·卡特",
+    "module_id": "mod_synthetic_manor",
+    "rule_system": "coc",
+    "is_player": true,
+    "owner_token": null,
+    "base_attributes": {"STR": 50, "CON": 55, "SIZ": 60, "DEX": 65, "APP": 55, "INT": 75, "POW": 60, "EDU": 80, "LUCK": 45},
+    "skills": {"侦查": 70, "图书馆使用": 65, "心理学": 50, "话术": 40, "医学": 55},
+    "system_data": {"hp": {"current": 11, "max": 11}, "san": {"current": 60, "max": 60}},
+    "backstory": "阿卡姆的法医，因老友之托来到庄园。",
+    "status": "active",
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:00:00"
+  },
+  "teammates": [],
+  "events": [
+    {
+      "id": "evt_1",
+      "session_id": "sess_synthetic_manor",
+      "sequence_num": 1,
+      "event_type": "narration",
+      "actor_id": null,
+      "actor_name": "KP",
+      "content": "马车在庄园门前停下，灰雾贴着地面漫过你的脚踝。老管家格雷夫斯提着风灯迎出来，把你引进了门厅。",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_hall"},
+      "summary": null,
+      "created_at": "2026-07-01T12:05:00"
+    },
+    {
+      "id": "evt_2",
+      "session_id": "sess_synthetic_manor",
+      "sequence_num": 2,
+      "event_type": "dialogue",
+      "actor_id": "char_henry",
+      "actor_name": "亨利·卡特",
+      "content": "「带我去书房看看，尸体被移动过吗？」",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_hall"},
+      "summary": null,
+      "created_at": "2026-07-01T12:06:00"
+    },
+    {
+      "id": "evt_3",
+      "session_id": "sess_synthetic_manor",
+      "sequence_num": 3,
+      "event_type": "dialogue",
+      "actor_id": "npc_butler_graves",
+      "actor_name": "格雷夫斯",
+      "content": "「老爷还保持着我们发现他时的样子……医生嘱咐过，警察来之前什么都不要动。请随我来。」",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_hall"},
+      "summary": null,
+      "created_at": "2026-07-01T12:07:00"
+    },
+    {
+      "id": "evt_4",
+      "session_id": "sess_synthetic_manor",
+      "sequence_num": 4,
+      "event_type": "narration",
+      "actor_id": null,
+      "actor_name": "KP",
+      "content": "书房里药味刺鼻。老韦尔登伏在书桌上，右手还攥着一支断掉的钢笔。桌面上摊着的账本停在半页，墨迹被什么液体晕开了。",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_study"},
+      "summary": null,
+      "created_at": "2026-07-01T12:10:00"
+    },
+    {
+      "id": "evt_5",
+      "session_id": "sess_synthetic_manor",
+      "sequence_num": 5,
+      "event_type": "action",
+      "actor_id": "char_henry",
+      "actor_name": "亨利·卡特",
+      "content": "我先检查尸体的姿态和桌面，然后蹲下来观察书桌本身——这种老式书桌常有暗格。",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_study"},
+      "summary": null,
+      "created_at": "2026-07-01T12:12:00"
+    },
+    {
+      "id": "evt_6",
+      "session_id": "sess_synthetic_manor",
+      "sequence_num": 6,
+      "event_type": "action",
+      "actor_id": "char_henry",
+      "actor_name": "亨利·卡特",
+      "content": "我仔细敲击书桌的侧板和抽屉底部，听声音找暗格。",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_study"},
+      "summary": null,
+      "created_at": "2026-07-01T12:13:00"
+    }
+  ],
+  "rules_lookup_enabled": false,
+  "plan": {
+    "turn_kind": "investigate",
+    "player_intent": "敲击书桌侧板寻找暗格",
+    "requires_check": true,
+    "check": {
+      "skill": "侦查",
+      "difficulty": "normal",
+      "visibility": "open",
+      "reason": "搜查暗格需要侦查检定，暗格做工考究但玩家方法得当"
+    },
+    "clue_policy": {
+      "action_matches_clue": true,
+      "candidate_clue_ids": ["clue_secret_drawer"],
+      "reveal_level": "none",
+      "requires_inspiration": false,
+      "notes": "检定成功才揭示暗格；本轮叙事应以检定收尾，不预告结果"
+    },
+    "npc_policy": {
+      "speakers": [],
+      "reaction": "格雷夫斯在门厅，不在场",
+      "needs_npc_act": false
+    },
+    "scene_policy": {
+      "scene_change": null,
+      "set_flags": [],
+      "clear_flags": []
+    },
+    "narration_brief": [
+      "描写敲击声与书桌的反馈，营造悬疑感",
+      "以 [DICE_CHECK: skill=侦查] 收尾，不描述检定结果"
+    ],
+    "safety": {
+      "do_not_reveal": [
+        "暗格内曾放过册子、册子失踪的事实（检定成功前）",
+        "格雷夫斯听到过书房里第二个人的声音",
+        "降神会请柬与黄昏兄弟会"
+      ],
+      "do_not_control_players": true
+    }
+  }
+}
