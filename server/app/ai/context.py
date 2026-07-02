@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from app.models.character import Character
 from app.models.event_log import EventLog
@@ -20,6 +21,9 @@ from app.ai.prompts.team_system import (
     TEAM_MODE_TOGETHER,
     TEAM_SYSTEM_PROMPT,
 )
+from app.services import world_memory
+
+logger = logging.getLogger(__name__)
 
 CONTEXT_TOKEN_BUDGET = 24000
 RESERVE_FOR_OUTPUT = 4096
@@ -442,6 +446,30 @@ def build_kp_context(
     if not is_opening and teammates:
         system_content += GROUP_INSTRUCTION
 
+    # 世界记忆注入（fail-open：格式化异常绝不阻塞出牌，退回无记忆行为）——
+    # 线索台账：玩家已 known/partial 的线索清单 + 「已列出的不要重复安排发现桥段、
+    # 未列出的一律视为未发现」的硬指示；NPC 记忆：各 NPC 的态度/承诺/谎言/最近互动，
+    # 保证 NPC 言行跨回合一致。台账/记忆为空时不注入任何小节（与现状完全一致）。
+    if not is_opening:
+        try:
+            ws_mem = session.world_state or {}
+            clue_names = {
+                c.get("id"): c.get("name")
+                for c in (module.clues or []) if c.get("id")
+            }
+            char_names = {player_char.id: player_char.name}
+            char_names.update({t.id: t.name for t in teammates})
+            ledger_section = world_memory.format_clue_ledger_section(
+                ws_mem, clue_names, char_names,
+            )
+            if ledger_section:
+                system_content += "\n\n" + ledger_section
+            npc_memory_section = world_memory.format_npc_memory_section(ws_mem, npcs)
+            if npc_memory_section:
+                system_content += "\n\n" + npc_memory_section
+        except Exception:
+            logger.exception("世界记忆注入 KP 上下文失败（忽略）")
+
     party_char_ids = {player_char.id} | {t.id for t in teammates}
 
     system_tokens = _estimate_tokens(system_content)
@@ -574,6 +602,17 @@ def build_npc_context(
         npc_personality=npc_def.get("personality", "普通人"),
         npc_secrets=_as_text(npc_def.get("secrets")) or "无",
     )
+
+    # 世界记忆：该 NPC 自己的记忆全量注入——记得对玩家的承诺、说过的谎与最近互动，
+    # 这是玩家最能感知的一致性改进。无记忆时不注入（向后兼容）；异常 fail-open。
+    try:
+        self_memory = world_memory.format_npc_self_memory(
+            session.world_state or {}, npc_id,
+        )
+        if self_memory:
+            system_content += "\n\n" + self_memory
+    except Exception:
+        logger.exception("世界记忆注入 NPC 上下文失败（忽略）: npc=%s", npc_id)
 
     # 信息隔离：NPC 只看「自己所在场景」发生的事，外加显式指向它的事件（visibility 含 npc_id）。
     # 这样一个 NPC 不会知道玩家在别处场景的言行。未打场景戳的旧事件（无 metadata.scene_id）

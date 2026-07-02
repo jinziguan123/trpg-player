@@ -25,6 +25,7 @@ from app.models.module import Module
 from app.models.session import GameSession
 from app.rules.registry import get_engine
 from app.services import map_service, rulebook_service, session_service
+from app.services import world_memory
 from app.services.room_hub import room_hub
 
 logger = logging.getLogger(__name__)
@@ -923,6 +924,22 @@ async def _run_team_turn(
                 actor_name="系统", metadata=dice_meta,
             )
             yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=dev.id)
+            # 世界记忆钩子 d：队友暗投若能确定性归属到唯一 NPC（行动描述里恰好点名一个），
+            # 记录该 NPC「被看穿/未被看穿」；归属不成立则跳过，绝不猜测。
+            if dice_meta.get("blind"):
+                target = _match_single_npc(module, content)
+                if target:
+                    seen_through = result.outcome in (
+                        "critical_success", "hard_success", "success",
+                    )
+                    verdict = "看穿" if seen_through else "试探，但未被看穿"
+                    _apply_world_memory(
+                        db, game_session,
+                        lambda ws: world_memory.record_npc_interaction(
+                            ws, target[0], dev.sequence_num,
+                            f"被 {teammate.name} 用{skill}{verdict}",
+                        ),
+                    )
 
 
 def _persist_error_notice(db: Session, session_id: str, text: str) -> None:
@@ -1080,6 +1097,128 @@ def _team_blind_message(blind_results: list[str] | None) -> dict | None:
     }
 
 
+def _apply_world_memory(db: Session, game_session: GameSession, mutate) -> None:
+    """把一次世界记忆更新（world_memory 的纯函数）落到 world_state。
+
+    JSON 列必须整 dict 重新赋值才会被 SQLAlchemy 追踪；记忆是增强件，
+    任何异常只记日志、回滚后继续——绝不允许阻塞跑团主流程。
+    """
+    try:
+        ws = mutate(dict(game_session.world_state or {}))
+        if not isinstance(ws, dict):
+            return
+        game_session.world_state = ws
+        db.add(game_session)
+        db.commit()
+        db.refresh(game_session)
+    except Exception:
+        logger.exception(
+            "世界记忆更新失败（忽略）: session=%s", getattr(game_session, "id", "?"),
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def _match_single_npc(module: Module, text: str) -> tuple[str, str] | None:
+    """在自由文本里按 NPC 名做子串匹配：恰好唯一命中才返回 (npc_id, name)，否则 None。
+
+    用于暗投（心理学等）的目标归属：归属必须确定性成立，宁缺毋滥——
+    零命中或多命中一律放弃，不做任何猜测。
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    hits: list[tuple[str, str]] = []
+    for npc in (module.npcs if module else []) or []:
+        nid = npc.get("id")
+        name = (npc.get("name") or "").strip()
+        if not nid or not name:
+            continue
+        parts = [name] + [p.strip() for p in name.split("·") if len(p.strip()) >= 2]
+        if any(p in text for p in parts):
+            hits.append((nid, name))
+    return hits[0] if len(hits) == 1 else None
+
+
+def _record_clue_ledger_from_plan(
+    db: Session,
+    game_session: GameSession,
+    plan: turn_planner.TurnPlan,
+    events: list,
+    player_char: Character,
+    teammates: list[Character] | None,
+) -> None:
+    """世界记忆钩子 a：planner 裁定本轮揭示线索（reveal_level != none 且有 candidate）
+    即写入台账（partial ← hint，known ← direct）。
+
+    discovered_by 取「与主角同场景」的玩家角色——分头行动下另一队并不知情，信息不共享。
+    """
+    policy = plan.clue_policy
+    if not policy.candidate_clue_ids:
+        return
+    if world_memory.reveal_status(policy.reveal_level) is None:
+        return
+    anchor = session_service.get_char_location(game_session, player_char.id)
+    present = [player_char.id]
+    for t in teammates or []:
+        if session_service.get_char_location(game_session, t.id) == anchor:
+            present.append(t.id)
+    seq = 0
+    for e in reversed(events or []):
+        if getattr(e, "sequence_num", None):
+            seq = e.sequence_num
+            break
+    _apply_world_memory(db, game_session, lambda ws: world_memory.record_clue_reveal(
+        ws, policy.candidate_clue_ids, policy.reveal_level, present, seq,
+        note=policy.notes,
+    ))
+
+
+def _record_npc_say_memory(
+    db: Session,
+    session_id: str,
+    game_session: GameSession,
+    module: Module,
+    speaker_texts: list,
+    audience_names: list[str],
+) -> None:
+    """世界记忆钩子 c：本轮落库的 NPC 台词（[SAY]/引号抽取）记入该 NPC 的互动史
+    ——「对谁说了话」。
+
+    只认得出 module.npcs 的说话人（队友台词不入 NPC 记忆）；同一 NPC 一轮只记一条，
+    防止多句台词灌爆环形缓冲。
+    """
+    if not speaker_texts:
+        return
+    by_name = {
+        (npc.get("name") or "").strip(): npc.get("id")
+        for npc in (module.npcs if module else []) or []
+        if npc.get("id") and npc.get("name")
+    }
+    picked: dict[str, str] = {}
+    for speaker, text in speaker_texts:
+        nid = by_name.get((speaker or "").strip())
+        if nid and nid not in picked and str(text or "").strip():
+            picked[nid] = str(text).strip()
+    if not picked:
+        return
+    try:
+        evs = session_service.get_session_events(db, session_id)
+        seq = (evs[-1].sequence_num or 0) if evs else 0
+    except Exception:
+        seq = 0
+    audience = "、".join(n for n in (audience_names or []) if n) or "在场众人"
+    for nid, text in picked.items():
+        _apply_world_memory(
+            db, game_session,
+            lambda ws, _nid=nid, _text=text: world_memory.record_npc_interaction(
+                ws, _nid, seq, f"对{audience}说：{_text[:40]}",
+            ),
+        )
+
+
 async def _validate_and_patch_narration(
     llm, plan: turn_planner.TurnPlan | None, result: list,
 ) -> None:
@@ -1127,6 +1266,11 @@ async def _run_generation(
             rules_lookup_enabled=rules_enabled,
         )
         plan = await turn_planner.run_turn_planner(llm, plan_messages)
+        # 世界记忆钩子 a：本轮裁定要揭示线索 → 写入线索台账（纯确定性，零额外 LLM 调用）
+        if plan is not None:
+            _record_clue_ledger_from_plan(
+                db, game_session, plan, events, player_char, teammates,
+            )
 
     # 分头行动：按各成员「真实所在场景」归并（玩家经大地图、队友经 travel 动作更新的确定性位置）。
     # 身处 ≥2 个场景即分头 → 逐场景生成叙事。不再靠 LLM 猜分组、也不因「打算去X」误判。
@@ -1166,6 +1310,11 @@ async def _run_generation(
         raise
     await _validate_and_patch_narration(llm, plan, result)
     _persist_narration(db, session_id, result)
+    # 世界记忆钩子 c：本轮 NPC 台词记入其互动史（对全队说话）
+    _record_npc_say_memory(
+        db, session_id, game_session, module, result[2],
+        [player_char.name] + [t.name for t in (teammates or [])],
+    )
 
     async for chunk in _process_commands(
         db, session_id, result[1], module, player_char, game_session, llm,
@@ -1270,6 +1419,10 @@ async def _run_split_generation(
             raise
         await _validate_and_patch_narration(llm, plan, result)
         _persist_narration(db, session_id, result)
+        # 世界记忆钩子 c：本组 NPC 台词记入其互动史（听众＝该组成员，信息不跨组共享）
+        _record_npc_say_memory(
+            db, session_id, game_session, module, result[2], grp["members"],
+        )
         combined.append(result[1])
 
     async for chunk in _process_commands(
@@ -1435,6 +1588,11 @@ async def _run_kp_turn(
         _persist_narration(db, session_id, res)
         raise
     _persist_narration(db, session_id, res)
+    # 世界记忆钩子 c：本轮 NPC 台词记入其互动史（对全队说话）
+    _record_npc_say_memory(
+        db, session_id, game_session, module, res[2],
+        [player_char.name] + [t.name for t in (party_others or [])],
+    )
 
     async for chunk in _process_commands(
         db, session_id, res[1], module, player_char, game_session, llm,
@@ -1928,6 +2086,23 @@ async def _process_commands(
         )
         yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id)
 
+        # 世界记忆钩子 d：暗投（玩家/队友对 NPC 的心理学等）若能经 source= 确定性归属到
+        # 唯一 NPC，记录其「被看穿/未被看穿」；NPC 自己的暗骰或归属不成立则跳过。
+        if blind and not is_npc:
+            target = _match_single_npc(module, source)
+            if target:
+                seen_through = result.outcome in (
+                    "critical_success", "hard_success", "success",
+                )
+                verdict = "看穿" if seen_through else "试探，但未被看穿"
+                _apply_world_memory(
+                    db, game_session,
+                    lambda ws: world_memory.record_npc_interaction(
+                        ws, target[0], ev.sequence_num,
+                        f"被 {disp_name} 用{skill_name}{verdict}",
+                    ),
+                )
+
     for match in OPPOSED_CHECK_RE.finditer(kp_text):
         async for chunk in _resolve_opposed(
             db, session_id, _parse_tag_kv(match.group(1)),
@@ -1962,6 +2137,11 @@ async def _process_commands(
                 session_service.add_event(
                     db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
                 )
+        # 世界记忆钩子 c：续写里的 NPC 台词同样记入其互动史
+        _record_npc_say_memory(
+            db, session_id, game_session, module, cont_result[2],
+            [player_char.name] + [t.name for t in (teammates or [])],
+        )
         # 续写里 KP 可能再发指令（如读懂禁忌知识后追加 [SAN_CHECK]、或场景切换）——
         # 继续处理，但限深度防无限掷骰链。
         if dice_depth + 1 < MAX_DICE_CONTINUATIONS:
@@ -2041,6 +2221,13 @@ async def _process_commands(
             "dialogue", npc_response, actor_name=npc_name,
             event_id=ev.id, actor_id=npc_id,
         )
+        # 世界记忆钩子 b：NPC 被触发行动后记入其互动史（trigger 原文截断，不调 LLM）
+        _apply_world_memory(
+            db, game_session,
+            lambda ws: world_memory.record_npc_interaction(
+                ws, npc_id, ev.sequence_num, f"受场景触发而行动/开口：{trigger}",
+            ),
+        )
 
 
 async def _handle_rule_lookup(
@@ -2092,6 +2279,12 @@ async def _handle_rule_lookup(
             session_service.add_event(
                 db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
             )
+
+    # 世界记忆钩子 c：续写里的 NPC 台词同样记入其互动史
+    _record_npc_say_memory(
+        db, session_id, game_session, module, cont_result[2],
+        [player_char.name] + [t.name for t in (teammates or [])],
+    )
 
     # 续写里可能含查完规则后发起的检定/场景切换等，照常处理（但禁止再次查阅）
     async for chunk in _process_commands(
