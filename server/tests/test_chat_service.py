@@ -932,3 +932,50 @@ def test_opening_idempotent(db_factory, monkeypatch):
 
     assert triggered["gen"] is False
     assert len(_narrations(db_factory, session_id)) == 1
+
+
+def test_trailing_pronoun_speaker_dialogue_extracted():
+    """说话人后置且用代词（"台词，"她说）也要抽成气泡——判不出具名时兜底署名代词，
+    好过把台词混进旁白。"""
+    text = "她望着你，浅浅一笑。\n\n“你是那位医生吧，”她说，语气温和。她站起身。"
+    result = ["", "", [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=[{"name": "霍尔护士长"}])
+    ))
+    texts = [t for _, t in result[2]]
+    speakers = [s for s, _ in result[2]]
+    assert any("你是那位医生吧" in t for t in texts)
+    assert "她" in speakers
+
+
+def test_trailing_named_speaker_dialogue_extracted():
+    """说话人后置且具名（"台词。"霍尔护士长说道）→ 气泡署名具名 NPC。"""
+    text = "门开了。\n\n“请坐。”霍尔护士长说道，指了指椅子。"
+    result = ["", "", [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=[{"name": "霍尔护士长"}])
+    ))
+    assert result[2] and result[2][0][0] == "霍尔护士长"
+    assert "请坐" in result[2][0][1]
+
+
+def test_written_quote_not_deferred_as_dialogue():
+    """书写/标识内容（写着「…」）不进后置说话人判定，仍留旁白。"""
+    text = "门上写着“禁止入内”。他皱了皱眉。"
+    result = ["", "", [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=[{"name": "某人"}])
+    ))
+    assert result[2] == []
+    assert "禁止入内" in result[0]
+
+
+def test_quote_without_trailing_verb_stays_narration():
+    """引号后没有紧邻的说话动词 → 判不出说话人时不硬抽，原样留旁白。"""
+    text = "“咚。”门缓缓合上了，走廊恢复了安静，再无人声。"
+    result = ["", "", [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=[{"name": "某人"}])
+    ))
+    assert result[2] == []
+    assert "咚" in result[0]

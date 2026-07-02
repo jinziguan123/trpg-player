@@ -79,6 +79,14 @@ _SAY_PREFIX_RE = re.compile(
 _SPEAK_VERB_ALT = (
     r"(?:说道|说|问道|问|答道|答|开口道|开口|低声道|低声|喊道|叫道|笑道|沉声道|轻声道|道)?"
 )
+# 闭引号「后面」紧跟的说话动词：用于「台词在前、说话人后置」的写法（如『“……”她说』
+# 『“……”她回头对你说』）——这类现有「看引号前文」的判定抽不出说话人，会把台词漏成旁白。
+# 只收明确的说话动词、去掉单字「道/问/答」等歧义词，降低把「知道/街道」误判成台词的概率。
+_TRAILING_SAY_VERB_RE = re.compile(
+    r"(说道|说|问道|喊道|叫道|低声道|开口道|沉声道|轻声道|笑道|叹道|回答道|回道|答道|开口)"
+)
+# 说话人后置且用代词时的兜底署名（判不出具名 NPC 时，用代词也好过把台词混进旁白）。
+_PRONOUN_SPEAKERS = ("她", "他", "它", "您", "咱")
 
 
 def _strip_speaker_prefix(text: str, speaker: str) -> str:
@@ -434,6 +442,11 @@ async def _stream_narration_filtered(
     written_run = False                  # 处于「一串书写标识引号」中（门牌列表等），后续相邻引号同样留旁白
     gap_since_quote = ""                 # 上一处闭引号至今累计的旁白文本（判断引号是否相邻成串）
     _LIST_SEPS = " 　\t\n、,，;；/和与及·"
+    quote_written = False                # 本次引号是否书写/标识内容（据此决定要不要对其做「后置说话人」判定）
+    # 「说话人后置」待定台词：闭引号时判不出说话人、但内容像台词，先扣住不落旁白，
+    # 看紧跟其后的文字是不是说话动词（"她说"）；是→抽成气泡，否→原样归还旁白。
+    deferring = False
+    deferred_open = deferred_buf = deferred_close = deferred_tail = ""
 
     def _looks_like_speech(text: str) -> bool:
         """像台词：有句末标点 / 口语标记 / 够长——用于过滤门牌、招牌等短名词标签。"""
@@ -516,6 +529,21 @@ async def _stream_narration_filtered(
             return last_speaker, False, False, False  # 强：承接当前说话人（段落分隔后会被释放）
         return _recent_npc_subject(s), True, False, False  # 弱：最近行动的 NPC 主语
 
+    def _trailing_speaker(tail: str) -> str | None:
+        """从闭引号后的文字（如「，她说」「霍尔护士长低声道」）解析后置说话人：具名优先，
+        其次承接 last_speaker / 最近 NPC 主语，最后兜底用代词本身。判不出返回 None。"""
+        seg = tail.lstrip("，,。、：: 　\t")
+        for canonical, parts, is_player in npc_matchers:
+            if is_player:
+                continue
+            for part in parts:
+                if seg.startswith(part):
+                    return canonical
+        spk = last_speaker or _recent_npc_subject(narration)
+        if spk:
+            return spk
+        return seg[0] if seg and seg[0] in _PRONOUN_SPEAKERS else None
+
     extracted = result[2]
     dialogue_marks: list = result[3] if len(result) > 3 else []
     group_marks: list = result[4] if len(result) > 4 else []
@@ -559,6 +587,29 @@ async def _stream_narration_filtered(
         full_response += token
 
         for ch in token:
+            if deferring:
+                deferred_tail += ch
+                if _TRAILING_SAY_VERB_RE.search(deferred_tail[:12]):
+                    speaker = _trailing_speaker(deferred_tail)
+                    text = deferred_buf.strip()
+                    if speaker:
+                        last_speaker = speaker
+                        extracted.append((speaker, text))
+                        dialogue_marks.append((len(narration), speaker, text))
+                        yield _mk("npc_dialogue", text, actor_name=speaker)
+                    else:
+                        pending += deferred_open + deferred_buf + deferred_close
+                    pending += deferred_tail  # 「她说……」等引导语作旁白
+                    deferring = False
+                    deferred_tail = ""
+                    continue
+                if ch == "\n" or len(deferred_tail) > 12:
+                    # 后面不是紧邻的说话动词 → 判定非台词，原样归还旁白
+                    pending += deferred_open + deferred_buf + deferred_close + deferred_tail
+                    deferring = False
+                    deferred_tail = ""
+                    continue
+                continue
             if in_say:
                 say_buf += ch
                 if say_buf.endswith("[/SAY]"):
@@ -617,9 +668,11 @@ async def _stream_narration_filtered(
                 if written_run and adjacent:
                     # 续接书写标识串（如门牌列表）：整串都按书写内容留旁白，不抽台词。
                     pending_speaker, pending_weak, from_prefix = None, False, False
+                    quote_written = True
                 else:
                     pending_speaker, pending_weak, from_prefix, is_written = _resolve_speaker(narration + pending)
                     written_run = is_written
+                    quote_written = is_written
                 # 经显式前缀（「史蒂芬·诺特：」）判定说话人时，把该前缀从旁白里抹掉——
                 # 否则说话人名会既作旁白文字、又作气泡署名，重复显示。按「完整说话人名」抹，
                 # 避免长名（如「加布里埃尔·马卡里奥」）只被删掉后半截、残留「加布里埃」。
@@ -642,6 +695,12 @@ async def _stream_narration_filtered(
                     extracted.append((pending_speaker, text))
                     dialogue_marks.append((len(narration), pending_speaker, text))
                     yield _mk("npc_dialogue", text, actor_name=pending_speaker)
+                elif not quote_written and text and _looks_like_speech(text):
+                    # 判不出说话人、但内容像台词：先扣住不落旁白，看紧跟其后的是不是「她说」这类
+                    # 后置说话人（说话人在台词之后），是则抽成气泡、否则原样归还旁白。
+                    deferring = True
+                    deferred_open, deferred_buf, deferred_close = quote_open, quote_buf, ch
+                    deferred_tail = ""
                 else:
                     pending += quote_open + quote_buf + ch  # 非台词：原样留旁白
                 quote_buf = ""
@@ -697,6 +756,9 @@ async def _stream_narration_filtered(
             pending += quote_open + quote_buf   # 未闭合引号：留旁白
         if in_bracket:
             pending += (bracket_open or "[") + bracket_buf
+        if deferring:
+            # 收尾仍在等后置说话人（后面没等到说话动词）：原样归还旁白
+            pending += deferred_open + deferred_buf + deferred_close + deferred_tail
         out = _flush_pending()
         if out:
             yield _mk("narration", out, actor_name="KP")
