@@ -840,6 +840,7 @@ async def _run_team_turn(
     teammates: list[Character],
     llm,
     blind_results: list[str] | None = None,
+    team_guidance: str = "",
 ) -> AsyncIterator[str]:
     """玩家输入后的一轮 AI 队友自动响应。
 
@@ -867,6 +868,7 @@ async def _run_team_turn(
         messages = build_team_context(
             teammate, game_session, module, events, player_char,
             all_teammates=teammates, separated=separated,
+            team_guidance=team_guidance,
         )
         agent = TeamAgent(llm, teammate.id)
         try:
@@ -1323,6 +1325,7 @@ async def _run_generation(
     events: list,
     teammates: list[Character] | None = None,
     blind_results: list[str] | None = None,
+    plan: turn_planner.TurnPlan | None = None,
 ) -> None:
     llm = get_llm()
     kp = KPAgent(llm)
@@ -1333,10 +1336,10 @@ async def _run_generation(
     party_ids = {player_char.id} | {t.id for t in (teammates or [])}
     matcher_npcs = _matcher_npcs(module, teammates)
 
-    # 回合裁定计划：先跑一次结构化 planner（分头与否都需要——分头场景 NPC/线索并行推进，
-    # 反而更需要 clue_policy/npc_policy/safety 兜底），失败/开场（无事件）则不注入，KP 走原逻辑。
-    plan = None
-    if events:
+    # 回合裁定计划：主链路（run_chat_generation）已在队友回合之前先跑好 plan 并记过线索台账，
+    # 通过 plan 参数传入 → 此处不重复调用。其他入口（run_travel_generation / _run_kp_turn 尾部）
+    # 不传 plan → 这里现跑并记账（钩子 a），行为与前移前完全一致。开场（无事件）不跑。
+    if plan is None and events:
         plan_messages = turn_planner.build_turn_plan_messages(
             game_session, module, player_char, events, teammates=teammates,
             rules_lookup_enabled=rules_enabled,
@@ -1588,6 +1591,20 @@ async def _detect_check_request(llm, text: str, char: Character) -> str | None:
     return None
 
 
+def _team_guidance_from_plan(plan: turn_planner.TurnPlan | None) -> str:
+    """从 plan.direction 派生给 AI 队友的软指引（目前只用 spotlight——把戏份让给冷场玩家）。
+
+    只影响队友「优先照顾谁」，不授权队友替人决定/代言；无 plan 或无 spotlight 则为空串。
+    """
+    if plan is None or not plan.direction.spotlight:
+        return ""
+    return (
+        "本轮请把互动机会和话头多留给："
+        + "、".join(plan.direction.spotlight)
+        + "（他们最近戏份偏少）。你仍然只能决定自己的言行，不得替他们做决定或代言。"
+    )
+
+
 async def run_chat_generation(session_id: str) -> None:
     from app.database import SessionLocal
 
@@ -1623,6 +1640,24 @@ async def run_chat_generation(session_id: str) -> None:
                 )
                 return
 
+        # planner 前移：在队友回合之前先跑一次裁定计划，作为本回合的共享契约——队友据
+        # plan.direction 派生的导演提示行动（如把话头递给冷场玩家），KP 叙事时再以队友实际
+        # 行动 + plan 为准。plan 是「裁定意图」不是「剧本」，队友行动后语义不变；开场不跑。
+        pre_events = session_service.get_session_events(db, session_id)
+        plan = None
+        if pre_events:
+            rules_enabled = rulebook_service.has_rulebook(db, module.rule_system)
+            plan_messages = turn_planner.build_turn_plan_messages(
+                game_session, module, player_char, pre_events,
+                teammates=party_others, rules_lookup_enabled=rules_enabled,
+            )
+            plan = await turn_planner.run_turn_planner(llm, plan_messages)
+            # 世界记忆钩子 a：本轮裁定要揭示线索 → 写入线索台账（前移后在此统一记账）
+            if plan is not None:
+                _record_clue_ledger_from_plan(
+                    db, game_session, plan, pre_events, player_char, party_others,
+                )
+
         # 玩家输入后：先跑一轮 AI 队友自动响应（仅 AI 席、仅一轮、不自触发），再交 KP 收束。
         # 队友暗骰（心理学等）的真实结果收集到 team_blind，注入本回合 KP 上下文而不落库/广播。
         team_blind: list[str] = []
@@ -1630,13 +1665,14 @@ async def run_chat_generation(session_id: str) -> None:
             async for chunk in _run_team_turn(
                 db, session_id, game_session, module, player_char, ai_teammates, llm,
                 blind_results=team_blind,
+                team_guidance=_team_guidance_from_plan(plan),
             ):
                 room_hub.broadcast(session_id, chunk)
 
         events = session_service.get_session_events(db, session_id)
         await _run_generation(
             db, session_id, game_session, module, player_char, events,
-            teammates=party_others, blind_results=team_blind,
+            teammates=party_others, blind_results=team_blind, plan=plan,
         )
     except asyncio.CancelledError:
         logger.info("生成被取消: session=%s", session_id)

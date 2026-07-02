@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.ai import director_signals
 from app.ai.context import _active_flags, _resolve_state
 from app.models import Character, GameSession, Module
 from app.services import world_memory
@@ -57,6 +58,15 @@ class SafetyPolicy(BaseModel):
     do_not_control_players: bool = True
 
 
+class DirectionPolicy(BaseModel):
+    """导演层：本轮的节奏经营意图。只影响「怎么讲」，不改变世界状态。"""
+
+    pacing: Literal["hold", "tighten", "release"] = "hold"
+    spotlight: list[str] = Field(default_factory=list)  # 本轮应主动给戏份的角色名
+    nudge: str = ""  # 卡关时的推进手段（让线索更显眼/NPC 主动接触），不得直接判定检定成功
+    foreshadow: str = ""  # 建议埋设或回收的悬念，一句话
+
+
 class TurnPlan(BaseModel):
     turn_kind: TurnKind = "mixed"
     player_intent: str = ""
@@ -67,6 +77,7 @@ class TurnPlan(BaseModel):
     scene_policy: ScenePolicy = Field(default_factory=ScenePolicy)
     narration_brief: list[str] = Field(default_factory=list)
     safety: SafetyPolicy = Field(default_factory=SafetyPolicy)
+    direction: DirectionPolicy = Field(default_factory=DirectionPolicy)
 
 
 def _visible_scene_ids(session: GameSession) -> set[str]:
@@ -184,12 +195,26 @@ def build_turn_plan_messages(
         "clue_ledger": clue_ledger,
     }
 
+    # 导演信号：确定性算出的节奏经营提示（冷场/卡关/单调/未解悬念），作为规划器输入。
+    # 规划器据此产出 direction（怎么讲、给谁戏份、如何解卡），不影响世界状态。
+    all_names = [player_char.name] + [t.name for t in teammates]
+    signals = director_signals.compute_signals(
+        events, module, session.world_state or {}, all_names,
+    )
+    director_block = ""
+    if signals.has_actionable() or signals.unresolved_threads:
+        director_block = (
+            "\n\n导演信号（用于产出 direction 字段；这些只影响叙事节奏与戏份分配，"
+            "绝不能凭此替玩家行动或直接判定检定成功）：\n" + signals.to_prompt()
+        )
+
     return [
         {
             "role": "system",
             "content": (
                 "你是 TRPG 的 KP 回合规划器。你的任务不是写叙事，而是先判断本轮裁定："
-                "玩家意图、是否需要检定、可揭示线索、NPC 反应、场景变化与安全边界。"
+                "玩家意图、是否需要检定、可揭示线索、NPC 反应、场景变化、安全边界，"
+                "以及导演层的节奏经营（direction：pacing/spotlight/nudge/foreshadow）。"
                 "只输出一个 JSON object，不要输出 Markdown。"
             ),
         },
@@ -203,6 +228,7 @@ def build_turn_plan_messages(
                 "的线索已完全揭示，不得再进入 candidate_clue_ids；"
                 "status=partial 的仅在玩家行动继续深入时可作为升级揭示的 candidate。\n"
                 + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                + director_block
             ),
         },
     ]
@@ -284,6 +310,7 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
         "scene_policy": plan.scene_policy.model_dump(),
         "narration_brief": plan.narration_brief,
         "safety": plan.safety.model_dump(),
+        "direction": plan.direction.model_dump(),
     }
     return {
         "role": "system",
@@ -295,6 +322,10 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
             "仍是紧贴情境的自然语言叙事，不得另起标题分段或项目符号列表汇报状态。\n"
             "若 requires_check 为 true，只描述尝试过程，并以计划指定的检定指令收尾。"
             "safety.do_not_reveal 的内容不能通过任何暗示性总结泄露。\n"
+            "direction 是导演笔记（内部指引，严禁向玩家复述原文）：pacing 是本轮节奏"
+            "（tighten=收紧推进/release=放松换气/hold=保持）；spotlight 列出的角色本轮要"
+            "自然地给到戏份或点名；nudge 是解卡手段，只能让线索更显眼或让 NPC 主动接触，"
+            "绝不能替玩家决定或直接宣布检定成功；foreshadow 是可择机埋设/回收的悬念。\n"
             + json.dumps(content, ensure_ascii=False, indent=2)
         ),
     }

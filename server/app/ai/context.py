@@ -683,12 +683,16 @@ def build_team_context(
     player_char: Character,
     all_teammates: list[Character] | None = None,
     separated: bool = False,
+    team_guidance: str = "",
 ) -> list[dict]:
     """构建单个 AI 队友的决策上下文：场景 + 队伍 + 最近事件。
 
     ``separated``：该队友是否已与大部队分头（身处与主队不同的场景）。分头时下达「主动推进
     本场景」的指引（没人替他推动剧情，全靠自己）；同处一地时仍是「补位与响应、宁缺毋滥」，
     避免抢戏。
+
+    ``team_guidance``：本轮导演对队友的软指引（由 planner 的 direction 派生，如「把话头
+    多递给某冷场玩家」）。空则不注入；非空时作为一条 system 提示追加，队友决策仍自主。
     """
     from app.services import session_service  # 局部导入避免顶层循环依赖
 
@@ -729,18 +733,21 @@ def build_team_context(
         events[-20:], self_char_id=teammate.id,
     )
 
-    messages = [
-        {"role": "system", "content": system_content},
-        {
-            "role": "user",
-            "content": (
-                "## 最近发生的事（最新在最后）\n"
-                + digest
-                + "\n\n轮到你了。请根据队伍刚才的行动和当前局面，"
-                "决定你这一回合做什么，并按 JSON 格式输出。"
-            ),
-        },
-    ]
+    messages = [{"role": "system", "content": system_content}]
+    if team_guidance.strip():
+        messages.append({
+            "role": "system",
+            "content": "【本轮导演提示】" + team_guidance.strip(),
+        })
+    messages.append({
+        "role": "user",
+        "content": (
+            "## 最近发生的事（最新在最后）\n"
+            + digest
+            + "\n\n轮到你了。请根据队伍刚才的行动和当前局面，"
+            "决定你这一回合做什么，并按 JSON 格式输出。"
+        ),
+    })
     return messages
 
 
