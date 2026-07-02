@@ -494,13 +494,21 @@ def build_kp_context(
     else:
         event_budget = CONTEXT_TOKEN_BUDGET - system_tokens - RESERVE_FOR_OUTPUT
 
+        # 滚动剧情摘要：已被浓缩进 world_state.story_summary 的老事件（seq ≤ 游标）不再逐条进
+        # 上下文，只保留这份持久摘要；游标之后的事件照常按预算给全文，仍超预算的再兜底即时摘要。
+        # 游标默认 0（无摘要）→ recent_pool 即全部事件，与旧行为一致（向后兼容）。
+        ws = session.world_state or {}
+        cursor = ws.get("story_summary_seq") or 0
+        persist_summary = (ws.get("story_summary") or "").strip()
+        recent_pool = [e for e in events if (e.sequence_num or 0) > cursor]
+
         all_msgs = _events_to_messages(
-            events, primary_char_id=player_char.id, party_char_ids=party_char_ids,
+            recent_pool, primary_char_id=player_char.id, party_char_ids=party_char_ids,
         )
 
         if len(all_msgs) <= MIN_RECENT_EVENTS:
             recent_msgs = all_msgs
-            summary = ""
+            older_summary = ""
         else:
             recent_msgs = all_msgs[-MIN_RECENT_EVENTS:]
             recent_tokens = sum(_estimate_tokens(m["content"]) for m in recent_msgs)
@@ -516,15 +524,16 @@ def build_kp_context(
                 remaining -= msg_tokens
 
             if len(recent_msgs) < len(all_msgs):
-                older_events = events[:len(events) - len(recent_msgs)]
-                summary = _summarize_old_events(older_events, max_tokens=min(MAX_SUMMARY_TOKENS, max(remaining, 500)))
+                older_events = recent_pool[:len(recent_pool) - len(recent_msgs)]
+                older_summary = _summarize_old_events(older_events, max_tokens=min(MAX_SUMMARY_TOKENS, max(remaining, 500)))
             else:
-                summary = ""
+                older_summary = ""
 
+        summary = "\n".join(s for s in (persist_summary, older_summary) if s)
         if summary:
             messages.append({
                 "role": "system",
-                "content": "[之前发生的事件摘要]\n" + summary,
+                "content": "[之前发生的剧情摘要]\n" + summary,
             })
         messages.extend(recent_msgs)
         if len(messages) >= 3 and messages[-1]["role"] == "user":

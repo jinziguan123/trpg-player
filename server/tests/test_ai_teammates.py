@@ -298,6 +298,79 @@ def test_old_events_summary_keeps_recent_not_opening():
     assert out.index("第198段剧情") < out.index("第199段剧情")
 
 
+def test_story_summarizer_merges_and_fails_open():
+    """滚动摘要生成：正常返回浓缩文本；无 LLM / 无事件 / 调用异常一律 None（保持原摘要）。"""
+    from types import SimpleNamespace
+
+    from app.ai import story_summarizer
+
+    class LLM:
+        async def complete(self, messages, **kw):
+            return "梗概：调查员到过疗养院。"
+
+    evs = [SimpleNamespace(event_type="narration", actor_name="KP", content="到了疗养院")]
+    assert asyncio.run(story_summarizer.summarize_story(LLM(), "旧摘要", evs)) == "梗概：调查员到过疗养院。"
+    assert asyncio.run(story_summarizer.summarize_story(None, "x", evs)) is None
+    assert asyncio.run(story_summarizer.summarize_story(LLM(), "x", [])) is None
+
+    class BadLLM:
+        async def complete(self, *a, **k):
+            raise RuntimeError("boom")
+
+    assert asyncio.run(story_summarizer.summarize_story(BadLLM(), "x", evs)) is None
+
+
+def test_maybe_roll_story_summary_updates_and_advances_cursor(db_factory, monkeypatch):
+    """未并入摘要的事件超过阈值时，把较老的一批浓缩进持久摘要并推进游标；不足阈值则不动。"""
+    async def fake_summarize(llm, prev, events):
+        return "合并后的滚动摘要"
+
+    monkeypatch.setattr(chat_service.story_summarizer, "summarize_story", fake_summarize)
+
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    for i in range(30):  # > STORY_SUMMARY_TRIGGER(24)
+        session_service.add_event(db, session.id, "narration", f"第{i}段", actor_name="KP")
+
+    asyncio.run(chat_service._maybe_roll_story_summary(db, session.id, llm=object()))
+    ws = (db.get(GameSession, session.id).world_state) or {}
+    assert ws.get("story_summary") == "合并后的滚动摘要"
+    cursor = ws.get("story_summary_seq")
+    assert cursor
+    events = session_service.get_session_events(db, session.id, limit=0)
+    uncovered = [e for e in events if (e.sequence_num or 0) > cursor]
+    assert len(uncovered) == chat_service.STORY_SUMMARY_KEEP_RECENT  # 只剩最近这些未并入
+
+    # 事件不足阈值 → 不滚动
+    db2 = db_factory()
+    _m, _h, _t, s2 = _seed(db2)
+    for i in range(10):
+        session_service.add_event(db2, s2.id, "narration", f"x{i}", actor_name="KP")
+    asyncio.run(chat_service._maybe_roll_story_summary(db2, s2.id, llm=object()))
+    assert not (db2.get(GameSession, s2.id).world_state or {}).get("story_summary")
+
+
+def test_kp_context_uses_persistent_story_summary(db_factory):
+    """build_kp_context：注入持久滚动摘要，且被游标覆盖的老事件不再逐条进上下文；
+    游标之后的最近事件仍照常给全文。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    for i in range(5):
+        session_service.add_event(db, session.id, "narration", f"覆盖段{i}", actor_name="KP")
+    for i in range(3):
+        session_service.add_event(db, session.id, "action", f"最近行动{i}", actor_id=hero.id, actor_name=hero.name)
+    events = session_service.get_session_events(db, session.id, limit=0)
+    covered_seq = events[4].sequence_num  # 覆盖前 5 条 narration
+    session.world_state = {"story_summary": "【梗概】前情提要在此。", "story_summary_seq": covered_seq}
+    db.commit()
+
+    msgs = ctx.build_kp_context(session, module, hero, events, teammates=teammates)
+    joined = "\n".join(m["content"] for m in msgs)
+    assert "前情提要在此" in joined     # 持久摘要注入
+    assert "覆盖段0" not in joined       # 被游标覆盖的老事件不再逐条进上下文
+    assert "最近行动2" in joined         # 游标之后的最近事件仍在
+
+
 def test_parse_team_decision():
     assert chat_service._parse_team_decision('{"action":"act","content":"查看"}') == {
         "action": "act",

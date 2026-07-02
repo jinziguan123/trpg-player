@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 
 from sqlalchemy.orm import Session
 
-from app.ai import turn_planner, turn_validator
+from app.ai import story_summarizer, turn_planner, turn_validator
 from app.ai.agents.kp_agent import KPAgent
 from app.ai.agents.npc_agent import NPCAgent
 from app.ai.agents.team_agent import TeamAgent
@@ -961,6 +961,48 @@ SPLIT_FOCUS_PROMPT = (
 )
 
 
+# 滚动剧情摘要：最近这些事件始终保留全文、不并入摘要；「未并入摘要的事件」超过触发阈值时，
+# 才把其中较老的一批与既往摘要合并浓缩一次，推进游标。控制长局上下文规模、防 KP 原地打转。
+STORY_SUMMARY_KEEP_RECENT = 12
+STORY_SUMMARY_TRIGGER = 24
+
+
+async def _maybe_roll_story_summary(db: Session, session_id: str, llm) -> None:
+    """长局滚动摘要：把「未并入摘要」里较老的一批与既往摘要合并浓缩、推进游标。
+
+    在 KP 每轮生成收尾（done 之后）调用；未攒够阈值时零成本返回，不额外调用 LLM。
+    任何失败都静默忽略（保持原摘要、原游标），绝不阻塞跑团。
+    """
+    try:
+        session = db.get(GameSession, session_id)
+        if not session:
+            return
+        events = session_service.get_session_events(db, session_id, limit=0)
+        ws = session.world_state or {}
+        cursor = ws.get("story_summary_seq") or 0
+        uncovered = [e for e in events if (e.sequence_num or 0) > cursor]
+        if len(uncovered) <= STORY_SUMMARY_TRIGGER:
+            return
+        to_summ = uncovered[: len(uncovered) - STORY_SUMMARY_KEEP_RECENT]
+        if not to_summ:
+            return
+        new_summary = await story_summarizer.summarize_story(
+            llm, ws.get("story_summary") or "", to_summ,
+        )
+        if not new_summary:
+            return
+        ws2 = dict(session.world_state or {})
+        ws2["story_summary"] = new_summary
+        ws2["story_summary_seq"] = to_summ[-1].sequence_num
+        session.world_state = ws2
+        db.commit()
+        logger.info(
+            "滚动剧情摘要更新：session=%s 游标→%s", session_id, to_summ[-1].sequence_num,
+        )
+    except Exception:
+        logger.exception("滚动剧情摘要失败（忽略）: session=%s", session_id)
+
+
 def _team_blind_message(blind_results: list[str] | None) -> dict | None:
     """把本回合队友暗骰（心理学等）的真实结果打成一条「仅 KP 可见」的 system 消息，注入当轮
     KP 上下文。这些结果绝不落库/广播，只在本次生成的 prompt 里存在——KP 据此把握分寸，
@@ -1070,6 +1112,7 @@ async def _run_generation(
         room_hub.broadcast(session_id, chunk)
 
     room_hub.broadcast(session_id, _make_chunk("done"))
+    await _maybe_roll_story_summary(db, session_id, llm)
 
 
 def _tag_turn_events_by_group(db: Session, turn_events: list, groups: list[dict]) -> None:
@@ -1174,6 +1217,7 @@ async def _run_split_generation(
         room_hub.broadcast(session_id, chunk)
 
     room_hub.broadcast(session_id, _make_chunk("done"))
+    await _maybe_roll_story_summary(db, session_id, llm)
 
 
 def _skill_names(char: Character) -> list[str]:
@@ -1344,6 +1388,7 @@ async def _run_kp_turn(
             room_hub.broadcast(session_id, chunk)
 
     room_hub.broadcast(session_id, _make_chunk("done"))
+    await _maybe_roll_story_summary(db, session_id, llm)
 
 
 async def run_check_request_generation(
