@@ -1560,6 +1560,38 @@ async def run_travel_generation(session_id: str, actor_id: str, scene_id: str) -
         db.close()
 
 
+async def run_regenerate_generation(session_id: str) -> None:
+    """重新生成最新一轮 KP 叙事：拿本轮玩家与 AI 队友的既有输入、以及已定的骰子作上下文，
+    只重跑 KP（不重跑队友回合、不做检定意图分诊），产出新的叙事。
+
+    调用前应已由端点：①取消卡住的旧生成 task；②回滚上一轮 KP 叙事产物
+    （session_service.rollback_last_kp_output）。本函数只负责用清理后的事件流重跑 KP。
+    """
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        game_session = db.get(GameSession, session_id)
+        module = db.get(Module, game_session.module_id)
+        player_char = db.get(Character, game_session.player_character_id)
+        party_others = session_service.get_party_members(
+            db, session_id, exclude_id=game_session.player_character_id,
+        )
+        events = session_service.get_session_events(db, session_id)
+        await _run_generation(
+            db, session_id, game_session, module, player_char, events,
+            teammates=party_others,
+        )
+    except asyncio.CancelledError:
+        logger.info("重新生成被取消: session=%s", session_id)
+    except Exception:
+        logger.exception("重新生成失败: session=%s", session_id)
+        _persist_error_notice(db, session_id, "（重新生成中断，请重试）")
+        room_hub.broadcast(session_id, _make_chunk("done"))
+    finally:
+        db.close()
+
+
 def _update_character_stat(db: Session, char: Character, path: str, value) -> None:
     """更新角色 system_data 中的嵌套字段并持久化"""
     sd = dict(char.system_data or {})

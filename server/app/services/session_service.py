@@ -420,6 +420,63 @@ def pop_pending_check(db: Session, session_id: str, check_id: str) -> dict | Non
     return check
 
 
+def rollback_last_kp_output(db: Session, session_id: str) -> int:
+    """回滚「最新一次 KP 会话」的叙事产物，供玩家「重新生成」用。
+
+    删除范围 = 最后一条『玩家方（真人玩家 + AI 队友）行动/发言』之后的：
+      - KP 旁白（narration）
+      - NPC 台词（dialogue 且行动者不属于玩家方）
+      - 待玩家投骰的检定请求（system + metadata.check_request），并清掉对应 pending_checks
+    刻意**保留**：玩家/队友的行动与发言、已投出的骰子结果（dice，不重掷）、HP/场景等其他 system。
+
+    这样「重新生成」= 拿本轮玩家与队友的既有输入、以及已定的骰子，重新生成 KP 叙事，
+    而不会重跑队友回合、也不会重掷已定的检定。返回删除的事件条数。
+    """
+    session = db.get(GameSession, session_id)
+    if not session:
+        return 0
+    party_ids = {
+        p.character_id
+        for p in db.query(SessionParticipant)
+        .filter(SessionParticipant.session_id == session_id)
+        .all()
+    }
+    if session.player_character_id:
+        party_ids.add(session.player_character_id)
+
+    events = get_session_events(db, session_id, limit=0)
+    last_input = -1
+    for i, ev in enumerate(events):
+        if ev.event_type in ("action", "dialogue") and ev.actor_id in party_ids:
+            last_input = i
+
+    removed = 0
+    removed_check_ids: list[str] = []
+    for ev in events[last_input + 1:]:
+        meta = ev.metadata_ or {}
+        is_narration = ev.event_type == "narration"
+        is_npc_dialogue = ev.event_type == "dialogue" and ev.actor_id not in party_ids
+        is_check_request = ev.event_type == "system" and meta.get("check_request")
+        if not (is_narration or is_npc_dialogue or is_check_request):
+            continue
+        if is_check_request and meta.get("id"):
+            removed_check_ids.append(meta["id"])
+        db.delete(ev)
+        removed += 1
+
+    if removed_check_ids:
+        ws = dict(session.world_state or {})
+        pending = dict(ws.get("pending_checks") or {})
+        for cid in removed_check_ids:
+            pending.pop(cid, None)
+        ws["pending_checks"] = pending
+        session.world_state = ws
+
+    if removed:
+        db.commit()
+    return removed
+
+
 def get_ai_teammates(db: Session, session_id: str) -> list[Character]:
     """返回会话内所有 AI 队友角色，按席位顺序。"""
     parts = (

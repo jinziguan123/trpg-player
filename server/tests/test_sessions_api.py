@@ -166,6 +166,30 @@ def test_check_endpoint_logs_intent_alongside_skill(client, monkeypatch):
     assert any("侦查" in a and "搜查书桌暗格" in a for a in actions)
 
 
+def test_regenerate_endpoint_cancels_and_restarts(client, monkeypatch):
+    """重新生成：打断卡住的旧生成（cancel）→ 回滚 → 重启一次生成（start）。"""
+    import app.api.chat as chat_module
+
+    calls = {"cancel": 0, "start": 0}
+
+    async def fake_cancel(session_id):
+        calls["cancel"] += 1
+
+    def fake_start(session_id, coro, prelude=None):
+        calls["start"] += 1
+        coro.close()
+
+    monkeypatch.setattr(chat_module.generation_manager, "cancel", fake_cancel)
+    monkeypatch.setattr(chat_module.generation_manager, "start", fake_start)
+
+    c, ids = client
+    sid = _make_session(c, ids)
+    resp = c.post(f"/api/sessions/{sid}/regenerate")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] is True
+    assert calls["cancel"] == 1 and calls["start"] == 1
+
+
 def test_check_endpoint_intent_optional(client, monkeypatch):
     """不填 intent 仍应正常申请检定（向后兼容旧客户端）。"""
     import app.api.chat as chat_module

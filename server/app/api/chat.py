@@ -12,6 +12,7 @@ from app.services.chat_service import (
     event_to_chunk,
     run_chat_generation,
     run_check_request_generation,
+    run_regenerate_generation,
     run_roll_generation,
     run_travel_generation,
     split_ooc,
@@ -176,6 +177,39 @@ async def roll(
         run_roll_generation(session_id, data.check_id.strip()),
     )
     return {"ok": True}
+
+
+@router.post("/{session_id}/regenerate")
+async def regenerate(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """重新生成最新一轮 KP 叙事：打断卡住的生成 → 回滚上一轮 KP 叙事产物 → 用玩家与队友的既有
+    输入（保留已定骰子，不重掷）重跑 KP。
+
+    高风险操作（可能明显改变剧情走向），前端须二次确认后才调用；只作用于「最新一轮」——回滚逻辑
+    天然只清理事件流尾部的 KP 产物。
+    """
+    game_session = db.get(GameSession, session_id)
+    if not game_session:
+        raise HTTPException(404, "会话不存在")
+    if game_session.status != "active":
+        raise HTTPException(400, "会话未处于活跃状态")
+    # 鉴权：本桌任一真人席位均可触发（无归属的本机会话放行；有归属则须 token 匹配某真人席位）
+    human_seats = [p for p in session_service.get_participants(db, session_id) if p.role == "human"]
+    if human_seats and not any(
+        (not p.owner_token) or (token and p.owner_token == token) for p in human_seats
+    ):
+        raise HTTPException(403, "无权操作该会话")
+
+    # ①打断卡住/进行中的旧生成（其半截叙事会先落库，②随后被回滚清掉）
+    await generation_manager.cancel(session_id)
+    removed = session_service.rollback_last_kp_output(db, session_id)
+
+    room_hub.broadcast(session_id, _make_chunk("generating"))
+    generation_manager.start(session_id, run_regenerate_generation(session_id))
+    return {"ok": True, "removed": removed}
 
 
 @router.get("/{session_id}/scene-map")

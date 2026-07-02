@@ -244,6 +244,43 @@ def test_team_turn_marks_separated_teammate_proactive(db_factory, monkeypatch):
     assert "补位与响应" in seen[a2.id]     # 同处 → 克制补位
 
 
+def test_rollback_last_kp_output_keeps_inputs_and_dice(db_factory):
+    """重新生成的回滚：删掉最新一轮 KP 叙事产物（旁白/NPC 台词/待投骰请求），
+    保留玩家与队友的输入、以及已投出的骰子结果（不重掷）。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    a1 = teammates[0]
+
+    # 一轮：玩家行动 → 队友发言 → 队友检定骰 → KP 旁白 → NPC 台词 → 检定骰 → 待投骰请求
+    session_service.add_event(db, session.id, "action", "我推开门", actor_id=hero.id, actor_name=hero.name)
+    session_service.add_event(db, session.id, "dialogue", "小心点", actor_id=a1.id, actor_name=a1.name)
+    session_service.add_event(db, session.id, "dice", "阿尔法｜考古学：成功", actor_name="系统", metadata={"skill": "考古学"})
+    session_service.add_event(db, session.id, "narration", "门后是一条走廊。", actor_name="KP")
+    session_service.add_event(db, session.id, "dialogue", "谁在那儿？", actor_name="老管家")  # NPC：actor_id 为 None
+    session_service.add_event(db, session.id, "dice", "亨利｜侦查：失败", actor_name="系统", metadata={"skill": "侦查"})
+    session_service.add_pending_check(db, session.id, {"id": "chk1", "skill": "聆听"})
+    session_service.add_event(
+        db, session.id, "system", "请 亨利 进行一次「聆听」检定",
+        actor_name="系统", metadata={"check_request": True, "id": "chk1"},
+    )
+
+    removed = session_service.rollback_last_kp_output(db, session.id)
+    assert removed == 3  # narration + NPC 台词 + 待投骰请求
+
+    evs = session_service.get_session_events(db, session.id)
+    sig = [(e.event_type, e.actor_name) for e in evs]
+    assert ("narration", "KP") not in sig
+    assert ("dialogue", "老管家") not in sig
+    assert not any(e.event_type == "system" and (e.metadata_ or {}).get("check_request") for e in evs)
+    # 保留：玩家/队友输入 + 两条骰子（已定，不重掷）
+    assert ("action", hero.name) in sig
+    assert ("dialogue", a1.name) in sig
+    assert sum(1 for e in evs if e.event_type == "dice") == 2
+    # 待投骰请求对应的 pending_check 也被清掉
+    sess = db.get(GameSession, session.id)
+    assert not (sess.world_state or {}).get("pending_checks")
+
+
 def test_parse_team_decision():
     assert chat_service._parse_team_decision('{"action":"act","content":"查看"}') == {
         "action": "act",

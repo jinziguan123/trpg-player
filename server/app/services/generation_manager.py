@@ -36,6 +36,23 @@ class GenerationManager:
         task.add_done_callback(lambda _: self._on_done(room_id))
         return task
 
+    async def cancel(self, room_id: str) -> None:
+        """取消正在进行（或僵死）的生成 task 并等其真正结束——供「重新生成」打断卡住的生成。
+
+        协作式取消：task 内部的 CancelledError 会被各 run_* 捕获（并把已生成的半截叙事落库，
+        由调用方随后回滚清理）。等待 task 结束后让出一拍，确保 done_callback（end_generation +
+        清理 _tasks）执行完毕，这样紧接着的 start 不会撞上「正在生成中」。
+        """
+        task = self._tasks.get(room_id)
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except BaseException:
+            pass
+        await asyncio.sleep(0)
+
     def _on_done(self, room_id: str) -> None:
         room_hub.end_generation(room_id)
         self._tasks.pop(room_id, None)

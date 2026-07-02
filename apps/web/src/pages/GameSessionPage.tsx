@@ -11,7 +11,8 @@ import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { useMapAssets } from '../components/module/useMapAssets'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker } from 'react-icons/gi'
-import { Copy, Bot, Map as MapIcon, ChevronUp } from 'lucide-react'
+import { Copy, Bot, Map as MapIcon, ChevronUp, RotateCcw } from 'lucide-react'
+import { ConfirmDialog } from '../components/ui/confirm-dialog'
 
 interface SceneFloor { name: string; map: TileMap; entities: MapEntity[] }
 interface SceneMapPayload { scene_id: string | null; scene_name: string | null; floors: SceneFloor[] }
@@ -429,6 +430,19 @@ export function GameSessionPage() {
     }
   }
 
+  // 重新生成最新一轮 KP：打断卡住的生成 → 回滚上一轮 KP 叙事 → 用玩家/队友的既有输入重跑
+  // （保留已定骰子）。高风险，仅供生成卡住或结果明显有问题时用，经二次确认后才会走到这里。
+  const regenerate = async () => {
+    if (!currentSession) return
+    try {
+      setStreaming(true)
+      await api.post(`/sessions/${currentSession.id}/regenerate`, {})
+    } catch (e: unknown) {
+      setStreaming(false)
+      toast.error(e instanceof Error ? e.message : '重新生成失败')
+    }
+  }
+
   // 玩家点「投骰」：对一个待定检定掷骰。
   const submitRoll = async (checkId: string) => {
     if (!currentSession || streaming) {
@@ -837,6 +851,27 @@ export function GameSessionPage() {
         {typingName && (
           <div className="px-3 pb-1 text-xs italic" style={{ color: 'var(--color-text-secondary)' }}>
             {typingName} 正在输入…
+          </div>
+        )}
+        {!streaming && messages.some((m) => m.type === 'narration') && (
+          <div className="px-3 pb-1 flex justify-end">
+            <ConfirmDialog
+              title="重新生成最新一轮"
+              description="将删除最新一轮 KP 的叙事（旁白与 NPC 台词），用本轮玩家与队友的既有输入重新生成；已投出的骰子结果会保留、不重掷。此操作会打断当前生成、可能明显改变剧情走向——仅在生成卡住或结果明显有问题时使用。"
+              confirmLabel="重新生成"
+              onConfirm={regenerate}
+            >
+              {(open) => (
+                <button
+                  onClick={open}
+                  title="重新生成最新一轮 KP 叙事（高风险，慎用）"
+                  className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors hover:opacity-80"
+                  style={{ color: 'var(--color-text-secondary)' }}
+                >
+                  <RotateCcw size={12} /> 重新生成
+                </button>
+              )}
+            </ConfirmDialog>
           </div>
         )}
         <div className="chat-input-bar">
