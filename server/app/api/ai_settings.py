@@ -11,7 +11,12 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-SETTINGS_FILE = Path(__file__).parent.parent.parent / "ai_settings.json"
+from app.config import settings
+
+# 配置文件与数据库同目录：dev 下是 server/ai_settings.json（行为不变）；打包运行时落到用户
+# 可写的 app-data（跟随 settings.db_path），否则会写进 PyInstaller 临时目录（sys._MEIPASS，
+# 退出即删）导致配置读不到 / 重启丢失。
+SETTINGS_FILE = settings.db_path.parent / "ai_settings.json"
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
