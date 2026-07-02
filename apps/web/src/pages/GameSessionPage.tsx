@@ -588,27 +588,27 @@ export function GameSessionPage() {
   return (
     <div className="flex h-full gap-4">
       <div className="flex flex-col flex-1 min-w-0">
-        <div className="flex items-center gap-3 pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
           <button
             onClick={() => navigate('/game')}
-            className="btn-secondary flex items-center gap-1 !px-2 !py-1 text-sm"
+            className="btn-secondary flex items-center gap-1 !px-2 !py-1 text-sm flex-shrink-0 whitespace-nowrap"
           >
             <GiReturnArrow /> 返回列表
           </button>
-          <span className="text-sm font-semibold" style={{ color: 'var(--color-text-accent)' }}>
+          <span className="text-sm font-semibold whitespace-nowrap" style={{ color: 'var(--color-text-accent)' }}>
             {currentSession.module_title || '游戏中'}
           </span>
           {currentSession.room_code && (
             <button
               onClick={() => { navigator.clipboard?.writeText(currentSession.room_code || ''); toast.success(`房间码 ${currentSession.room_code} 已复制`) }}
-              className="text-xs px-2 py-0.5 rounded border inline-flex items-center gap-1"
+              className="text-xs px-2 py-0.5 rounded border inline-flex items-center gap-1 flex-shrink-0 whitespace-nowrap"
               style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}
               title="点击复制房间码，分享给队友加入"
             >
               房间码 {currentSession.room_code} <Copy size={11} />
             </button>
           )}
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
             <button
               onClick={() => setShowSearch((v) => !v)}
               className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
