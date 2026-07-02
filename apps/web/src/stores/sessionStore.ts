@@ -72,6 +72,8 @@ interface SessionStore {
   createSession: (moduleId: string, participants: ParticipantInput[]) => Promise<GameSession>
   setCurrentSession: (session: GameSession) => void
   addMessage: (msg: ChatMessage) => void
+  removeMessage: (id: string) => void
+  updateMessage: (id: string, content: string) => void
   startStreamMessage: (type: string, actorName?: string, metadata?: Record<string, unknown>) => string
   appendToStream: (content: string) => void
   endStream: () => void
@@ -134,6 +136,12 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     set((s) => ({
       messages: [...s.messages, { ts: Date.now(), ...msg, id: msg.id || `msg-${++msgCounter}` }],
     })),
+
+  removeMessage: (id) =>
+    set((s) => ({ messages: s.messages.filter((m) => m.id !== id) })),
+
+  updateMessage: (id, content) =>
+    set((s) => ({ messages: s.messages.map((m) => (m.id === id ? { ...m, content } : m)) })),
 
   startStreamMessage: (type, actorName, metadata) => {
     const id = `stream-${++msgCounter}`

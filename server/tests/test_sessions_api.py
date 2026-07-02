@@ -247,6 +247,56 @@ def test_advance_waits_for_all_humans(client, monkeypatch):
     assert r2.json()["ready"] is True and started["n"] == 1  # 全确认 → 触发
 
 
+def test_edit_and_delete_pending_events(client, monkeypatch):
+    """玩家可改/删自己本回合尚未推进的暂存发言；改删都会重置本人确认。"""
+    import app.api.chat as chat_module
+
+    def _fake_start(session_id, coro, prelude=None):
+        coro.close()
+    monkeypatch.setattr(chat_module.generation_manager, "start", _fake_start)
+
+    c, ids = client
+    sid = _make_session(c, ids)
+    c.post(f"/api/sessions/{sid}/chat", json={"content": "我推开门"})
+    c.post(f"/api/sessions/{sid}/chat", json={"content": "我环顾四周"})
+    evs = c.get(f"/api/sessions/{sid}/events").json()["events"]
+    pend = [e for e in evs if (e.get("metadata_") or {}).get("pending_turn")]
+    assert len(pend) == 2
+    eid1, eid2 = pend[0]["id"], pend[1]["id"]
+
+    # 改写第一条
+    r = c.patch(f"/api/sessions/{sid}/events/{eid1}", json={"content": "我轻轻推开那扇门"})
+    assert r.status_code == 200, r.text
+    # 删除第二条
+    r2 = c.request("DELETE", f"/api/sessions/{sid}/events/{eid2}")
+    assert r2.status_code == 200, r2.text
+
+    evs2 = c.get(f"/api/sessions/{sid}/events").json()["events"]
+    contents = {e["id"]: e["content"] for e in evs2}
+    assert contents.get(eid1) == "我轻轻推开那扇门"     # 改写生效
+    assert eid2 not in contents                          # 删除生效
+
+
+def test_cannot_edit_non_pending_or_others_event(client, monkeypatch):
+    """已推进（转正）的发言、或非本人的发言，不能改删。"""
+    import app.api.chat as chat_module
+
+    def _fake_start(session_id, coro, prelude=None):
+        coro.close()
+    monkeypatch.setattr(chat_module.generation_manager, "start", _fake_start)
+
+    c, ids = client
+    sid = _make_session(c, ids)
+    c.post(f"/api/sessions/{sid}/chat", json={"content": "我推开门"})
+    eid = [e for e in c.get(f"/api/sessions/{sid}/events").json()["events"]
+           if (e.get("metadata_") or {}).get("pending_turn")][0]["id"]
+    # 推进 → 该发言转正（不再 pending）
+    c.post(f"/api/sessions/{sid}/advance", json={})
+    # 已转正 → 不能再改
+    r = c.patch(f"/api/sessions/{sid}/events/{eid}", json={"content": "偷改"})
+    assert r.status_code == 403
+
+
 def test_regenerate_endpoint_cancels_and_restarts(client, monkeypatch):
     """重新生成：打断卡住的旧生成（cancel）→ 回滚 → 重启一次生成（start）。"""
     import app.api.chat as chat_module

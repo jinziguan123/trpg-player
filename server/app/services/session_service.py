@@ -622,6 +622,37 @@ def commit_turn(db: Session, session_id: str) -> None:
     db.commit()
 
 
+def delete_pending_event(db: Session, session_id: str, event_id: str, actor_id: str) -> bool:
+    """删除一条『本回合暂存』发言：仅限本人、仅限 pending_turn（未推进）。返回是否删除。"""
+    ev = db.get(EventLog, event_id)
+    if not ev or ev.session_id != session_id:
+        return False
+    if not ev.actor_id or ev.actor_id != actor_id:
+        return False
+    if not (ev.metadata_ or {}).get("pending_turn"):
+        return False
+    db.delete(ev)
+    db.commit()
+    return True
+
+
+def update_pending_event(
+    db: Session, session_id: str, event_id: str, actor_id: str, content: str,
+) -> bool:
+    """改写一条『本回合暂存』发言的正文：仅限本人、仅限 pending_turn（未推进）。返回是否改写。"""
+    ev = db.get(EventLog, event_id)
+    if not ev or ev.session_id != session_id:
+        return False
+    if not ev.actor_id or ev.actor_id != actor_id:
+        return False
+    if not (ev.metadata_ or {}).get("pending_turn"):
+        return False
+    ev.content = content
+    db.add(ev)
+    db.commit()
+    return True
+
+
 def get_next_sequence_num(db: Session, session_id: str) -> int:
     result = (
         db.query(EventLog.sequence_num)

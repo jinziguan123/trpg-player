@@ -11,7 +11,7 @@ import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { useMapAssets } from '../components/module/useMapAssets'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker } from 'react-icons/gi'
-import { Copy, Bot, Map as MapIcon, ChevronUp, RotateCcw, Search, X, PanelRightOpen, PanelRightClose } from 'lucide-react'
+import { Copy, Bot, Map as MapIcon, ChevronUp, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 
 interface SceneFloor { name: string; map: TileMap; entities: MapEntity[] }
@@ -97,7 +97,7 @@ export function GameSessionPage() {
   const location = useLocation()
   const isNew = (location.state as { isNew?: boolean })?.isNew
   const {
-    currentSession, messages, addMessage, clearMessages,
+    currentSession, messages, addMessage, removeMessage, updateMessage, clearMessages,
     setCurrentSession, loadHistory, loadOlderEvents,
     hasMoreHistory, loadingOlder,
     startStreamMessage, appendToStream, endStream,
@@ -132,6 +132,8 @@ export function GameSessionPage() {
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 回合确认制：本回合各真人的确认进度
   const [turnState, setTurnState] = useState<{ confirmed_ids: string[]; total: number; ready: boolean } | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinActive = useRef(false)   // 初次加载「持续钉底」窗口是否进行中（期间抑制平滑滚动，避免抢滚）
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -195,6 +197,8 @@ export function GameSessionPage() {
     if (t === 'replay_done') return
     if (t === 'generating') { setStreaming(true); setThinking(true); return }
     if (t === 'turn_state') { setTurnState((chunk.metadata as { confirmed_ids: string[]; total: number; ready: boolean }) || null); return }
+    if (t === 'event_delete') { if (chunk.id) removeMessage(chunk.id); return }
+    if (t === 'event_update') { if (chunk.id) updateMessage(chunk.id, chunk.content || ''); return }
     if (t === 'done') {
       endStream(); liveTypeRef.current = ''
       setStreaming(false); setThinking(false); setRefreshTick((x) => x + 1)
@@ -259,7 +263,7 @@ export function GameSessionPage() {
       // 待定检定提示：作为系统消息存（metadata.check_request 携带 check_id），渲染时带「投骰」按钮
       addMessage({ id: chunk.id || '', type: 'system', content: chunk.content || '', actor_name: chunk.actor_name, metadata: { ...(chunk.metadata || {}), is_player: isPlayer } })
     }
-  }, [addMessage, appendToStream, endStream, startStreamMessage, resyncHistory, refetchSession])
+  }, [addMessage, removeMessage, updateMessage, appendToStream, endStream, startStreamMessage, resyncHistory, refetchSession])
 
   useEffect(() => {
     if (!sessionId) return
@@ -455,6 +459,28 @@ export function GameSessionPage() {
       setStreaming(false)
       setThinking(false)
       toast.error(e instanceof Error ? e.message : '重新生成失败')
+    }
+  }
+
+  // 删除自己本回合尚未推进的暂存发言。
+  const deleteEvent = async (id: string) => {
+    if (!currentSession) return
+    try {
+      await api.delete(`/sessions/${currentSession.id}/events/${id}?acting_character_id=${encodeURIComponent(myCharId ?? '')}`)
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : '删除失败')
+    }
+  }
+
+  // 保存对暂存发言的改写。
+  const saveEdit = async (id: string) => {
+    const text = editText.trim()
+    if (!currentSession || !text) { setEditingId(null); return }
+    try {
+      await api.patch(`/sessions/${currentSession.id}/events/${id}`, { content: text, acting_character_id: myCharId })
+      setEditingId(null); setEditText('')
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : '修改失败')
     }
   }
 
@@ -801,12 +827,60 @@ export function GameSessionPage() {
             </div>
           )}
           {(() => {
-          // 每条消息外包一层带 data-mid 的容器，供历史检索「跳转到该记录」定位。
-          const renderRow = (msg: ChatMessage) => (
-            <div key={msg.id || `s${msg.sequence_num ?? ''}`} data-mid={msg.id || undefined}>
-              {renderOne(msg)}
-            </div>
-          )
+          // 是否可增删改：自己本回合尚未推进的暂存发言（action/dialogue + pending_turn + 本人）。
+          const canEditMsg = (m: ChatMessage) =>
+            !streaming && !!m.id && (m.type === 'action' || m.type === 'dialogue')
+            && !!m.metadata?.pending_turn && m.metadata?.is_player === true
+          // 每条消息外包一层带 data-mid 的容器（供检索跳转定位）；自己的暂存发言叠加编辑/删除。
+          const renderRow = (msg: ChatMessage) => {
+            if (editingId && editingId === msg.id) {
+              return (
+                <div key={msg.id} data-mid={msg.id} className="px-3 py-2">
+                  <textarea
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                    rows={2}
+                    autoFocus
+                    className="input w-full text-sm"
+                    style={{ resize: 'none' }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEdit(msg.id!) }
+                      if (e.key === 'Escape') { setEditingId(null); setEditText('') }
+                    }}
+                  />
+                  <div className="flex gap-2 mt-1 justify-end">
+                    <button onClick={() => { setEditingId(null); setEditText('') }} className="btn-secondary text-xs !px-2 !py-0.5">取消</button>
+                    <button onClick={() => saveEdit(msg.id!)} className="text-xs px-3 py-0.5 rounded font-semibold cursor-pointer" style={{ background: 'var(--color-text-accent)', color: '#f0e6d3' }}>保存</button>
+                  </div>
+                </div>
+              )
+            }
+            return (
+              <div key={msg.id || `s${msg.sequence_num ?? ''}`} data-mid={msg.id || undefined} className="msg-row relative">
+                {renderOne(msg)}
+                {canEditMsg(msg) && (
+                  <div className="msg-actions absolute top-1 right-1 flex gap-1">
+                    <button
+                      onClick={() => { setEditingId(msg.id!); setEditText(msg.content) }}
+                      title="编辑这条暂存发言"
+                      className="p-1 rounded hover:opacity-80"
+                      style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    <button
+                      onClick={() => deleteEvent(msg.id!)}
+                      title="删除这条暂存发言"
+                      className="p-1 rounded hover:opacity-80"
+                      style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)', color: 'var(--color-danger)' }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          }
           const renderOne = (msg: ChatMessage) => {
             const isPlayer = !!msg.metadata?.is_player
             const showLabel = msg.actor_name && (msg.type === 'dialogue' || msg.type === 'action')

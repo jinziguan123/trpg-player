@@ -484,6 +484,10 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* 暂存发言的编辑/删除操作：默认隐藏，hover 整行时淡入（不依赖 Tailwind group-hover 变体） */
+.msg-row .msg-actions { opacity: 0; pointer-events: none; transition: opacity 0.12s ease; }
+.msg-row:hover .msg-actions { opacity: 1; pointer-events: auto; }
+
 /* 历史检索跳转后的短暂高亮 */
 .search-hit {
   animation: searchHit 2.2s ease-out;

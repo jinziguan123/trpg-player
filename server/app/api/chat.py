@@ -5,7 +5,14 @@ from app.api.deps import player_token
 from app.database import get_db
 from app.models.module import Module
 from app.models.session import GameSession
-from app.schemas.event import AdvanceRequest, ChatRequest, CheckRequest, RollRequest, TravelRequest
+from app.schemas.event import (
+    AdvanceRequest,
+    ChatRequest,
+    CheckRequest,
+    EventEditRequest,
+    RollRequest,
+    TravelRequest,
+)
 from app.services import map_service, session_service
 from app.services.chat_service import (
     _make_chunk,
@@ -249,6 +256,69 @@ async def advance(
         room_hub.broadcast(session_id, _make_chunk("generating"))
         generation_manager.start(session_id, run_chat_generation(session_id))
     return {"ok": True, "ready": state["ready"]}
+
+
+@router.patch("/{session_id}/events/{event_id}")
+async def edit_event(
+    session_id: str,
+    event_id: str,
+    data: EventEditRequest,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """改写自己『本回合暂存』的发言（仅未推进、仅本人）；改后需重新确认推进。"""
+    game_session = db.get(GameSession, session_id)
+    if not game_session:
+        raise HTTPException(404, "会话不存在")
+    if generation_manager.is_generating(session_id):
+        raise HTTPException(409, "KP 正在叙事，请稍候")
+    content = data.content.strip()
+    if not content:
+        raise HTTPException(400, "内容不能为空")
+    try:
+        actor = session_service.resolve_actor(db, session_id, token, data.acting_character_id)
+    except ValueError as e:
+        raise HTTPException(403, str(e))
+
+    if not session_service.update_pending_event(db, session_id, event_id, actor.id, content):
+        raise HTTPException(403, "只能修改自己本回合尚未推进的发言")
+    session_service.set_turn_confirm(db, session_id, actor.id, False)
+    room_hub.broadcast(session_id, _make_chunk("event_update", content, event_id=event_id))
+    room_hub.broadcast(
+        session_id,
+        _make_chunk("turn_state", metadata=session_service.turn_confirm_state(db, session_id)),
+    )
+    return {"ok": True}
+
+
+@router.delete("/{session_id}/events/{event_id}")
+async def delete_event(
+    session_id: str,
+    event_id: str,
+    acting_character_id: str | None = None,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """删除自己『本回合暂存』的发言（仅未推进、仅本人）；删后需重新确认推进。"""
+    game_session = db.get(GameSession, session_id)
+    if not game_session:
+        raise HTTPException(404, "会话不存在")
+    if generation_manager.is_generating(session_id):
+        raise HTTPException(409, "KP 正在叙事，请稍候")
+    try:
+        actor = session_service.resolve_actor(db, session_id, token, acting_character_id)
+    except ValueError as e:
+        raise HTTPException(403, str(e))
+
+    if not session_service.delete_pending_event(db, session_id, event_id, actor.id):
+        raise HTTPException(403, "只能删除自己本回合尚未推进的发言")
+    session_service.set_turn_confirm(db, session_id, actor.id, False)
+    room_hub.broadcast(session_id, _make_chunk("event_delete", event_id=event_id))
+    room_hub.broadcast(
+        session_id,
+        _make_chunk("turn_state", metadata=session_service.turn_confirm_state(db, session_id)),
+    )
+    return {"ok": True}
 
 
 @router.get("/{session_id}/search")

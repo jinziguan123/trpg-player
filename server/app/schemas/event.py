@@ -48,6 +48,13 @@ class AdvanceRequest(BaseModel):
     acting_character_id: str | None = None
 
 
+class EventEditRequest(BaseModel):
+    """改写自己本回合暂存发言的正文。"""
+
+    content: str
+    acting_character_id: str | None = None
+
+
 class TravelRequest(BaseModel):
     """玩家经大地图『前往』某已知地点（显式移动，确定性切换该角色所在场景）。"""
 
