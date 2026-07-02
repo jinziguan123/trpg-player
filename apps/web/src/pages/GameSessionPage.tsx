@@ -436,9 +436,14 @@ export function GameSessionPage() {
     if (!currentSession) return
     try {
       setStreaming(true)
+      setThinking(true)   // 立即进入「KP 思考中」
       await api.post(`/sessions/${currentSession.id}/regenerate`, {})
+      // 后端此时已回滚上一轮 KP 叙事（DB 也已删除），立刻按最新历史对齐——
+      // 旧叙事从界面上「消失」，只剩思考中，随后 /live 流式推入重生成的内容。
+      await resyncHistory()
     } catch (e: unknown) {
       setStreaming(false)
+      setThinking(false)
       toast.error(e instanceof Error ? e.message : '重新生成失败')
     }
   }

@@ -698,16 +698,19 @@ def _summarize_old_events(events: list[EventLog], max_tokens: int = 1500) -> str
         if ev.summary:
             return _truncate_to_tokens(ev.summary, max_tokens)
 
+    # 从「离当前最近」的老事件往前收集，预算用尽即停。旧实现从最早开始塞，长局后摘要会
+    # 永远停留在开场附近、丢掉中段与近段剧情，导致 KP 记忆停滞、原地打转、复读开场式内容。
     lines = []
     token_count = 0
-    for ev in events:
+    for ev in reversed(events):
         prefix = ev.actor_name or ev.event_type
-        snippet = ev.content[:120].replace("\n", " ")
+        snippet = (ev.content or "")[:120].replace("\n", " ")
         line = f"- [{prefix}] {snippet}"
         line_tokens = _estimate_tokens(line)
         if token_count + line_tokens > max_tokens:
             break
         lines.append(line)
         token_count += line_tokens
+    lines.reverse()  # 收集是倒序，输出恢复为时间正序
 
     return "\n".join(lines) if lines else ""

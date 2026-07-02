@@ -281,6 +281,23 @@ def test_rollback_last_kp_output_keeps_inputs_and_dice(db_factory):
     assert not (sess.world_state or {}).get("pending_checks")
 
 
+def test_old_events_summary_keeps_recent_not_opening():
+    """长局历史摘要应保留「离当前最近」的老事件，而非停在最早的开场——否则 KP 记忆停滞、
+    原地打转、复读开场式内容。"""
+    from types import SimpleNamespace
+
+    events = [
+        SimpleNamespace(summary=None, actor_name="KP", event_type="narration", content=f"第{i}段剧情")
+        for i in range(200)
+    ]
+    out = ctx._summarize_old_events(events, max_tokens=120)
+    assert out  # 非空
+    assert "第199段剧情" in out          # 保留最近
+    assert "第0段剧情" not in out         # 丢掉最早的开场
+    # 输出保持时间正序（较早的行在前）
+    assert out.index("第198段剧情") < out.index("第199段剧情")
+
+
 def test_parse_team_decision():
     assert chat_service._parse_team_decision('{"action":"act","content":"查看"}') == {
         "action": "act",
