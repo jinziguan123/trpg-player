@@ -789,6 +789,52 @@ def test_split_generation_injects_turn_plan_into_each_group(db_factory, monkeypa
         assert "管家的秘密" in text
 
 
+def test_psychology_check_is_always_blind(db_factory, monkeypatch):
+    """心理学检定一律强制暗投：不挂「待玩家投骰」、不广播达成等级，结果只回灌 KP。
+    其他技能（如侦查）不受影响，仍照常明骰。"""
+    # 检定后 _process_commands 会触发 KP 续写；本测只关心检定本身产出的 dice chunk
+    # （在续写之前 yield），把续写打桩掉以免调用真实 LLM。
+    async def _no_stream(*a, **k):
+        if False:
+            yield None
+    monkeypatch.setattr(chat_service, "_stream_narration_filtered", _no_stream)
+
+    db = db_factory()
+    module = Module(title="M", rule_system="coc", npcs=[], scenes=[])
+    hero = Character(
+        name="伊芙琳", rule_system="coc", is_player=True,
+        skills={"心理学": 70, "侦查": 50},
+    )
+    db.add_all([module, hero])
+    db.commit()
+    session = GameSession(module_id=module.id, player_character_id=hero.id, status="active")
+    db.add(session)
+    db.commit()
+
+    tiers = ("大成功", "极难成功", "困难成功", "普通成功", "普通失败", "大失败")
+
+    # 心理学：即使 KP 没写 visibility，也应强制暗投
+    chunks = asyncio.run(_collect(chat_service._process_commands(
+        db, session.id, "[DICE_CHECK: skill=心理学, char=伊芙琳]",
+        module, hero, session, llm=None,
+    )))
+    assert not any('"check_request"' in c for c in chunks)   # 不挂待玩家投骰
+    dice = [c for c in chunks if '"type": "dice"' in c]
+    assert len(dice) == 1
+    assert "暗投" in dice[0] and '"blind": true' in dice[0]
+    assert not any(t in dice[0] for t in tiers)              # 聊天不含达成等级
+    dice_evs = [e for e in session_service.get_session_events(db, session.id) if e.event_type == "dice"]
+    assert len(dice_evs) == 1 and "结果仅 KP 可见" in dice_evs[0].content
+
+    # 侦查：不在强制暗投名单，对真人角色仍照常挂「待玩家投骰」（与心理学的强制暗投形成对照）
+    chunks2 = asyncio.run(_collect(chat_service._process_commands(
+        db, session.id, "[DICE_CHECK: skill=侦查, char=伊芙琳]",
+        module, hero, session, llm=None,
+    )))
+    assert any('"check_request"' in c for c in chunks2)
+    assert not any("暗投" in c for c in chunks2)
+
+
 def test_travel_runs_team_turn_so_teammates_speak(db_factory, monkeypatch):
     """玩家经大地图前往后，应紧接一轮 AI 队友回合——否则这条路（不经 run_chat_generation）
     的队友永远没有发言机会，表现为「一转移地点队友就全程哑火」。"""

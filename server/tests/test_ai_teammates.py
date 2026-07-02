@@ -118,6 +118,43 @@ def test_team_turn_check_rolls_dice(db_factory, monkeypatch):
     assert sum('"dice"' in c for c in chunks) == 2
 
 
+def test_team_psychology_check_is_blind(db_factory, monkeypatch):
+    """队友主动做心理学检定：只落/广播「做了一次暗骰」，不含成败；真实结果仅回灌 blind_results
+    （注入当轮 KP 上下文，绝不落库/广播——否则玩家能从事件或网络看到结果而元游戏）。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    for t in teammates:
+        t.skills = {"心理学": 60}
+    db.commit()
+
+    async def fake_decide(self, messages):
+        return '{"action":"check","content":"我观察他的微表情","skill":"心理学"}'
+
+    monkeypatch.setattr(chat_service.TeamAgent, "decide", fake_decide)
+
+    blind: list[str] = []
+    chunks = asyncio.run(_collect(chat_service._run_team_turn(
+        db, session.id, session, module, hero, teammates, llm=None, blind_results=blind,
+    )))
+
+    tiers = ("大成功", "极难成功", "困难成功", "普通成功", "普通失败", "大失败")
+    dice_chunks = [c for c in chunks if '"dice"' in c]
+    assert len(dice_chunks) == 2
+    assert all("暗骰" in c for c in dice_chunks)
+    assert all(not any(t in c for t in tiers) for c in dice_chunks)   # 广播不含成败
+
+    dice_evs = [e for e in session_service.get_session_events(db, session.id) if e.event_type == "dice"]
+    assert len(dice_evs) == 2
+    for e in dice_evs:
+        assert "结果仅 KP 可见" in e.content
+        assert not any(t in e.content for t in tiers)                 # 落库不含成败
+        assert (e.metadata_ or {}).get("outcome") is None            # metadata 不泄露结果
+        assert (e.metadata_ or {}).get("blind") is True
+
+    # 真实结果只回灌 KP（当轮上下文用，不落库/广播）
+    assert len(blind) == 2 and all("仅你 KP 可见" in b for b in blind)
+
+
 def test_team_turn_holds_on_silent_and_bad_json(db_factory, monkeypatch):
     db = db_factory()
     module, hero, teammates, session = _seed(db)
@@ -254,6 +291,44 @@ def test_kp_context_includes_party(db_factory):
     joined_user = "\n".join(m["content"] for m in messages if m["role"] == "user")
     assert "[阿尔法]" in joined_user and f"[{hero.name}]" in joined_user
     assert "队友·" not in joined_user
+
+
+def test_kp_context_uses_viewer_scene_for_split(db_factory):
+    """分头行动：build_kp_context 按 viewer_scene_id 给出「该组所在场景」的 NPC，而非只有主角
+    场景的——否则每一列都拿主角场景资料，KP 只能把主角场景重复叙述一遍（两列讲同一件事）。"""
+    db = db_factory()
+    module = Module(
+        title="宅邸", rule_system="coc",
+        scenes=[
+            {"id": "ward", "name": "疗养院", "description": "消毒水气味"},
+            {"id": "archive", "name": "档案馆", "description": "落满灰尘的书架"},
+        ],
+        npcs=[
+            {"id": "nurse", "name": "护士长", "description": "值班护士", "initial_location": "ward"},
+            {"id": "clerk", "name": "档案管理员", "description": "戴眼镜的老人", "initial_location": "archive"},
+        ],
+    )
+    hero = Character(name="伊芙琳", rule_system="coc", is_player=True)
+    db.add_all([module, hero])
+    db.commit()
+    session = GameSession(
+        module_id=module.id, player_character_id=hero.id, status="active",
+        current_scene_id="ward", world_state={"visited_scenes": ["ward"]},
+    )
+    db.add(session)
+    db.commit()
+    ev = EventLog(session_id=session.id, sequence_num=1, event_type="narration",
+                  content="护士长走了过来。", actor_name="KP")
+
+    # 主角所在（ward）视角：只见护士长，不见档案馆的 NPC
+    sys_ward = ctx.build_kp_context(session, module, hero, [ev])[0]["content"]
+    assert "护士长" in sys_ward and "档案管理员" not in sys_ward
+
+    # 档案馆分组视角（viewer_scene_id=archive）：能看到本场景 NPC 档案管理员
+    sys_arch = ctx.build_kp_context(
+        session, module, hero, [ev], viewer_scene_id="archive",
+    )[0]["content"]
+    assert "档案管理员" in sys_arch
 
 
 def test_opening_context_hides_discoverables(db_factory):

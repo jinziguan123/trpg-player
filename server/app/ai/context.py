@@ -363,12 +363,17 @@ def build_kp_context(
     events: list[EventLog],
     teammates: list[Character] | None = None,
     rules_lookup_enabled: bool = False,
+    viewer_scene_id: str | None = None,
 ) -> list[dict]:
+    # 分头行动时，每个分组各以「该组所在场景」为锚构建上下文（current_scene / 可见 NPC / 线索 /
+    # 场景清单），否则所有分组都拿到主角场景的资料，KP 只能把主角场景重复叙述一遍。
+    # 默认 None → 回落主角所在场景（session.current_scene_id），非分头场景行为不变。
+    scene_id = viewer_scene_id or session.current_scene_id
     # 剧情状态：按已激活 flags 把场景/NPC 解析到「当前样貌」，再喂给 KP（向后兼容：无 states 即原样）。
     flags = _active_flags(session)
     scenes = [_resolve_state(s, flags) for s in (module.scenes or [])]
     npcs = [_resolve_state(n, flags) for n in (module.npcs or [])]
-    current_scene = _resolve_scene(scenes, session.current_scene_id, flags)
+    current_scene = _resolve_scene(scenes, scene_id, flags)
 
     teammates = teammates or []
     if teammates:
@@ -396,15 +401,15 @@ def build_kp_context(
     is_opening = not events
     if is_opening:
         npcs_info = _compact_npcs(
-            npcs, only_scene_id=session.current_scene_id, hide_secrets=True,
+            npcs, only_scene_id=scene_id, hide_secrets=True,
         )
         clues_info = "（线索是 KP 专属资料，开场绝不涉及；只能在玩家实际调查发现时才出现）"
     else:
         # 运行时分层：只把玩家已到达区域的 NPC / 线索喂给 KP，减少中途泄露未抵达
         # 区域的内容。无固定位置的 NPC / 线索照常给。
         visible_scene_ids = set((session.world_state or {}).get("visited_scenes") or [])
-        if session.current_scene_id:
-            visible_scene_ids.add(session.current_scene_id)
+        if scene_id:
+            visible_scene_ids.add(scene_id)
         npcs_info = _compact_npcs(npcs, visible_scene_ids=visible_scene_ids)
         clues_info = _compact_clues(module.clues, visible_scene_ids=visible_scene_ids)
 
@@ -413,7 +418,7 @@ def build_kp_context(
         module_title=module.title,
         module_description=module.description,
         world_setting=_format_json_compact(module.world_setting),
-        scenes_info=_compact_scenes(scenes, session.current_scene_id),
+        scenes_info=_compact_scenes(scenes, scene_id),
         current_scene=_format_json(current_scene) if current_scene else "初始场景",
         plot_state=_format_plot_state(flags, module.triggers),
         npcs_info=npcs_info,

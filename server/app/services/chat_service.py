@@ -149,6 +149,10 @@ def split_speech_action(text: str) -> list[tuple[str, str]]:
 # 模组未给某 NPC 某技能数值时的兜底基线（普通人水平），保证 NPC 检定可解析。
 DEFAULT_NPC_SKILL = 45
 
+# 「始终暗投」的技能：不管成败等级，结果只回灌 KP、绝不展示给玩家。否则玩家会元游戏——
+# 例如看到「心理学失败」就反推出该不该信 NPC。CoC 惯例这类判断由守秘人暗骰。
+ALWAYS_BLIND_SKILLS = ("心理学",)
+
 # 要求难度的中文标签（用于「请进行一个【困难】的【侦查】检定」提示；normal 不带难度词）。
 DIFFICULTY_LABEL = {"normal": "", "hard": "困难", "extreme": "极难"}
 
@@ -750,6 +754,7 @@ async def _run_team_turn(
     player_char: Character,
     teammates: list[Character],
     llm,
+    blind_results: list[str] | None = None,
 ) -> AsyncIterator[str]:
     """玩家输入后的一轮 AI 队友自动响应。
 
@@ -759,6 +764,9 @@ async def _run_team_turn(
 
     分头判定：队友所在场景 ≠ 主队锚点场景（主角所在）即视为「分头独处」，据此让
     ``build_team_context`` 下达「主动推进本场景」指引；同处一地仍是克制补位。
+
+    ``blind_results``：队友做「始终暗投」技能（如心理学）检定时，真实成败只 append 到这里、
+    由调用方注入当轮 KP 上下文，绝不落库/广播——否则玩家能从事件或网络看到结果而元游戏。
     """
     anchor_scene = (
         session_service.get_char_location(game_session, player_char.id)
@@ -820,7 +828,9 @@ async def _run_team_turn(
             chunk_type, content, actor_name=teammate.name,
             event_id=ev.id, actor_id=teammate.id,
         )
-        # 队友主动检定：紧接着掷骰（明骰），结果落库交由 KP 收束叙述
+        # 队友主动检定：紧接着掷骰，结果落库交由 KP 收束叙述。心理学等「始终暗投」技能只落
+        # 「做了一次暗骰」的事实、结果仅回灌 KP（经 blind_results 注入当轮上下文），绝不落库/
+        # 广播成败——否则玩家能从事件或网络看到结果而元游戏。
         if action == "check" and decision.get("skill"):
             skill = decision["skill"]
             engine = get_engine(module.rule_system)
@@ -830,12 +840,22 @@ async def _run_team_turn(
                 "system_data": teammate.system_data,
             }
             result = engine.resolve_check(cdata, skill, "normal")
-            dice_content = f"{teammate.name}｜{skill} 检定（normal）：{result.description}"
-            dice_meta = {
-                "skill": skill, "skill_value": result.skill_value,
-                "roll": result.roll, "target": result.target,
-                "outcome": result.outcome, "actor": teammate.name,
-            }
+            if any(s in skill for s in ALWAYS_BLIND_SKILLS):
+                tier_cn = TIER_LABEL.get(result.tier, result.tier)
+                dice_content = f"{teammate.name} 进行了一次暗骰·{skill}（结果仅 KP 可见）"
+                dice_meta = {"skill": skill, "actor": teammate.name, "blind": True}
+                if blind_results is not None:
+                    blind_results.append(
+                        f"【暗骰·{teammate.name}·{skill}（结果仅你 KP 可见，绝不可把成败直接告诉玩家）】"
+                        f"达成 {tier_cn}：{result.description}"
+                    )
+            else:
+                dice_content = f"{teammate.name}｜{skill} 检定（normal）：{result.description}"
+                dice_meta = {
+                    "skill": skill, "skill_value": result.skill_value,
+                    "roll": result.roll, "target": result.target,
+                    "outcome": result.outcome, "actor": teammate.name,
+                }
             dev = session_service.add_event(
                 db, session_id, "dice", dice_content,
                 actor_name="系统", metadata=dice_meta,
@@ -926,7 +946,7 @@ def _location_groups(
         if not sid:
             continue
         if sid not in by_scene:
-            by_scene[sid] = {"label": _scene_name(module, sid), "members": []}
+            by_scene[sid] = {"scene_id": sid, "label": _scene_name(module, sid), "members": []}
             order.append(sid)
         by_scene[sid]["members"].append(ch.name)
     return [by_scene[s] for s in order]
@@ -939,6 +959,21 @@ SPLIT_FOCUS_PROMPT = (
     "（他们另行单独叙述）；③{members} 都是**玩家角色**——**绝不替他们说话、行动、做决定或描写其"
     "心理感受**，只呈现世界与 NPC 对其已有言行的回应。"
 )
+
+
+def _team_blind_message(blind_results: list[str] | None) -> dict | None:
+    """把本回合队友暗骰（心理学等）的真实结果打成一条「仅 KP 可见」的 system 消息，注入当轮
+    KP 上下文。这些结果绝不落库/广播，只在本次生成的 prompt 里存在——KP 据此把握分寸，
+    但绝不可把成败直接告诉玩家。无暗骰则返回 None。"""
+    if not blind_results:
+        return None
+    return {
+        "role": "system",
+        "content": (
+            "【本回合队友暗骰结果——仅你（KP）可见的裁定信息，据此把握分寸叙事，"
+            "但绝不可把成败/数值直接告诉玩家】\n" + "\n".join(blind_results)
+        ),
+    }
 
 
 async def _validate_and_patch_narration(
@@ -971,6 +1006,7 @@ async def _run_generation(
     player_char: Character,
     events: list,
     teammates: list[Character] | None = None,
+    blind_results: list[str] | None = None,
 ) -> None:
     llm = get_llm()
     kp = KPAgent(llm)
@@ -992,11 +1028,14 @@ async def _run_generation(
     # 身处 ≥2 个场景即分头 → 逐场景生成叙事。不再靠 LLM 猜分组、也不因「打算去X」误判。
     scene_groups = _location_groups(game_session, module, player_char, teammates)
 
+    # 本回合队友暗骰（心理学等）的真实结果 → 一条「仅 KP 可见」的上下文消息（不落库/不广播）。
+    blind_message = _team_blind_message(blind_results)
+
     if len(scene_groups) >= 2:
         await _run_split_generation(
             db, session_id, game_session, module, player_char, events,
             teammates, kp, llm, rules_enabled, matcher_npcs, scene_groups,
-            plan=plan,
+            plan=plan, blind_message=blind_message,
         )
         return
 
@@ -1006,6 +1045,8 @@ async def _run_generation(
     )
     if plan is not None:
         messages.append(turn_planner.build_turn_plan_message(plan))
+    if blind_message is not None:
+        messages.append(blind_message)
 
     result = ["", "", [], [], []]
     # 取消（硬取消 task）或流式中途报错（如供应商抖动断流）时，已生成的叙事都要落库，
@@ -1078,6 +1119,7 @@ async def _run_split_generation(
     matcher_npcs: list[dict],
     groups: list[dict],
     plan: turn_planner.TurnPlan | None = None,
+    blind_message: dict | None = None,
 ) -> None:
     """分头行动：对每个分组各跑一次聚焦叙事，后端确定性地把产物归入该组。
 
@@ -1098,12 +1140,16 @@ async def _run_split_generation(
     for grp in groups:
         label = grp["label"]
         members = "、".join(grp["members"])
+        # 关键：以该组所在场景为锚构建上下文，否则每列都拿主角场景的 NPC/线索，
+        # KP 只能把主角场景重复叙述一遍（两列讲同一件事）。
         messages = build_kp_context(
             game_session, module, player_char, events, teammates=teammates,
-            rules_lookup_enabled=rules_enabled,
+            rules_lookup_enabled=rules_enabled, viewer_scene_id=grp.get("scene_id"),
         )
         if plan_message is not None:
             messages.append(plan_message)
+        if blind_message is not None:
+            messages.append(blind_message)
         messages.append({
             "role": "user",
             "content": SPLIT_FOCUS_PROMPT.format(label=label, members=members),
@@ -1229,17 +1275,20 @@ async def run_chat_generation(session_id: str) -> None:
                 )
                 return
 
-        # 玩家输入后：先跑一轮 AI 队友自动响应（仅 AI 席、仅一轮、不自触发），再交 KP 收束
+        # 玩家输入后：先跑一轮 AI 队友自动响应（仅 AI 席、仅一轮、不自触发），再交 KP 收束。
+        # 队友暗骰（心理学等）的真实结果收集到 team_blind，注入本回合 KP 上下文而不落库/广播。
+        team_blind: list[str] = []
         if ai_teammates:
             async for chunk in _run_team_turn(
                 db, session_id, game_session, module, player_char, ai_teammates, llm,
+                blind_results=team_blind,
             ):
                 room_hub.broadcast(session_id, chunk)
 
         events = session_service.get_session_events(db, session_id)
         await _run_generation(
             db, session_id, game_session, module, player_char, events,
-            teammates=party_others,
+            teammates=party_others, blind_results=team_blind,
         )
     except asyncio.CancelledError:
         logger.info("生成被取消: session=%s", session_id)
@@ -1669,6 +1718,10 @@ async def _process_commands(
         difficulty = (kv.get("difficulty") or "normal").strip() or "normal"
         char_ref = (kv.get("char") or "").strip()
         blind = (kv.get("visibility") or "open").strip().lower() == "blind"
+        # 心理学等技能一律强制暗投：即使 KP 写了 visibility=open 或没写，也不挂「待玩家投骰」、
+        # 不广播达成等级——结果只回灌 KP，玩家永远看不到成败。
+        if any(s in skill_name for s in ALWAYS_BLIND_SKILLS):
+            blind = True
         source = (kv.get("source") or "").strip()
 
         char_data, disp_name, is_npc, char_id = _resolve_check_actor(
