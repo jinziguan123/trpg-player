@@ -9,7 +9,9 @@ TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 echo "==> target triple: $TRIPLE"
 
 echo "==> [1/4] 构建前端 (vite build)"
-pnpm --filter web build
+# 直接用 vite（esbuild）出包，跳过 tsc 类型检查门禁——打包只需要产物；类型检查仍可在
+# 开发/CI 用 `pnpm --filter web build`（含 tsc -b）单独跑。
+pnpm --filter web exec vite build
 
 echo "==> [2/4] 打包后端 sidecar (PyInstaller)"
 cd "$ROOT/server"
