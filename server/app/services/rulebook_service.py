@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.ai.embedding import Embedder, get_embedder
 from app.models.rulebook import RuleChunk, Rulebook
+from app.services.vector_search import cosine_top_k
 
 logger = logging.getLogger(__name__)
 
@@ -159,24 +160,17 @@ def retrieve(
         return []
 
     embedder = embedder or get_embedder()
-    qv = np.asarray(embedder.embed_query(query), dtype=np.float32)
-    qn = qv / (np.linalg.norm(qv) + 1e-8)
-
-    mat = np.frombuffer(b"".join(r.embedding for r in rows), dtype=np.float32)
-    mat = mat.reshape(len(rows), -1)
-    norms = np.linalg.norm(mat, axis=1, keepdims=True)
-    mn = mat / (norms + 1e-8)
-    sims = mn @ qn
-
-    top = np.argsort(-sims)[: max(k, 0)]
+    top = cosine_top_k(
+        [r.embedding for r in rows], embedder.embed_query(query), k,
+    )
     return [
         {
             "text": rows[i].text,
             "page": rows[i].page,
-            "score": float(sims[i]),
+            "score": score,
             "rulebook_id": rows[i].rulebook_id,
         }
-        for i in top
+        for i, score in top
     ]
 
 

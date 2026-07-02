@@ -18,14 +18,20 @@ from app.ai.llm_factory import get_llm
 from app.ai.prompts.kp_system import (
     CHECK_REQUEST_PROMPT,
     KP_DICE_CONTINUATION_PROMPT,
+    KP_MODULE_CONTINUATION_PROMPT,
     KP_RULE_CONTINUATION_PROMPT,
 )
 from app.models.character import Character
 from app.models.module import Module
 from app.models.session import GameSession
 from app.rules.registry import get_engine
-from app.services import map_service, rulebook_service, session_service
-from app.services import world_memory
+from app.services import (
+    map_service,
+    module_rag_service,
+    rulebook_service,
+    session_service,
+    world_memory,
+)
 from app.services.room_hub import room_hub
 
 logger = logging.getLogger(__name__)
@@ -49,6 +55,10 @@ SCENE_CHANGE_RE = re.compile(
 )
 RULE_LOOKUP_RE = re.compile(
     r"\[RULE_LOOKUP:\s*query=([^\]]+)\]"
+)
+# 模组原文查阅：与 RULE_LOOKUP 同一套终止性指令模式，共享每轮查阅配额。
+MODULE_LOOKUP_RE = re.compile(
+    r"\[MODULE_LOOKUP:\s*query=([^\]]+)\]"
 )
 # 剧情状态推进：KP 在叙事节拍发 [SET_FLAG: flag=xxx] 置标志、[CLEAR_FLAG: flag=xxx] 清标志，
 # 场景/NPC 的状态变体据此切换（如「地下室进水后变致命」「危险消退」）。是内部控制标签，不展示给玩家。
@@ -112,7 +122,7 @@ _SUBJECT_BOUNDARY = "。！？!?\n　 ”」』）)】"
 
 CMD_TAG_PREFIXES = (
     "DICE_CHECK:", "OPPOSED_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:",
-    "SCENE_CHANGE:", "RULE_LOOKUP:", "SET_FLAG:", "CLEAR_FLAG:",
+    "SCENE_CHANGE:", "RULE_LOOKUP:", "MODULE_LOOKUP:", "SET_FLAG:", "CLEAR_FLAG:",
 )
 # 指令关键词（去冒号）：用于容错识别——模型有时漏写冒号或用空格（如「SET_FLAG hint_x」），
 # 也常用全角括号【】。识别到即当指令处理（剔除/执行），避免整条指令泄漏进旁白。
@@ -127,7 +137,8 @@ def _is_cmd_tag(inner: str) -> bool:
             return True
     return False
 
-# 单次生成内最多连续查阅规则书的次数（防止 KP 反复查导致长链/慢）
+# 单次生成内最多连续查阅的次数（规则书 [RULE_LOOKUP] 与模组原文 [MODULE_LOOKUP]
+# 合并计数，防止 KP 反复查导致长链/慢）
 MAX_RULE_LOOKUPS = 2
 # 骰子续写里 KP 可能再发指令（如读懂禁忌知识后追加 SAN_CHECK）→ 允许继续处理，
 # 但限制连锁深度防止无限掷骰链（检定→续写→再检定→…）。
@@ -1252,6 +1263,57 @@ async def _validate_and_patch_narration(
         del result[3:]
 
 
+def _scene_title(module: Module, scene_id: str | None) -> str:
+    """按 id 取场景标题（title/name 兼容），找不到返回空串。"""
+    for s in (module.scenes or []):
+        if s.get("id") == scene_id:
+            return str(s.get("title") or s.get("name") or "")
+    return ""
+
+
+def _latest_player_input(events: list, party_char_ids: set[str]) -> str:
+    """玩家一侧（含队友）最新的一条发言/行动文本，作为被动检索 query 的一半。"""
+    for ev in reversed(events or []):
+        if (
+            ev.event_type in ("action", "dialogue")
+            and ev.actor_id
+            and ev.actor_id in party_char_ids
+        ):
+            return ev.content or ""
+    return ""
+
+
+def _module_excerpts_for_context(
+    db: Session,
+    module: Module,
+    game_session: GameSession,
+    events: list,
+    party_char_ids: set[str],
+    scene_id: str | None = None,
+) -> list[dict] | None:
+    """被动注入用的模组原文摘录：query=当前场景标题+玩家本轮最新输入，top-3。
+
+    未建索引（rag_status != ready）、开场（无事件）或检索失败一律返回 None——
+    build_kp_context 收到 None 时行为与无此特性完全一致（fail-open，不阻塞跑团）。
+    """
+    if getattr(module, "rag_status", "") != "ready" or not events:
+        return None
+    sid = scene_id or game_session.current_scene_id
+    query = " ".join(
+        p for p in (
+            _scene_title(module, sid),
+            _latest_player_input(events, party_char_ids),
+        ) if p
+    ).strip()
+    if not query:
+        return None
+    try:
+        return module_rag_service.retrieve(db, module.id, query, k=3, scene_id=sid) or None
+    except Exception:  # noqa: BLE001 — 检索失败不得阻塞生成主流程
+        logger.exception("模组原文检索失败（已降级）：module=%s", module.id)
+        return None
+
+
 async def _run_generation(
     db: Session,
     session_id: str,
@@ -1266,6 +1328,9 @@ async def _run_generation(
     kp = KPAgent(llm)
     # 仅在非开场、且该规则系统已挂载规则书时，向 KP 广告 [RULE_LOOKUP] 能力
     rules_enabled = bool(events) and rulebook_service.has_rulebook(db, module.rule_system)
+    # 仅在非开场、且模组原文索引就绪时，向 KP 广告 [MODULE_LOOKUP] 能力（镜像规则书模式）
+    module_rag_enabled = bool(events) and getattr(module, "rag_status", "") == "ready"
+    party_ids = {player_char.id} | {t.id for t in (teammates or [])}
     matcher_npcs = _matcher_npcs(module, teammates)
 
     # 回合裁定计划：先跑一次结构化 planner（分头与否都需要——分头场景 NPC/线索并行推进，
@@ -1301,6 +1366,10 @@ async def _run_generation(
     messages = build_kp_context(
         game_session, module, player_char, events, teammates=teammates,
         rules_lookup_enabled=rules_enabled,
+        module_excerpts=_module_excerpts_for_context(
+            db, module, game_session, events, party_ids,
+        ),
+        module_lookup_enabled=module_rag_enabled,
     )
     if plan is not None:
         messages.append(turn_planner.build_turn_plan_message(plan))
@@ -1401,6 +1470,10 @@ async def _run_split_generation(
     _tag_turn_events_by_group(db, _current_turn_events(events), groups)
     plan_message = turn_planner.build_turn_plan_message(plan) if plan is not None else None
 
+    # 模组原文 RAG：与单场景路径同一门槛（索引就绪才广告 [MODULE_LOOKUP]/注入摘录）
+    module_rag_enabled = bool(events) and getattr(module, "rag_status", "") == "ready"
+    party_ids = {player_char.id} | {t.id for t in (teammates or [])}
+
     combined: list[str] = []
     for grp in groups:
         label = grp["label"]
@@ -1410,6 +1483,11 @@ async def _run_split_generation(
         messages = build_kp_context(
             game_session, module, player_char, events, teammates=teammates,
             rules_lookup_enabled=rules_enabled, viewer_scene_id=grp.get("scene_id"),
+            module_excerpts=_module_excerpts_for_context(
+                db, module, game_session, events, party_ids,
+                scene_id=grp.get("scene_id"),
+            ),
+            module_lookup_enabled=module_rag_enabled,
         )
         if plan_message is not None:
             messages.append(plan_message)
@@ -1582,9 +1660,15 @@ async def _run_kp_turn(
     llm = get_llm()
     events = session_service.get_session_events(db, session_id)
     rules_enabled = rulebook_service.has_rulebook(db, module.rule_system)
+    module_rag_enabled = getattr(module, "rag_status", "") == "ready"
+    party_ids = {player_char.id} | {t.id for t in (party_others or [])}
     messages = build_kp_context(
         game_session, module, player_char, events,
         teammates=party_others, rules_lookup_enabled=rules_enabled,
+        module_excerpts=_module_excerpts_for_context(
+            db, module, game_session, events, party_ids,
+        ),
+        module_lookup_enabled=module_rag_enabled,
     )
     messages.append({"role": "user", "content": user_prompt})
 
@@ -1906,6 +1990,17 @@ async def _process_commands(
         if lookup:
             async for chunk in _handle_rule_lookup(
                 db, session_id, lookup.group(1).strip(), module, player_char,
+                game_session, llm, teammates=teammates, lookup_depth=lookup_depth,
+            ):
+                yield chunk
+            return
+
+    # 模组原文查阅同为终止性指令，与规则书查阅走同一开关与配额（lookup_depth 合并计数）
+    if allow_rule_lookup and lookup_depth < MAX_RULE_LOOKUPS:
+        mlookup = MODULE_LOOKUP_RE.search(kp_text)
+        if mlookup:
+            async for chunk in _handle_module_lookup(
+                db, session_id, mlookup.group(1).strip(), module, player_char,
                 game_session, llm, teammates=teammates, lookup_depth=lookup_depth,
             ):
                 yield chunk
@@ -2298,6 +2393,73 @@ async def _handle_rule_lookup(
     )
 
     # 续写里可能含查完规则后发起的检定/场景切换等，照常处理（但禁止再次查阅）
+    async for chunk in _process_commands(
+        db, session_id, cont_result[1], module, player_char, game_session, llm,
+        teammates=teammates, allow_rule_lookup=False, lookup_depth=lookup_depth + 1,
+    ):
+        yield chunk
+
+
+async def _handle_module_lookup(
+    db: Session,
+    session_id: str,
+    query: str,
+    module: Module,
+    player_char: Character,
+    game_session: GameSession,
+    llm,
+    teammates: list[Character] | None = None,
+    lookup_depth: int = 0,
+) -> AsyncIterator[str]:
+    """KP 发起 [MODULE_LOOKUP] 后：检索模组原文 → 回灌让 KP 据此续写。
+
+    与 [RULE_LOOKUP] 同一套处理模式，且共享 lookup_depth 配额（合并计数）。
+    透明提示一条 ephemeral system（不落库）；检索不到/失败时给降级文案让 KP
+    按结构化模组资料续写（fail-open，不阻塞跑团）。
+    """
+    yield _make_chunk("system", "守秘人翻阅模组手稿……")
+
+    try:
+        hits = module_rag_service.retrieve(
+            db, module.id, query, k=3, scene_id=game_session.current_scene_id,
+        )
+    except Exception:  # noqa: BLE001 — 检索失败降级为无命中
+        logger.exception("模组原文检索失败（已降级）：module=%s", module.id)
+        hits = []
+    if hits:
+        passages = "\n\n".join(
+            f"[片段 {i}] {h['text']}" for i, h in enumerate(hits, start=1)
+        )
+    else:
+        passages = "（未在模组原文中找到直接匹配的内容，请依据结构化模组资料与你的经验续写。）"
+
+    continuation = KP_MODULE_CONTINUATION_PROMPT.format(query=query, passages=passages)
+    events = session_service.get_session_events(db, session_id)
+    messages = build_kp_context(
+        game_session, module, player_char, events, teammates=teammates,
+        rules_lookup_enabled=False,  # 续写阶段不再广告查阅，避免长链
+    )
+    messages.append({"role": "user", "content": continuation})
+
+    kp = KPAgent(llm)
+    cont_result = ["", "", [], [], []]
+    try:
+        async for chunk in _stream_narration_filtered(
+            kp, messages, cont_result, npcs=_matcher_npcs(module, teammates),
+        ):
+            yield chunk
+    finally:
+        cont_narration = cont_result[0].rstrip()
+        if cont_narration:
+            session_service.add_event(
+                db, session_id, "narration", cont_narration, actor_name="KP",
+            )
+        for npc_name, dialogue_text in cont_result[2]:
+            session_service.add_event(
+                db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
+            )
+
+    # 续写里可能含查完原文后发起的检定/场景切换等，照常处理（但禁止再次查阅）
     async for chunk in _process_commands(
         db, session_id, cont_result[1], module, player_char, game_session, llm,
         teammates=teammates, allow_rule_lookup=False, lookup_depth=lookup_depth + 1,

@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Enum, Text
+from sqlalchemy import JSON, Enum, ForeignKey, Index, Integer, LargeBinary, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
@@ -18,3 +18,23 @@ class Module(Base, UUIDMixin, TimestampMixin):
     maps: Mapped[list] = mapped_column(JSON, default=list)
     clues: Mapped[list] = mapped_column(JSON, default=list)
     triggers: Mapped[list] = mapped_column(JSON, default=list)
+    # 原文 RAG 索引状态：""=未建（存量模组）/ indexing / ready / failed，与规则书状态机同形
+    rag_status: Mapped[str] = mapped_column(default="")
+
+
+class ModuleChunk(Base, UUIDMixin):
+    """模组原文切块 + 嵌入向量（float32 原始字节存 BLOB），镜像 RuleChunk 形态。"""
+
+    __tablename__ = "module_chunks"
+
+    module_id: Mapped[str] = mapped_column(
+        ForeignKey("modules.id", ondelete="CASCADE"), index=True
+    )
+    # 章节归属的场景 id（切块后按场景标题在块内模糊匹配回填），检索时用于当前场景加权
+    scene_hint: Mapped[str | None] = mapped_column(nullable=True)
+    ordinal: Mapped[int] = mapped_column(Integer, default=0)
+    text: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+Index("ix_module_chunks_module_ord", ModuleChunk.module_id, ModuleChunk.ordinal)

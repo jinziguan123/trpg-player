@@ -10,6 +10,8 @@ interface Module {
   scenes: Array<Record<string, unknown>>
   npcs: Array<Record<string, unknown>>
   clues: Array<Record<string, unknown>>
+  /** 原文 RAG 索引状态：''=未建 / indexing / ready / failed */
+  rag_status?: string
 }
 
 interface ModuleStore {

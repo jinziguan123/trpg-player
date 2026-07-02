@@ -29,6 +29,7 @@ def test_run_migrations_builds_full_schema(tmp_path, monkeypatch):
     assert "alembic_version" in tables
     assert "rulebooks" in tables
     assert "rule_chunks" in tables
+    assert "module_chunks" in tables
     assert "modules" in tables
     assert "game_sessions" in tables
 
