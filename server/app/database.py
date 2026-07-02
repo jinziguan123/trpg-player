@@ -38,6 +38,38 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def seed_if_needed() -> None:
+    """打包运行且 app-data 尚无数据库时，从内置种子（sys._MEIPASS/seed）拷入规则书 / 素材 /
+    模组 / 角色 —— 开箱即用，且规则书已带 RAG 向量、无需首次下嵌入模型。
+
+    只在「打包(frozen) + 目标库不存在」时执行；已有数据则跳过，绝不覆盖用户数据。
+    源码运行(dev)直接用 server/trpg.db，不 seed。
+    """
+    import shutil
+    import sys
+
+    if not getattr(sys, "frozen", False):
+        return
+    if Path(settings.db_path).exists():
+        return
+    seed = Path(sys._MEIPASS) / "seed"  # type: ignore[attr-defined]
+    seed_db = seed / "trpg.db"
+    if not seed_db.exists():
+        return
+    try:
+        settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(seed_db, settings.db_path)
+        seed_assets = seed / "assets"
+        if seed_assets.is_dir():
+            settings.assets_dir.mkdir(parents=True, exist_ok=True)
+            for f in seed_assets.iterdir():
+                if f.is_file():
+                    shutil.copy(f, settings.assets_dir / f.name)
+        logger.info("已从内置种子初始化数据到 app-data：%s", settings.db_path)
+    except Exception:
+        logger.exception("内置种子初始化失败（将以空库启动）")
+
+
 def run_migrations() -> None:
     """启动时幂等地把数据库升到最新（alembic upgrade head）。
 

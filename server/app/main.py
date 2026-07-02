@@ -14,9 +14,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # 启动即把数据库升到最新；失败不阻断启动（多数功能不依赖最新迁移），但醒目记录。
-    from app.database import run_migrations
+    # 打包首次启动先从内置种子初始化 app-data（开箱即用），再把数据库升到最新；
+    # 失败不阻断启动（多数功能不依赖最新迁移），但醒目记录。
+    from app.database import run_migrations, seed_if_needed
 
+    seed_if_needed()
     try:
         run_migrations()
     except Exception:

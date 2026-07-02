@@ -13,8 +13,9 @@ echo "==> [1/4] 构建前端 (vite build)"
 # 开发/CI 用 `pnpm --filter web build`（含 tsc -b）单独跑。
 pnpm --filter web exec vite build
 
-echo "==> [2/4] 打包后端 sidecar (PyInstaller)"
+echo "==> [2/4] 生成内置种子 + 打包后端 sidecar (PyInstaller)"
 cd "$ROOT/server"
+.venv/bin/python scripts/make_seed.py    # 从当前开发库导出规则书/素材/模组/角色（剔存档）
 .venv/bin/pyinstaller desktop.spec --noconfirm
 
 echo "==> [3/4] 复制 sidecar 到 Tauri（按 target triple 命名）"

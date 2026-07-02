@@ -18,6 +18,10 @@ datas = [
 ]
 if os.path.isdir(WEB_DIST):
     datas.append((WEB_DIST, "web_dist"))
+# 内置种子数据（规则书/素材/模组/角色，含 RAG 向量）：首次启动 seed 到 app-data，开箱即用。
+SEED = os.path.join(SPEC_DIR, "seed")
+if os.path.isdir(SEED):
+    datas.append((SEED, "seed"))
 
 hiddenimports = [
     "app.main",
