@@ -322,10 +322,13 @@ def test_story_summarizer_merges_and_fails_open():
 
 def test_maybe_roll_story_summary_updates_and_advances_cursor(db_factory, monkeypatch):
     """未并入摘要的事件超过阈值时，把较老的一批浓缩进持久摘要并推进游标；不足阈值则不动。"""
-    async def fake_summarize(llm, prev, events):
-        return "合并后的滚动摘要"
+    # v2：滚动点改走「摘要 + 记忆抽取」合并调用；桩返回三元组，差量为空只验摘要滚动。
+    async def fake_summarize(llm, prev, events, npc_brief):
+        return ("合并后的滚动摘要", {}, {})
 
-    monkeypatch.setattr(chat_service.story_summarizer, "summarize_story", fake_summarize)
+    monkeypatch.setattr(
+        chat_service.story_summarizer, "summarize_and_extract", fake_summarize,
+    )
 
     db = db_factory()
     module, hero, teammates, session = _seed(db)

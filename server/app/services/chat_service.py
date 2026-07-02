@@ -1071,10 +1071,12 @@ STORY_SUMMARY_TRIGGER = 24
 
 
 async def _maybe_roll_story_summary(db: Session, session_id: str, llm) -> None:
-    """长局滚动摘要：把「未并入摘要」里较老的一批与既往摘要合并浓缩、推进游标。
+    """长局滚动摘要 + 世界记忆抽取（v2）：把「未并入摘要」里较老的一批与既往摘要合并浓缩、
+    推进游标，**同一次低温调用**顺带产出 NPC 记忆/线索备注的差量并合并落库。
 
     在 KP 每轮生成收尾（done 之后）调用；未攒够阈值时零成本返回，不额外调用 LLM。
-    任何失败都静默忽略（保持原摘要、原游标），绝不阻塞跑团。
+    摘要失败：静默忽略（保持原摘要、原游标）。抽取差量失败/为空：跳过差量、摘要照常推进；
+    差量落库经 ``_apply_world_memory`` fail-open，且台账 status 恒不受抽取器影响。绝不阻塞跑团。
     """
     try:
         session = db.get(GameSession, session_id)
@@ -1089,16 +1091,31 @@ async def _maybe_roll_story_summary(db: Session, session_id: str, llm) -> None:
         to_summ = uncovered[: len(uncovered) - STORY_SUMMARY_KEEP_RECENT]
         if not to_summ:
             return
-        new_summary = await story_summarizer.summarize_story(
+        # MemoryKeeper 抽取器与摘要合并为一次调用（同一批事件 + 既往摘要 + 当前 NPC 记忆摘要）
+        module = db.get(Module, session.module_id) if session.module_id else None
+        npc_names = {
+            npc.get("id"): npc.get("name")
+            for npc in ((module.npcs if module else None) or [])
+            if npc.get("id")
+        }
+        result = await story_summarizer.summarize_and_extract(
             llm, ws.get("story_summary") or "", to_summ,
+            world_memory.format_npc_memory_all_brief(ws, npc_names),
         )
-        if not new_summary:
+        if not result:
             return
+        new_summary, npc_updates, clue_notes = result
         ws2 = dict(session.world_state or {})
         ws2["story_summary"] = new_summary
         ws2["story_summary_seq"] = to_summ[-1].sequence_num
         session.world_state = ws2
         db.commit()
+        # 差量合并：只改 attitude/reason/promises/lies 与已存在线索的 note，绝不碰台账 status。
+        if npc_updates or clue_notes:
+            _apply_world_memory(
+                db, session,
+                lambda w: world_memory.apply_memory_delta(w, npc_updates, clue_notes),
+            )
         logger.info(
             "滚动剧情摘要更新：session=%s 游标→%s", session_id, to_summ[-1].sequence_num,
         )
