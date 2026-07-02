@@ -204,3 +204,41 @@ async def test_run_turn_planner_parses_json_plan():
     assert "内部工作稿" in injected["content"]
     assert "汇报体" in injected["content"]
     assert "do_not_reveal" in injected["content"]
+
+
+class _RawLLM:
+    """按预设原始字符串/对象作 complete 返回值的桩 LLM。"""
+    def __init__(self, raw):
+        self._raw = raw
+
+    async def complete(self, messages, temperature=0, response_format=None, max_tokens=None):
+        return self._raw
+
+
+@pytest.mark.asyncio
+async def test_run_turn_planner_tolerates_dirty_json():
+    """模型不严格遵守 JSON 约定时也要能解析（这直接关系 KP 裁定约束的稳定性）：
+    ```json 围栏、前后夹解释文字、无语言标注围栏、以及已是 dict 的返回都应成功。"""
+    valid = '{"turn_kind":"social","player_intent":"盘问管家"}'
+    dirty = [
+        "```json\n" + valid + "\n```",
+        "这是本轮裁定计划：\n" + valid + "\n（以上）",
+        "```\n" + valid + "\n```",
+    ]
+    for raw in dirty:
+        plan = await turn_planner.run_turn_planner(_RawLLM(raw), [])
+        assert plan is not None, raw
+        assert plan.turn_kind == "social" and plan.player_intent == "盘问管家"
+
+    # provider 已解析成 dict → 直接可用
+    plan = await turn_planner.run_turn_planner(_RawLLM({"turn_kind": "combat"}), [])
+    assert plan is not None and plan.turn_kind == "combat"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_planner_fails_open_on_unparseable():
+    """空/纯文本/无大括号 → 无法解析；schema 不符 → 校验失败。两者都回退为 None，不阻塞。"""
+    for junk in ["", "抱歉，我无法生成计划", "no braces here"]:
+        assert await turn_planner.run_turn_planner(_RawLLM(junk), []) is None
+    # 合法 JSON 但 turn_kind 不在枚举内 → schema 校验失败 → None
+    assert await turn_planner.run_turn_planner(_RawLLM('{"turn_kind":"invalid_kind"}'), []) is None

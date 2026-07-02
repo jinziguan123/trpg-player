@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
@@ -196,6 +197,38 @@ def build_turn_plan_messages(
     ]
 
 
+def _extract_json_object(raw: Any) -> dict | None:
+    """从 LLM 原始输出里稳健地抠出一个 JSON object。
+
+    模型常不严格遵守 ``response_format=json_object``：可能已是 dict、被 ```json 围栏包裹、
+    或在 JSON 前后夹带解释文字。依次尝试：直接用 dict → 剥围栏后整体解析 → 抠出首个 ``{``
+    到末个 ``}`` 的子串解析。都不成返回 None，由调用方回退旧流程。
+    """
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    # 去掉 ```json ... ``` / ``` ... ``` 代码围栏
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z0-9]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # 前后夹带了解释文字：抠出最外层大括号范围再试
+    start, end = text.find("{"), text.rfind("}")
+    if 0 <= start < end:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
 async def run_turn_planner(llm: Any, messages: list[dict]) -> TurnPlan | None:
     try:
         raw = await llm.complete(
@@ -204,12 +237,21 @@ async def run_turn_planner(llm: Any, messages: list[dict]) -> TurnPlan | None:
             max_tokens=1200,
             response_format={"type": "json_object"},
         )
-        return TurnPlan.model_validate(json.loads(raw))
-    except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
-        logger.warning("KP 回合规划器输出无法解析，已回退旧流程：%s", exc)
-        return None
     except Exception:
         logger.exception("KP 回合规划器调用失败，已回退旧流程")
+        return None
+
+    data = _extract_json_object(raw)
+    if data is None:
+        # 打印原始片段便于定位是哪个 provider/格式没遵守 JSON 约定
+        logger.warning(
+            "KP 回合规划器输出无法解析为 JSON，已回退旧流程；原始片段：%s", str(raw)[:200],
+        )
+        return None
+    try:
+        return TurnPlan.model_validate(data)
+    except (ValidationError, TypeError, ValueError) as exc:
+        logger.warning("KP 回合规划器 JSON 不符合 schema，已回退旧流程：%s", exc)
         return None
 
 
