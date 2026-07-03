@@ -30,15 +30,16 @@ from app.services import world_memory
 logger = logging.getLogger(__name__)
 
 # 上下文总预算（输入 + 输出，按 _estimate_tokens 粗估）。现代模型上下文窗口普遍 ≥64K
-# （DeepSeek 64K、Claude 200K），早先 24000 是保守值；提高到 40000 让长会话保留更多事件史，
-# 仍对 64K 窗口留足 tokenizer 估算误差的安全余量。
-CONTEXT_TOKEN_BUDGET = 40000
+# （DeepSeek 64K/128K、Claude 200K），估算启发式（中文 1.5 token/字）偏高于真实 BPE
+# （中文约 1 token/字），故 48000 估算 ≈ 32000 真实，对 64K 窗口仍有充裕安全垫。
+CONTEXT_TOKEN_BUDGET = 48000
 # 输出预留：KP 叙事（尤其分头/多 NPC/tool-loop 多步）可能较长，给足避免被截断。
-RESERVE_FOR_OUTPUT = 6000
+RESERVE_FOR_OUTPUT = 7000
 # 系统提示上限。此处装的不只是静态裁定手册，还有模组数据 + RAG 原文摘录（可达 ~2700 token）
-# + 线索台账 + NPC 记忆 + 幕后动态 + handout 清单（P1-P3 陆续加入）。6000 已装不下这些叠加、
-# 会截掉真实内容 → 提升到 12000，让系统提示完整呈现，直接改善 KP 裁定质量。
-MAX_SYSTEM_TOKENS = 12000
+# + 线索台账 + NPC 记忆 + 幕后动态 + handout 清单。KP 手册随能力增强持续变长，12000 下
+# 静态手册被卡在 6000（=MAX-6000 护栏）反复要「加一句砍一句」。提升到 16000：静态手册天花板
+# 随之抬到 10000（充裕生长空间），同时给下游注入内容仍留 6000。用户已授权为「保证最终效果」放宽预算。
+MAX_SYSTEM_TOKENS = 16000
 MAX_SUMMARY_TOKENS = 2000
 MIN_RECENT_EVENTS = 10
 MAX_RECENT_EVENTS = 60

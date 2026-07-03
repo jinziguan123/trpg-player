@@ -45,6 +45,8 @@ def test_characteristic_checks_and_proactive_guidance():
 def test_rulebook_static_leaves_budget_for_module_data():
     static = re.sub(r"\{[a-z_]+\}", "", KP_SYSTEM_PROMPT)
     static_tokens = _estimate_tokens(static)
+    # 护栏随 MAX_SYSTEM_TOKENS 抬高而抬高（现 16000-6000=10000）：静态手册有充裕生长空间，
+    # 同时始终给下游注入内容留 ~6000 token。
     # 静态提示只是系统内容的一部分；.format() 后还要接模组数据 + RAG 原文摘录 + 线索台账 +
     # NPC 记忆 + 幕后动态 + handout 清单（P1-P3 陆续加入，合计可达数千 token）。MAX_SYSTEM_TOKENS
     # 放宽到 12000 后，仍守住静态提示不膨胀：给下游注入内容留足 ~6000 token 余量。
