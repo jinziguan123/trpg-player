@@ -1,5 +1,12 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Box, DoorOpen, Armchair, Eye, ZoomIn, ZoomOut } from 'lucide-react'
+import { Box, DoorOpen, ZoomIn, ZoomOut } from 'lucide-react'
+import {
+  GiBed, GiDesk, GiRoundTable, GiWoodenChair, GiWindow, GiLockers, GiBookshelf,
+  GiRolledCloth, GiChest, GiFireplace, GiStairs, GiClosedDoors, GiCandleFlame,
+  GiWell, GiCoffin, GiSkeleton, GiOpenBook, GiMirrorMirror, GiPaintedPottery,
+  GiBathtub, GiBarrel, GiSofa, GiPianoKeys, GiFlowerPot, GiKey, GiStonePile,
+  GiSwapBag, GiMagnifyingGlass,
+} from 'react-icons/gi'
 import type { ComponentType } from 'react'
 
 export interface TileMap {
@@ -44,13 +51,58 @@ const TILE_BG: Record<string, [string, string]> = {
 
 type IconT = ComponentType<{ size?: number; color?: string }>
 
+// ── 物体图标：按名称关键词选形（先长词后短词，避免「书柜」落进「柜」之前先命中「书」）──
+// 命中不了再按 kind 兜底（furniture/item/feature 三档）。全部 game-icons 矢量，禁 emoji。
+const OBJ_ICON_RULES: [RegExp, IconT][] = [
+  [/书架|书柜/, GiBookshelf],
+  [/书桌|办公桌|写字台/, GiDesk],
+  [/床|榻/, GiBed],
+  [/椅|凳/, GiWoodenChair],
+  [/沙发/, GiSofa],
+  [/桌|台案|案/, GiRoundTable],
+  [/窗/, GiWindow],
+  [/柜|橱/, GiLockers],
+  [/地毯|挂毯|毯/, GiRolledCloth],
+  [/箱|盒|匣/, GiChest],
+  [/壁炉|火炉|炉/, GiFireplace],
+  [/楼梯|阶梯|台阶/, GiStairs],
+  [/门/, GiClosedDoors],
+  [/灯|烛|油灯/, GiCandleFlame],
+  [/井/, GiWell],
+  [/棺/, GiCoffin],
+  [/骸骨|尸体|骷髅|遗骸/, GiSkeleton],
+  [/书|日记|笔记|信|卷轴|手稿|文件|档案/, GiOpenBook],
+  [/镜/, GiMirrorMirror],
+  [/瓶|罐|坛|陶/, GiPaintedPottery],
+  [/浴缸|水池/, GiBathtub],
+  [/桶/, GiBarrel],
+  [/钢琴|琴/, GiPianoKeys],
+  [/花|盆栽|植物/, GiFlowerPot],
+  [/钥匙/, GiKey],
+  [/雕像|石像|神像|石碑|祭坛/, GiStonePile],
+]
+const KIND_FALLBACK_ICON: Record<string, IconT> = {
+  item: GiSwapBag, feature: GiMagnifyingGlass, furniture: GiRoundTable,
+}
+function objIcon(name: string, kind?: string): IconT {
+  for (const [re, icon] of OBJ_ICON_RULES) if (re.test(name)) return icon
+  return KIND_FALLBACK_ICON[kind || 'furniture'] || Box
+}
+
+/** 名字 → 稳定色相（同名恒同色）：给无素材的 NPC 一个可区分的私有色环基底。 */
+function nameHue(name: string): number {
+  let h = 0
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) | 0
+  return ((h % 360) + 360) % 360
+}
+
 /** 直立 billboard：锚定在某格地面、反向抵消地面倾斜 → 立起来正对镜头（透视缩放由浏览器免费给）。
  * 注意：必须是 3D 平面的直接子节点（用 Fragment 渲染、勿包普通 div），否则 3D 变换会被压平、token 平躺。 */
-function Billboard({ x, y, h, z = 1, children }: { x: number; y: number; h: number; z?: number; children: React.ReactNode }) {
+function Billboard({ x, y, h, z = 1, dx = 0, children }: { x: number; y: number; h: number; z?: number; dx?: number; children: React.ReactNode }) {
   return (
     <div style={{
       position: 'absolute',
-      left: x * TILE, top: y * TILE + TILE / 2 - h,
+      left: x * TILE + dx, top: y * TILE + TILE / 2 - h,
       width: TILE, height: h,
       transformOrigin: '50% 100%',
       transform: `translateZ(${z}px) rotateX(-${TILT}deg)`,
@@ -228,22 +280,73 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
 
   // ── token ──────────────────────────────────────────────────
   // 有素材 → 素材精灵；人物（玩家/队友/NPC/敌人）→ 色环+名字首字；物件/出口 → 暗盘+图标。
+  // 可读性三件套：① 常显微标签（缩放太小隐藏防糊）；② 撞脸兜底——同一素材被 ≥2 个
+  // 人物引用时全部回退「首字+色环」（杜绝俩 NPC 一张脸）；③ 同格 token 扇形错开。
   const anyActive = (entities || []).some((e) => e.active)
-  const spriteEl = (label: string, sprite: string) => (
-    <div title={label} style={{ width: TILE, height: TILE, imageRendering: 'pixelated', pointerEvents: 'auto', filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.5))', background: `center bottom/contain no-repeat url("${sprite}")` }} />
+  const showLabels = zoom >= 0.55
+
+  // ② 撞脸检测：数一遍人物 token 的素材 URL 引用数
+  const personSpriteUses = new Map<string, number>()
+  const countPerson = (kind?: string, assetId?: string) => {
+    const s = spriteFor(kind, assetId)
+    if (s) personSpriteUses.set(s, (personSpriteUses.get(s) || 0) + 1)
+  }
+  for (const n of map.npc_pos || []) countPerson(n.hostile ? 'enemy' : 'npc', n.asset_id)
+  for (const en of entities || []) if (en.kind !== 'item') countPerson(en.kind, en.asset_id)
+  const dupSprite = (kind?: string, assetId?: string) => {
+    const s = spriteFor(kind, assetId)
+    return !!s && (personSpriteUses.get(s) || 0) >= 2
+  }
+
+  // ③ 同格错开：先数每格 token 数，再按序分配水平偏移
+  const occTotal = new Map<string, number>()
+  const occSeen = new Map<string, number>()
+  const bump = (x: number, y: number) => occTotal.set(`${x},${y}`, (occTotal.get(`${x},${y}`) || 0) + 1)
+  for (const o of map.objects || []) bump(o.x, o.y)
+  for (const e of map.entrances || []) bump(e.x, e.y)
+  for (const n of map.npc_pos || []) bump(n.x, n.y)
+  for (const en of entities || []) bump(en.x, en.y)
+  const fanAt = (x: number, y: number): { dx: number; idx: number } => {
+    const k = `${x},${y}`
+    const n = occTotal.get(k) || 1
+    if (n <= 1) return { dx: 0, idx: 0 }
+    const i = occSeen.get(k) || 0
+    occSeen.set(k, i + 1)
+    return { dx: (i - (n - 1) / 2) * 13, idx: i }
+  }
+
+  // ① 微标签：billboard 内贴地站立（在 token 脚下）。注意不能放到锚点（底边）之下——
+  // 那会转到地平面以下，被 preserve-3d 深度排序裁掉、只剩一条压扁的痕。
+  // 同格多 token 时按 idx 竖向叠放，避免标签互相压字。
+  const tokLabel = (text: string, idx = 0) => showLabels ? (
+    <div style={{
+      position: 'absolute', bottom: -2 - idx * 10, left: '50%', transform: 'translateX(-50%)',
+      fontSize: 9, lineHeight: 1.15, color: PARCH, whiteSpace: 'nowrap', maxWidth: 76,
+      overflow: 'hidden', textOverflow: 'ellipsis', pointerEvents: 'none',
+      textShadow: '0 1px 2px rgba(0,0,0,0.95), 0 0 4px rgba(0,0,0,0.9)',
+    }}>{text}</div>
+  ) : null
+
+  const spriteEl = (label: string, sprite: string, idx = 0) => (
+    <div title={label} style={{ width: TILE, height: TILE, imageRendering: 'pixelated', pointerEvents: 'auto', filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.5))', background: `center bottom/contain no-repeat url("${sprite}")`, position: 'relative' }}>
+      {tokLabel(label, idx)}
+    </div>
   )
   const stem = <div style={{ width: 2, height: 7, background: 'rgba(0,0,0,0.45)' }} />
   const charTok = (x: number, y: number, label: string, ring: string, key: string, kind?: string, assetId?: string, glow?: boolean) => {
-    const sprite = spriteFor(kind, assetId)
+    // 撞脸兜底：素材重复即回退首字+色环；色环底色掺一点名字私有色相辅助区分
+    const sprite = dupSprite(kind, assetId) ? undefined : spriteFor(kind, assetId)
     const initial = (label || '?').trim().charAt(0) || '?'
+    const { dx, idx } = fanAt(x, y)
     stand.push({
       y, key, el: (
-        <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2}>
-          {sprite ? spriteEl(label, sprite) : (
+        <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2} dx={dx}>
+          {sprite ? spriteEl(label, sprite, idx) : (
             <div title={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto', position: 'relative' }}>
               {glow && <div style={{ position: 'absolute', left: '50%', top: 1, width: 26, height: 26, marginLeft: -13, borderRadius: '50%', boxShadow: `0 0 10px 5px rgba(${CANDLE},0.5)`, animation: 'mapTokenPulse 2.6s ease-in-out infinite', pointerEvents: 'none' }} />}
-              <div style={{ width: 26, height: 26, borderRadius: '50%', border: `2px solid ${ring}`, background: 'rgba(10,12,17,0.92)', color: PARCH, fontSize: 11, fontWeight: 700, lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.6)', position: 'relative' }}>{initial}</div>
+              <div style={{ width: 26, height: 26, borderRadius: '50%', border: `2px solid ${ring}`, background: `linear-gradient(rgba(10,12,17,0.88), rgba(10,12,17,0.88)), hsl(${nameHue(label)},40%,42%)`, color: PARCH, fontSize: 11, fontWeight: 700, lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.6)', position: 'relative' }}>{initial}</div>
               {stem}
+              {tokLabel(label, idx)}
             </div>
           )}
         </Billboard>
@@ -252,15 +355,17 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
   }
   const iconTok = (x: number, y: number, label: string, color: string, Icon: IconT, key: string, kind?: string, assetId?: string) => {
     const sprite = spriteFor(kind, assetId)
+    const { dx, idx } = fanAt(x, y)
     stand.push({
       y, key, el: (
-        <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2}>
-          {sprite ? spriteEl(label, sprite) : (
-            <div title={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto' }}>
+        <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2} dx={dx}>
+          {sprite ? spriteEl(label, sprite, idx) : (
+            <div title={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto', position: 'relative' }}>
               <div style={{ width: 24, height: 24, borderRadius: '50%', background: 'rgba(10,12,17,0.9)', border: `1.5px solid ${color}`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.6)' }}>
                 <Icon size={13} color={color} />
               </div>
               {stem}
+              {tokLabel(label, idx)}
             </div>
           )}
         </Billboard>
@@ -269,7 +374,8 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
   }
   for (const o of map.objects || []) {
     const isItem = o.kind === 'item'
-    iconTok(o.x, o.y, o.name, isItem ? '#c9973b' : o.kind === 'feature' ? '#8fa3b0' : '#8a7a5c', isItem ? Box : o.kind === 'feature' ? Eye : Armchair, `o${o.x},${o.y},${o.name}`, o.kind || 'furniture', o.asset_id)
+    const color = isItem ? '#c9973b' : o.kind === 'feature' ? '#8fa3b0' : '#8a7a5c'
+    iconTok(o.x, o.y, o.name, color, objIcon(o.name, o.kind), `o${o.x},${o.y},${o.name}`, o.kind || 'furniture', o.asset_id)
   }
   for (const e of map.entrances || []) iconTok(e.x, e.y, e.name, '#d4a24e', DoorOpen, `e${e.x},${e.y},${e.name}`, 'door', e.asset_id)
   for (const n of map.npc_pos || []) n.hostile
