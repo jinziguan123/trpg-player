@@ -170,6 +170,49 @@ export function GameSessionPage() {
   myNameRef.current = myName
   const [liveConnected, setLiveConnected] = useState(true)
 
+  // 入场动效：只对「新到达」的消息播放一次淡入/骰子弹入，历史与重连恢复的整批消息绝不逐条弹入。
+  // 机制：renderedIds 记录已渲染过的消息 id；首屏（含刷新/重连的 loadHistory 整批）整批视为「已存在」不播入场。
+  // 关键：渲染阶段只「读」不「写」ref（保持纯函数，兼容 StrictMode 双渲染）；所有 ref 变更放在 effect 里。
+  const renderedIds = useRef<Set<string>>(new Set())
+  const firstBatchDone = useRef(false)
+  // 本轮「新到达」的 id 集合——纯派生，供渲染函数读取决定是否加 class。
+  const enterIds = useMemo(() => {
+    if (!firstBatchDone.current) return new Set<string>()   // 首屏整批不播入场
+    const fresh = new Set<string>()
+    for (const m of messages) {
+      if (m.id && !m.id.startsWith('stream-') && !renderedIds.current.has(m.id)) fresh.add(m.id)
+    }
+    return fresh
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages])
+  // 提交后：把本轮所有 id 并入「已渲染」，并标记首屏已完成。只在 effect 里写 ref → StrictMode 安全。
+  useEffect(() => {
+    for (const m of messages) if (m.id) renderedIds.current.add(m.id)
+    if (!firstBatchDone.current && messages.length > 0) firstBatchDone.current = true
+  }, [messages])
+  // 会话切换：重置动效追踪，新会话的首屏历史同样不逐条弹入。
+  useEffect(() => {
+    renderedIds.current = new Set()
+    firstBatchDone.current = false
+  }, [sessionId])
+
+  // 场景切换转场：current_scene_id 变化时放一层 600ms 暗幕淡入淡出（翻页感）。
+  // 首帧/切会话只记基线，不放暗幕。
+  const [sceneVeil, setSceneVeil] = useState(false)
+  const prevSceneId = useRef<string | null | undefined>(undefined)
+  useEffect(() => {
+    const sid = currentSession?.current_scene_id ?? null
+    const prev = prevSceneId.current
+    prevSceneId.current = sid
+    if (prev === undefined) return           // 首帧：记基线不转场
+    if (prev === sid || !sid) return          // 场景未变 / 无场景：不转场
+    setSceneVeil(true)
+    const t = setTimeout(() => setSceneVeil(false), 620)
+    return () => clearTimeout(t)
+  }, [currentSession?.current_scene_id])
+  // 切会话时重置场景基线，避免跨会话误触发暗幕
+  useEffect(() => { prevSceneId.current = undefined; setSceneVeil(false) }, [sessionId])
+
   // 角色名 → 归属（用于消息前的身份图标：我 / AI 队友 / 其他真人 / NPC）
   const partyByName = useMemo(() => {
     const m: Record<string, { isMine: boolean; role: string }> = {}
@@ -610,6 +653,7 @@ export function GameSessionPage() {
 
   return (
     <div className="flex h-full gap-4">
+      {sceneVeil && <div className="scene-veil" aria-hidden="true" />}
       <div className="flex flex-col flex-1 min-w-0">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
           <button
@@ -854,6 +898,21 @@ export function GameSessionPage() {
           const canEditMsg = (m: ChatMessage) =>
             !streaming && !!m.id && (m.type === 'action' || m.type === 'dialogue')
             && !!m.metadata?.pending_turn && m.metadata?.is_player === true
+          // 这条消息是否「本轮新到达」（决定是否播一次入场动效）。历史/重连整批为 false。
+          // enterIds 已排除流式中的临时 stream-* 消息（其内容逐段增长，动效会与流式节奏打架；
+          // 待 done 后 resync 落库为正式 id，那条正式叙事再淡入一次）。
+          const isFresh = (m: ChatMessage) => !!m.id && enterIds.has(m.id)
+          // NPC 台词错开入场：同一批新到达的 NPC 气泡按出现次序各加 50ms 延迟（最多 4 档，防长队列滞后）。
+          const npcStaggerDelay = new Map<string, number>()
+          {
+            let n = 0
+            for (const m of messages) {
+              if (m.id && isFresh(m) && m.type === 'dialogue' && !m.metadata?.is_player) {
+                npcStaggerDelay.set(m.id, Math.min(n, 4) * 50)
+                n++
+              }
+            }
+          }
           // 每条消息外包一层带 data-mid 的容器（供检索跳转定位）；自己的暂存发言叠加编辑/删除。
           const renderRow = (msg: ChatMessage) => {
             if (editingId && editingId === msg.id) {
@@ -927,9 +986,17 @@ export function GameSessionPage() {
                 : diceAccent(String(msg.metadata?.outcome ?? ''))
               // 去掉历史数据里可能残留的旧 🎲 前缀，统一用矢量骰子图标
               const diceText = msg.content.replace(/^🎲\s*/, '')
+              // 入场动效（仅新到达的骰子卡）：大成功金光脉冲、大失败血红震颤，其余普通弹入；一次不循环。
+              const oc = String(msg.metadata?.outcome ?? '')
+              let diceAnim = ''
+              if (isFresh(msg)) {
+                if (!blind && (oc.includes('critical') || oc.includes('大成功'))) diceAnim = 'dice-critical'
+                else if (!blind && (oc.includes('fumble') || oc.includes('大失败'))) diceAnim = 'dice-fumble'
+                else diceAnim = 'dice-enter'
+              }
               return (
                 <div key={msg.id} className="chat-msg py-1">
-                  <div className="dice-card rounded-md px-3 py-2 text-sm flex items-start gap-2"
+                  <div className={`dice-card rounded-md px-3 py-2 text-sm flex items-start gap-2 ${diceAnim}`}
                     style={{ borderLeft: `3px solid ${accent}`, width: 'fit-content', maxWidth: '100%' }}>
                     <GiRollingDices style={{ color: accent, fontSize: '1.1rem', flexShrink: 0, marginTop: '0.1rem' }} />
                     <span className="whitespace-pre-wrap">{diceText}</span>
@@ -994,9 +1061,11 @@ export function GameSessionPage() {
                 const pending = (currentSession?.world_state as Record<string, unknown> | undefined)?.pending_checks as Record<string, unknown> | undefined
                 const stillPending = !!pending && checkId in pending
                 const mine = !msg.metadata?.char_id || msg.metadata?.char_id === myCharId
+                // 待我投骰时呼吸态提示可点；已投/非我则静止。新到达的提示卡再叠一次入场淡入。
+                const pendingAnim = stillPending && mine ? 'dice-pending' : ''
                 return (
-                  <div key={msg.id} className="chat-msg py-1 flex justify-center">
-                    <div className="rounded-md px-3 py-2 text-sm flex items-center gap-3"
+                  <div key={msg.id} className={`chat-msg py-1 flex justify-center ${isFresh(msg) ? 'anim-enter' : ''}`}>
+                    <div className={`rounded-md px-3 py-2 text-sm flex items-center gap-3 ${pendingAnim}`}
                       style={{ background: 'var(--color-bg-tertiary)', borderLeft: '3px solid var(--color-accent)', maxWidth: '100%' }}>
                       <GiRollingDices style={{ color: 'var(--color-accent)', fontSize: '1.1rem', flexShrink: 0 }} />
                       <span className="whitespace-pre-wrap">{msg.content}</span>
@@ -1022,8 +1091,13 @@ export function GameSessionPage() {
               )
             }
             const kind = showLabel ? actorKind(msg.actor_name, isPlayer) : 'npc'
+            // 入场：新到达的对话/行动/叙事淡入上移一次；NPC 台词按次序错开 50ms。
+            const fresh = isFresh(msg)
+            const staggerMs = msg.id ? npcStaggerDelay.get(msg.id) : undefined
+            const enterCls = !fresh ? '' : staggerMs != null ? 'anim-enter-stagger' : 'anim-enter'
+            const enterStyle: CSSProperties = staggerMs != null ? { '--enter-delay': `${staggerMs}ms` } as CSSProperties : {}
             return (
-              <div key={msg.id} className={`chat-msg chat-msg--${msg.type}`}>
+              <div key={msg.id} className={`chat-msg chat-msg--${msg.type} ${enterCls}`} style={enterStyle}>
                 {showLabel && (
                   <div className={`flex items-center gap-1 ${isPlayer ? 'justify-end chat-actor-player' : 'chat-actor'}`}>
                     {kind !== 'npc' && <SeatIcon kind={kind} size={12} />}

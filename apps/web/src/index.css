@@ -556,3 +556,158 @@ select.input option {
 .react-flow__controls-button svg {
   fill: var(--color-text-secondary);
 }
+
+/* ============================================================
+   动效与微交互（哥特沉稳：≤600ms、ease-out、一次性不循环）
+   —— 复用既有 fadeIn/pulse 风格；只用 transform/opacity 合成属性。
+   全部动效在 prefers-reduced-motion 下统一禁用（文件末尾媒体查询）。
+   ============================================================ */
+
+/* 消息/叙事入场：淡入 + 上移 4px（与既有 fadeIn 同调，略长以显庄重）。
+   仅对「新到」的消息加 .anim-enter（历史/重连恢复的消息不加，杜绝逐条弹入）。 */
+.anim-enter {
+  animation: msgEnter 0.34s ease-out both;
+}
+@keyframes msgEnter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* NPC 气泡错开入场：由行内 style 注入 --enter-delay（0/50/100ms…） */
+.anim-enter-stagger {
+  animation: msgEnter 0.34s ease-out both;
+  animation-delay: var(--enter-delay, 0ms);
+}
+
+/* 骰子事件卡入场：微旋转 + 缩放弹入（骰子落定的仪式感） */
+.dice-enter {
+  animation: diceEnter 0.42s cubic-bezier(0.2, 0.8, 0.3, 1.2) both;
+  transform-origin: center;
+}
+@keyframes diceEnter {
+  0% { opacity: 0; transform: scale(0.86) rotate(-4deg); }
+  60% { opacity: 1; transform: scale(1.03) rotate(1deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+
+/* 大成功：金光脉冲一次（外发光扩散后收束） */
+.dice-critical {
+  animation: diceEnter 0.42s cubic-bezier(0.2, 0.8, 0.3, 1.2) both,
+             critPulse 0.9s ease-out 0.2s both;
+}
+@keyframes critPulse {
+  0% { box-shadow: 0 0 0 0 rgba(224, 183, 95, 0); }
+  35% { box-shadow: 0 0 18px 3px rgba(224, 183, 95, 0.55); }
+  100% { box-shadow: 0 0 0 0 rgba(224, 183, 95, 0); }
+}
+
+/* 大失败：血红震颤一次（水平轻抖 + 血色描边闪一下） */
+.dice-fumble {
+  animation: diceEnter 0.42s cubic-bezier(0.2, 0.8, 0.3, 1.2) both,
+             fumbleShake 0.5s ease-out 0.18s both;
+}
+@keyframes fumbleShake {
+  0% { transform: translateX(0); box-shadow: 0 0 0 0 rgba(217, 100, 89, 0); }
+  15% { transform: translateX(-3px); box-shadow: 0 0 14px 2px rgba(217, 100, 89, 0.5); }
+  30% { transform: translateX(3px); }
+  45% { transform: translateX(-2px); }
+  60% { transform: translateX(2px); box-shadow: 0 0 8px 1px rgba(217, 100, 89, 0.3); }
+  100% { transform: translateX(0); box-shadow: 0 0 0 0 rgba(217, 100, 89, 0); }
+}
+
+/* 「待玩家投骰」pending 卡：呼吸态微光（提示可点，唯一允许循环之一） */
+.dice-pending {
+  animation: pendingBreath 2.2s ease-in-out infinite;
+}
+@keyframes pendingBreath {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(212, 162, 78, 0); }
+  50% { box-shadow: 0 0 12px 1px rgba(212, 162, 78, 0.28); }
+}
+
+/* SAN 大额降：面板血红闪边一次 */
+.panel-san-drop {
+  animation: sanDrop 0.7s ease-out both;
+}
+@keyframes sanDrop {
+  0% { box-shadow: inset 0 0 0 0 rgba(192, 94, 102, 0); }
+  30% { box-shadow: inset 0 0 22px 2px rgba(143, 47, 54, 0.55); }
+  100% { box-shadow: inset 0 0 0 0 rgba(192, 94, 102, 0); }
+}
+
+/* 恢复：琥珀微光一次 */
+.panel-restore {
+  animation: panelRestore 0.7s ease-out both;
+}
+@keyframes panelRestore {
+  0% { box-shadow: inset 0 0 0 0 rgba(212, 162, 78, 0); }
+  30% { box-shadow: inset 0 0 20px 2px rgba(212, 162, 78, 0.4); }
+  100% { box-shadow: inset 0 0 0 0 rgba(212, 162, 78, 0); }
+}
+
+/* 进度条平滑收缩（StatBar 用 transition-all；这里显式给足时长与缓动） */
+.stat-bar-fill {
+  transition: width 0.55s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.4s ease;
+}
+
+/* 场景切换转场：暗幕淡入淡出（翻页感，一次） */
+.scene-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: radial-gradient(ellipse at center, rgba(8, 9, 13, 0.72), rgba(4, 5, 8, 0.92));
+  animation: sceneVeil 0.6s ease-in-out both;
+  pointer-events: none;
+}
+@keyframes sceneVeil {
+  0% { opacity: 0; }
+  45% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* 路由切换整页淡入（150ms，克制） */
+.route-fade {
+  animation: routeFade 0.15s ease-out both;
+}
+@keyframes routeFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ===== 通用微交互 ===== */
+
+/* 按钮 hover 琥珀辉光（主按钮已有 filter 过渡，这里补 box-shadow 辉光 + 按下微沉） */
+.btn-primary { transition: filter 0.2s ease, box-shadow 0.25s ease, transform 0.12s ease; }
+.btn-primary:hover:not(:disabled) {
+  box-shadow: 0 0 14px rgba(212, 162, 78, 0.35);
+}
+.btn-primary:active:not(:disabled) { transform: translateY(1px); }
+.btn-secondary { transition: border-color 0.2s ease, color 0.2s ease, box-shadow 0.25s ease; }
+.btn-secondary:hover {
+  box-shadow: 0 0 10px rgba(212, 162, 78, 0.18);
+}
+
+/* 卡片 hover 微升 */
+.card { transition: transform 0.2s ease, box-shadow 0.25s ease; }
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.45),
+    inset 0 0 42px rgba(0, 0, 0, 0.22);
+}
+
+/* 输入框聚焦补一点辉光（.input 已含 border/box-shadow transition） */
+.input:focus {
+  box-shadow: 0 0 0 2px rgba(212, 162, 78, 0.12), 0 0 12px rgba(212, 162, 78, 0.14);
+}
+
+/* ===== 全局降级：尊重系统「减少动态效果」偏好 ===== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

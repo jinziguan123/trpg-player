@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useState, useRef, useEffect, type ReactNode } from 'react'
 import { RadarChart } from './RadarChart'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ConfirmDialog } from '../ui/confirm-dialog'
@@ -72,7 +72,7 @@ function StatBar({ label, current, max }: { label: string; current: number; max:
       </div>
       <div className="h-1.5 rounded-full" style={{ background: 'var(--color-bg-tertiary)' }}>
         <div
-          className="h-full rounded-full transition-all"
+          className="h-full rounded-full stat-bar-fill"
           style={{
             width: `${pct}%`,
             background: isLow ? 'var(--color-danger)' : 'var(--color-accent)',
@@ -93,11 +93,36 @@ function InfoRow({ label, value }: { label: string; value: string | number }) {
   )
 }
 
+/** 监听 SAN/HP 变化，返回一次性反馈 class：
+ *  SAN 大额降（≥5）→ 血红闪边；任意值回升 → 琥珀微光；轻微降/不变 → 无。
+ *  首帧（挂载）不触发，避免打开面板即闪。用角色 id 变更时重置基线，切人不误报。 */
+function useVitalFlash(charId: string, san?: number, hp?: number): string {
+  const [flash, setFlash] = useState('')
+  const prev = useRef<{ id: string; san?: number; hp?: number } | null>(null)
+  useEffect(() => {
+    const last = prev.current
+    prev.current = { id: charId, san, hp }
+    if (!last || last.id !== charId) return   // 首帧 / 切换角色：只记基线
+    const sanDrop = last.san != null && san != null ? last.san - san : 0
+    const hpDrop = last.hp != null && hp != null ? last.hp - hp : 0
+    const sanUp = last.san != null && san != null && san > last.san
+    const hpUp = last.hp != null && hp != null && hp > last.hp
+    if (sanDrop >= 5) setFlash('panel-san-drop')
+    else if (hpDrop >= 5) setFlash('panel-san-drop')
+    else if (sanUp || hpUp) setFlash('panel-restore')
+    else return
+    const t = setTimeout(() => setFlash(''), 750)
+    return () => clearTimeout(t)
+  }, [charId, san, hp])
+  return flash
+}
+
 function BasicInfoTab({ character }: { character: CharacterData }) {
   const sd = character.system_data || {}
   const hp = sd.hitPoints as { current: number; max: number } | undefined
   const san = sd.sanity as { current: number; max: number } | undefined
   const mp = sd.magicPoints as { current: number; max: number } | undefined
+  const vitalFlash = useVitalFlash(character.id, san?.current, hp?.current)
   const luck = (sd.luck as number) || 0
   const mov = (sd.move as number) || 0
   const occupation = (sd.occupation as string) || ''
@@ -148,9 +173,11 @@ function BasicInfoTab({ character }: { character: CharacterData }) {
         )}
       </div>
 
-      {hp && <StatBar label="HP" current={hp.current} max={hp.max} />}
-      {san && <StatBar label="SAN" current={san.current} max={san.max} />}
-      {mp && <StatBar label="MP" current={mp.current} max={mp.max} />}
+      <div className={`rounded ${vitalFlash}`} style={{ padding: '2px' }}>
+        {hp && <StatBar label="HP" current={hp.current} max={hp.max} />}
+        {san && <StatBar label="SAN" current={san.current} max={san.max} />}
+        {mp && <StatBar label="MP" current={mp.current} max={mp.max} />}
+      </div>
 
       <div className="rounded p-2 space-y-0.5" style={{ background: 'var(--color-bg-tertiary)' }}>
         <InfoRow label="幸运" value={luck} />
