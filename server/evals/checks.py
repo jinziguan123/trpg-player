@@ -21,17 +21,18 @@ class Finding:
         return {"check": self.check, "severity": self.severity, "detail": self.detail}
 
 
-# 与 chat_service 的指令集保持一致；新增指令时同步维护（方案二注册表落地后改为单一来源）。
-KNOWN_COMMANDS = {
-    "DICE_CHECK", "OPPOSED_CHECK", "SAN_CHECK", "HP_CHANGE", "NPC_ACT",
-    "SCENE_CHANGE", "RULE_LOOKUP", "SET_FLAG", "CLEAR_FLAG", "MOVE",
-    "GROUP", "SAY", "/SAY",
-}
-# 缺了这些参数指令必然执行失败
+# 指令集以工具注册表为单一来源（方案二落地）：注册表各条目的方括号形态 + 文本标注
+# （GROUP/SAY 非动作、未收编进注册表，此处补上）。
+from app.ai.tools import REGISTRY as _TOOL_REGISTRY
+
+KNOWN_COMMANDS = {spec.tag for spec in _TOOL_REGISTRY} | {"GROUP", "SAY", "/SAY"}
+# 缺了这些参数指令必然执行失败。不整体照搬注册表的 required：部分指令的文本形态
+# 允许裸值（如 [SET_FLAG hint_x]、[SCENE_CHANGE: 图书馆]），照搬会误报。
 REQUIRED_ARGS = {
     "DICE_CHECK": ("skill",),
     "NPC_ACT": ("npc_id",),
     "RULE_LOOKUP": ("query",),
+    "MODULE_LOOKUP": ("query",),
     "SAY": ("who",),
 }
 

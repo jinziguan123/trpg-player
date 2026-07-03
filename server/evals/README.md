@@ -19,6 +19,9 @@
 .venv/bin/python -m evals.run --smoke        # 免费：只验证 fixture 可重建
 .venv/bin/python -m evals.run --no-judge     # 便宜：生成 + 确定性检查
 .venv/bin/python -m evals.run --suite kp_core  # 完整：+ 裁判模型逐项打分
+.venv/bin/python -m evals.run --tool-loop    # 走 agent loop（工具调用）路径重放生成
+                                             # （需 Provider 支持工具；工具调用会序列化回
+                                             #   方括号指令形态参与打分，口径与旧路径一致）
 
 # 3. 对比两次运行
 .venv/bin/python -m evals.compare results/<旧>.json results/<新>.json

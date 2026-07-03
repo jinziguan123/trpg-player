@@ -10,8 +10,9 @@ from collections.abc import AsyncIterator
 from sqlalchemy.orm import Session
 
 from app.ai import story_summarizer, turn_planner, turn_validator
+from app.ai import tools as kp_tools
 from app.ai.agents import backstage_agent
-from app.ai.agents.kp_agent import KPAgent
+from app.ai.agents.kp_agent import _CHECK_TURN_TEMPERATURE, KPAgent
 from app.ai.agents.npc_agent import NPCAgent
 from app.ai.agents.team_agent import TeamAgent
 from app.ai.context import build_kp_context, build_npc_context, build_team_context
@@ -22,6 +23,7 @@ from app.ai.prompts.kp_system import (
     KP_MODULE_CONTINUATION_PROMPT,
     KP_RULE_CONTINUATION_PROMPT,
 )
+from app.ai.provider import ToolCall
 from app.models.character import Character
 from app.models.module import Module
 from app.models.session import GameSession
@@ -431,7 +433,23 @@ async def _stream_narration_filtered(
     npcs: list[dict] | None = None,
     group_label: str | None = None,
 ) -> AsyncIterator[str]:
+    """旧路径入口：KPAgent 流式生成 + 台词过滤（核心逻辑在 _filter_narration_stream）。"""
+    async for chunk in _filter_narration_stream(
+        kp.narrate(messages), result, npcs=npcs, group_label=group_label,
+    ):
+        yield chunk
+
+
+async def _filter_narration_stream(
+    token_stream: AsyncIterator[str], result: list,
+    npcs: list[dict] | None = None,
+    group_label: str | None = None,
+) -> AsyncIterator[str]:
     """流式输出 KP 旁白，并把 NPC 台词抽成对话气泡。
+
+    直接消费一个 token 流（与生成来源解耦）：旧路径喂 KPAgent.narrate 的输出，
+    agent loop 路径喂 stream_chat 的文本增量——两条路径共用同一套台词抽取/
+    指令剔除/流式分段逻辑。
 
     台词识别两条路：
     1. 显式 ``[SAY: who=<名字>]台词[/SAY]``（最可靠，用于消歧/无名角色/代词承接的说话人）。
@@ -608,7 +626,7 @@ async def _stream_narration_filtered(
             return _mk("npc_dialogue", text, actor_name=speaker)
         return None
 
-    async for token in kp.narrate(messages):
+    async for token in token_stream:
         full_response += token
 
         for ch in token:
@@ -1524,6 +1542,8 @@ async def _run_generation(
     blind_message = _team_blind_message(blind_results)
 
     if len(scene_groups) >= 2:
+        # 分头行动 v1 仍走旧正则路径（与 use_tool_calls 开关无关）：多分组编排与
+        # loop 的 group 标签/指令归并交互留待下一步，先保证主路径可开关灰度。
         await _run_split_generation(
             db, session_id, game_session, module, player_char, events,
             teammates, kp, llm, rules_enabled, matcher_npcs, scene_groups,
@@ -1545,30 +1565,61 @@ async def _run_generation(
         messages.append(blind_message)
 
     result = ["", "", [], [], []]
-    # 取消（硬取消 task）或流式中途报错（如供应商抖动断流）时，已生成的叙事都要落库，
-    # 否则客户端在收到 done 后 resync 会拉到空历史，造成「生成到一半聊天全部消失」。
-    try:
-        async for chunk in _stream_narration_filtered(
-            kp, messages, result, npcs=matcher_npcs,
+    if _tool_loop_active(llm):
+        # 新路径：agent loop（标准工具调用）。指令在 loop 内经执行器完成（含文本指令兜底），
+        # 不再走 _process_commands；validator 终检/落库/记忆钩子与旧路径共用（见下方）。
+        messages.append(kp_tools.tool_mode_message())
+        exclude = set()
+        if not rules_enabled:
+            exclude.add("rule_lookup")   # 未挂规则书：不提供该工具（镜像旧路径不广告）
+        if not module_rag_enabled:
+            exclude.add("module_lookup")  # 原文索引未就绪：同上
+        execute = _build_kp_tool_executor(
+            db, session_id, game_session, module, player_char, teammates, llm,
+        )
+        try:
+            async for chunk in _run_kp_agent_loop(
+                llm, messages, result, execute,
+                tools=kp_tools.openai_tool_schemas(exclude=exclude),
+                npcs=matcher_npcs, plan=plan,
+            ):
+                room_hub.broadcast(session_id, chunk)
+        except BaseException:
+            _persist_narration(db, session_id, result)
+            raise
+        await _validate_and_patch_narration(llm, plan, result)
+        _persist_narration(db, session_id, result)
+        # 世界记忆钩子 c：本轮 NPC 台词记入其互动史（对全队说话）
+        _record_npc_say_memory(
+            db, session_id, game_session, module, result[2],
+            [player_char.name] + [t.name for t in (teammates or [])],
+        )
+    else:
+        # 旧路径：单次流式生成 + 正则指令后处理（降级开关，行为不变）。
+        # 取消（硬取消 task）或流式中途报错（如供应商抖动断流）时，已生成的叙事都要落库，
+        # 否则客户端在收到 done 后 resync 会拉到空历史，造成「生成到一半聊天全部消失」。
+        try:
+            async for chunk in _stream_narration_filtered(
+                kp, messages, result, npcs=matcher_npcs,
+            ):
+                room_hub.broadcast(session_id, chunk)
+        except BaseException:
+            # CancelledError(继承 BaseException) 与普通异常都先把已生成片段落库再上抛
+            _persist_narration(db, session_id, result)
+            raise
+        await _validate_and_patch_narration(llm, plan, result)
+        _persist_narration(db, session_id, result)
+        # 世界记忆钩子 c：本轮 NPC 台词记入其互动史（对全队说话）
+        _record_npc_say_memory(
+            db, session_id, game_session, module, result[2],
+            [player_char.name] + [t.name for t in (teammates or [])],
+        )
+
+        async for chunk in _process_commands(
+            db, session_id, result[1], module, player_char, game_session, llm,
+            teammates=teammates,
         ):
             room_hub.broadcast(session_id, chunk)
-    except BaseException:
-        # CancelledError(继承 BaseException) 与普通异常都先把已生成片段落库再上抛
-        _persist_narration(db, session_id, result)
-        raise
-    await _validate_and_patch_narration(llm, plan, result)
-    _persist_narration(db, session_id, result)
-    # 世界记忆钩子 c：本轮 NPC 台词记入其互动史（对全队说话）
-    _record_npc_say_memory(
-        db, session_id, game_session, module, result[2],
-        [player_char.name] + [t.name for t in (teammates or [])],
-    )
-
-    async for chunk in _process_commands(
-        db, session_id, result[1], module, player_char, game_session, llm,
-        teammates=teammates,
-    ):
-        room_hub.broadcast(session_id, chunk)
 
     room_hub.broadcast(session_id, _make_chunk("done"))
     await _maybe_roll_story_summary(db, session_id, llm)
@@ -2176,6 +2227,745 @@ def _update_character_stat(db: Session, char: Character, path: str, value) -> No
     db.refresh(char)
 
 
+# ── 指令执行器（旧正则路径与 agent loop 共用的单一实现）─────────────────────
+# 每个函数执行一条指令并返回「待广播的 chunks（事件已落库）」+ 路径各自需要的信息。
+# 旧路径（_process_commands）按正则匹配后调用；loop 路径（_build_kp_tool_executor）
+# 按工具调用分发——执行逻辑只此一份，不复制。
+
+
+async def _exec_san_check(
+    db: Session, session_id: str, game_session: GameSession, kv: dict,
+    player_char: Character, teammates: list[Character] | None,
+) -> tuple[list[str], list[str]]:
+    """执行一条理智检定：目睹者各自结算（同一角色对同一恐怖源只检定一次）。
+
+    返回 (chunks, 回灌 KP 的结果描述列表)。
+    """
+    from app.rules.coc.checks import san_check
+
+    chunks: list[str] = []
+    descs: list[str] = []
+    success_loss = (kv.get("success_loss") or "0").strip()
+    failure_loss = (kv.get("failure_loss") or "1d6").strip()
+    source = (kv.get("source") or "").strip()
+    targets = _resolve_san_targets(kv.get("chars"), player_char, teammates)
+
+    # 同一角色对同一恐怖源只检定一次：用 world_state.san_checked 记 "source|char_id"。
+    ws = dict(game_session.world_state or {})
+    san_checked = set(ws.get("san_checked") or [])
+    san_dirty = False
+
+    for tchar in targets:
+        key = f"{source}|{tchar.id}" if source else None
+        if key and key in san_checked:
+            continue  # 该角色已对此恐怖源检定过，不重复
+
+        char_data = {
+            "base_attributes": tchar.base_attributes,
+            "skills": tchar.skills,
+            "system_data": tchar.system_data,
+        }
+        result = san_check(char_data, success_loss, failure_loss)
+        check = result["check"]
+        _update_character_stat(db, tchar, "sanity.current", result["new_san"])
+
+        outcome_text = "成功" if check.outcome in (
+            "critical_success", "hard_success", "success") else "失败"
+        dice_content = (
+            f"{tchar.name}｜理智检定：{check.description}\n"
+            f"SAN 损失：{result['san_loss']}（{result['old_san']} → {result['new_san']}）"
+        )
+        if result["went_insane"]:
+            dice_content += "\n短暂疯狂！（一次性损失 SAN ≥ 当前 SAN/5）"
+
+        dice_meta = {
+            "skill": "SAN",
+            "actor": tchar.name,
+            "skill_value": result["old_san"],
+            "roll": check.roll,
+            "target": check.target,
+            "outcome": outcome_text,
+            "san_loss": result["san_loss"],
+            "new_san": result["new_san"],
+            "went_insane": result["went_insane"],
+        }
+        ev = session_service.add_event(
+            db, session_id, "dice", dice_content,
+            actor_name="系统", metadata=dice_meta,
+        )
+        chunks.append(_make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id))
+        descs.append(
+            f"{tchar.name} 理智检定（{outcome_text}）：损失 {result['san_loss']} SAN"
+            f"（{result['old_san']}→{result['new_san']}）"
+        )
+        if key:
+            san_checked.add(key)
+            san_dirty = True
+
+    if san_dirty:
+        ws["san_checked"] = sorted(san_checked)
+        game_session.world_state = ws
+        db.add(game_session)
+        db.commit()
+    return chunks, descs
+
+
+async def _exec_hp_change(
+    db: Session, session_id: str, player_char: Character,
+    target_str: str, delta_str: str, reason: str,
+) -> list[str]:
+    """执行一条 HP 变化结算（当前仅支持 target=player）。返回 chunks。"""
+    if target_str.strip() != "player":
+        return []
+    try:
+        delta = int(str(delta_str).strip())
+    except ValueError:
+        return []
+    reason = (reason or "").strip()
+    hp_data = player_char.system_data.get("hitPoints", {})
+    old_hp = hp_data.get("current", 0)
+    max_hp = hp_data.get("max", old_hp)
+    new_hp = max(0, min(max_hp, old_hp + delta))
+
+    _update_character_stat(db, player_char, "hitPoints.current", new_hp)
+
+    if delta < 0:
+        hp_content = f"{player_char.name} 受到 {abs(delta)} 点伤害（HP {old_hp} → {new_hp}）"
+        if reason:
+            hp_content += f"——{reason}"
+        if abs(delta) >= max_hp // 2:
+            hp_content += "\n重伤！"
+        if new_hp <= 0:
+            hp_content += "\n濒死！"
+    else:
+        hp_content = f"{player_char.name} 恢复 {delta} 点生命（HP {old_hp} → {new_hp}）"
+        if reason:
+            hp_content += f"——{reason}"
+
+    ev = session_service.add_event(
+        db, session_id, "system", hp_content,
+        actor_name="系统", metadata={"hp_change": delta, "old_hp": old_hp, "new_hp": new_hp},
+    )
+    return [_make_chunk("system", hp_content, event_id=ev.id)]
+
+
+async def _exec_dice_check(
+    db: Session, session_id: str, game_session: GameSession, module: Module,
+    kv: dict, player_char: Character, teammates: list[Character] | None,
+) -> tuple[list[str], list[str], bool]:
+    """执行一条技能检定。返回 (chunks, 回灌 KP 的结果描述, 是否挂成「待玩家投骰」)。
+
+    真人控制、非暗投 → 不自动掷，挂 pending 并广播检定提示（pending=True，本轮就此收束）；
+    NPC 暗骰 / AI 队友 / 暗投 → 系统自动掷，结果回灌。
+    """
+    chunks: list[str] = []
+    descs: list[str] = []
+    skill_name = (kv.get("skill") or "").strip()
+    if not skill_name:
+        return chunks, descs, False
+    difficulty = (kv.get("difficulty") or "normal").strip() or "normal"
+    char_ref = (kv.get("char") or "").strip()
+    blind = (kv.get("visibility") or "open").strip().lower() == "blind"
+    # 心理学等技能一律强制暗投：即使 KP 写了 visibility=open 或没写，也不挂「待玩家投骰」、
+    # 不广播达成等级——结果只回灌 KP，玩家永远看不到成败。
+    if any(s in skill_name for s in ALWAYS_BLIND_SKILLS):
+        blind = True
+    source = (kv.get("source") or "").strip()
+
+    char_data, disp_name, is_npc, char_id = _resolve_check_actor(
+        char_ref, skill_name, player_char, teammates, module,
+    )
+
+    # req 1/2：真人控制、且非暗投的检定 → 不自动掷，挂成「待玩家投骰」并给出提示；
+    # NPC 暗骰 / AI 队友 / 暗投 仍由系统自动掷（无人点投骰，避免卡住）。
+    if (
+        not is_npc and not blind
+        and session_service.is_human_controlled(db, session_id, char_id)
+    ):
+        check_id = uuid.uuid4().hex
+        pending = {
+            "id": check_id, "skill": skill_name, "difficulty": difficulty,
+            "char_ref": char_ref, "char_id": char_id, "actor_name": disp_name,
+            "source": source,
+        }
+        session_service.add_pending_check(db, session_id, pending)
+        prompt_text = _check_prompt_text(disp_name, skill_name, difficulty)
+        meta = {"check_request": True, **pending}
+        ev = session_service.add_event(
+            db, session_id, "system", prompt_text, actor_name="系统", metadata=meta,
+        )
+        chunks.append(_make_chunk(
+            "check_request", prompt_text, metadata=meta,
+            event_id=ev.id, actor_id=char_id,
+        ))
+        return chunks, descs, True  # 等玩家 /roll，本轮不掷、不续写
+
+    engine = get_engine(module.rule_system)
+    result = engine.resolve_check(char_data, skill_name, difficulty)
+    tier_cn = TIER_LABEL.get(result.tier, result.tier)
+
+    if blind:
+        # 暗投（玩家/队友）/暗骰（NPC）：聊天只显示"做了一次隐藏检定"，成败仅回灌 KP。
+        kind_word = "暗骰" if is_npc else "暗投"
+        dice_content = f"{disp_name} 进行了一次{kind_word}·{skill_name}（结果仅 KP 可见）"
+        dice_meta = {"skill": skill_name, "actor": disp_name, "blind": True}
+        descs.append(
+            f"【{kind_word}·{disp_name}·{skill_name}（{difficulty}），结果仅你（KP）可见，"
+            f"绝不可直接把成败告诉玩家】：达成 {tier_cn}；{result.description}"
+        )
+    else:
+        dice_content = (
+            f"{disp_name}｜{skill_name} 检定（{difficulty}）：{tier_cn}（{result.description}）"
+        )
+        dice_meta = {
+            "skill": skill_name,
+            "skill_value": result.skill_value,
+            "roll": result.roll,
+            "target": result.target,
+            "outcome": result.outcome,
+            "tier": result.tier,
+            "actor": disp_name,
+        }
+        descs.append(
+            f"{disp_name} {skill_name}（{difficulty}），达成 {tier_cn}"
+            + (f"（针对：{source}）" if source else "")
+            + f"：{result.description}"
+        )
+
+    ev = session_service.add_event(
+        db, session_id, "dice", dice_content,
+        actor_name="系统", metadata=dice_meta,
+    )
+    chunks.append(_make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id))
+
+    # 世界记忆钩子 d：暗投（玩家/队友对 NPC 的心理学等）若能经 source= 确定性归属到
+    # 唯一 NPC，记录其「被看穿/未被看穿」；NPC 自己的暗骰或归属不成立则跳过。
+    if blind and not is_npc:
+        target = _match_single_npc(module, source)
+        if target:
+            seen_through = result.outcome in (
+                "critical_success", "hard_success", "success",
+            )
+            verdict = "看穿" if seen_through else "试探，但未被看穿"
+            _apply_world_memory(
+                db, game_session,
+                lambda ws: world_memory.record_npc_interaction(
+                    ws, target[0], ev.sequence_num,
+                    f"被 {disp_name} 用{skill_name}{verdict}",
+                ),
+            )
+    return chunks, descs, False
+
+
+async def _exec_scene_change(
+    db: Session, session_id: str, game_session: GameSession, module: Module,
+    ref: str, player_char: Character, teammates: list[Character] | None,
+) -> tuple[list[str], str | None]:
+    """执行一次场景切换。返回 (chunks, 解析成功且发生切换的 scene_id 或 None)。"""
+    sid = _resolve_scene_ref(module, ref)
+    # 只接受能对应到真实场景的 id/名字；解析不到就不动，
+    # 避免写入脏值后地图回退到「第一个场景」造成「玩家换图了地图却没切」。
+    old = session_service.get_char_location(game_session, player_char.id)
+    if sid and sid != old:
+        # 主角明确移动到新场景：更新其位置（→ current_scene_id、已访问、地图跟随）；
+        # 同处一地的队友一同前往，分头在别处的队友留在原地。
+        session_service.set_char_location(db, session_id, player_char.id, sid)
+        for t in (teammates or []):
+            if session_service.get_char_location(game_session, t.id) == old:
+                session_service.set_char_location(db, session_id, t.id, sid)
+        db.refresh(game_session)
+        return [_make_chunk("system", f"场景切换至：{_scene_name(module, sid)}")], sid
+    if not sid:
+        logger.warning("SCENE_CHANGE 无法解析场景引用：%r（保持当前场景）", ref)
+    return [], None
+
+
+def _exec_flag(
+    db: Session, session_id: str, game_session: GameSession, flag: str, value: bool,
+) -> list[str]:
+    """置/清剧情标志，并刷新内存里的 world_state 使后续处理立即可见。返回 chunks。"""
+    session_service.set_flag(db, session_id, flag, value)
+    db.refresh(game_session)
+    label = "剧情推进" if value else "剧情状态解除"
+    return [_make_chunk("system", f"{label}：{flag}")]
+
+
+async def _exec_handout(
+    db: Session, session_id: str, game_session: GameSession, module: Module,
+    hid: str, player_char: Character, teammates: list[Character] | None,
+) -> tuple[list[str], str]:
+    """发放一份手书（幂等：同 id 只发一次；未知 id 静默跳过）。返回 (chunks, 结果说明)。"""
+    handout = next(
+        (
+            h for h in (getattr(module, "handouts", None) or [])
+            if isinstance(h, dict) and str(h.get("id") or "").strip() == hid
+        ),
+        None,
+    )
+    if handout is None:
+        logger.warning("HANDOUT 指令引用了未知手书 id（跳过）：%r", hid)
+        return [], f"未知手书 id：{hid}（只发可发放清单里列出的 id）。"
+    db.refresh(game_session)
+    if world_memory.handout_issued(game_session.world_state or {}, hid):
+        return [], f"手书 {hid} 已发放过（每份只发一次），不再重复。"
+    title = str(handout.get("title") or "").strip()
+    meta = {
+        "kind": "handout",
+        "handout_id": hid,
+        "title": title,
+        "handout_kind": str(handout.get("kind") or "").strip(),
+    }
+    ev = session_service.add_event(
+        db, session_id, "system", str(handout.get("content") or ""),
+        actor_name="系统", metadata=meta,
+    )
+    chunks = [_make_chunk("system", ev.content, metadata=meta, event_id=ev.id)]
+    # 世界记忆：记入 handouts_issued（幂等真源）+ 线索台账（status=known，kind=handout），
+    # 已发放的手书经台账自然进入后续 KP 上下文、并从「可发放清单」里消失。
+    present = [player_char.id] + [t.id for t in (teammates or [])]
+    _apply_world_memory(
+        db, game_session,
+        lambda ws, _hid=hid, _title=title, _seq=ev.sequence_num: (
+            world_memory.record_handout_issue(ws, _hid, _title, present, _seq)
+        ),
+    )
+    return chunks, f"手书 {hid} 已发放（正文已由系统以卡片呈现给玩家，续写时不要复述正文）。"
+
+
+def _exec_move(db: Session, game_session: GameSession, actor: str, target: str) -> None:
+    """执行一次场景内走位（解析成坐标并落库）；失败只记日志，不阻塞。"""
+    if actor and target:
+        try:
+            map_service.apply_move(db, game_session, actor, target)
+        except Exception:
+            logger.exception("走位更新失败: actor=%s to=%s", actor, target)
+
+
+async def _exec_npc_act(
+    db: Session, session_id: str, game_session: GameSession, module: Module,
+    llm, player_char: Character, npc_id: str, trigger: str,
+) -> tuple[list[str], str]:
+    """触发 NPC 人格代理行动/开口，台词落库并广播。返回 (chunks, NPC 台词)。"""
+    events = session_service.get_session_events(db, session_id)
+    npc_messages = build_npc_context(
+        npc_id, game_session, module, events, trigger_context=trigger,
+    )
+
+    npc_def = None
+    for n in (module.npcs or []):
+        if n.get("id") == npc_id:
+            npc_def = n
+            break
+    npc_name = npc_def["name"] if npc_def else npc_id
+
+    npc_agent = NPCAgent(llm, npc_id)
+    npc_response = await npc_agent.respond(npc_messages)
+
+    ev = session_service.add_event(
+        db, session_id, "dialogue", npc_response,
+        actor_id=npc_id, actor_name=npc_name,
+        visibility=[npc_id, player_char.id],
+    )
+    chunks = [_make_chunk(
+        "dialogue", npc_response, actor_name=npc_name,
+        event_id=ev.id, actor_id=npc_id,
+    )]
+    # 世界记忆钩子 b：NPC 被触发行动后记入其互动史（trigger 原文截断，不调 LLM）
+    _apply_world_memory(
+        db, game_session,
+        lambda ws: world_memory.record_npc_interaction(
+            ws, npc_id, ev.sequence_num, f"受场景触发而行动/开口：{trigger}",
+        ),
+    )
+    return chunks, npc_response
+
+
+def _rule_lookup_passages(db: Session, query: str, rule_system: str) -> str:
+    """检索规则书原文并拼成回灌片段；检索不到给降级文案（fail-open）。"""
+    hits = rulebook_service.retrieve(db, query, rule_system, k=3)
+    if hits:
+        return "\n\n".join(f"[第 {h['page']} 页] {h['text']}" for h in hits)
+    return "（未在规则书中找到直接匹配的内容，请依据《裁定手册》与你的经验处理。）"
+
+
+def _module_lookup_passages(
+    db: Session, module: Module, game_session: GameSession, query: str,
+) -> str:
+    """检索模组原文并拼成回灌片段；检索不到/失败给降级文案（fail-open）。"""
+    try:
+        hits = module_rag_service.retrieve(
+            db, module.id, query, k=3, scene_id=game_session.current_scene_id,
+        )
+    except Exception:  # noqa: BLE001 — 检索失败降级为无命中
+        logger.exception("模组原文检索失败（已降级）：module=%s", module.id)
+        hits = []
+    if hits:
+        return "\n\n".join(
+            f"[片段 {i}] {h['text']}" for i, h in enumerate(hits, start=1)
+        )
+    return "（未在模组原文中找到直接匹配的内容，请依据结构化模组资料与你的经验续写。）"
+
+
+# ── KP agent loop（tool use 新路径，use_tool_calls 开关控制）──────────────────
+
+# 单轮 loop 的步数上限：超限注入「请直接收束」再生成一次收尾，防无限工具链。
+MAX_TOOL_LOOP_STEPS = 6
+
+
+def _tool_loop_active(llm) -> bool:
+    """KP 生成是否走 agent loop（工具调用）新路径：配置开关 && Provider 支持工具。
+
+    开关默认关闭（use_tool_calls=false），任何读取异常一律回退旧路径（fail-open）。
+    """
+    try:
+        from app.api.ai_settings import load_active_profile
+        profile = load_active_profile()
+    except Exception:
+        return False
+    if not profile or not getattr(profile, "use_tool_calls", False):
+        return False
+    try:
+        return bool(llm.supports_tools())
+    except Exception:
+        return False
+
+
+def _merge_step_result(result: list, step: list) -> None:
+    """把一步生成的产物合并进整轮聚合 result（对话/分组偏移按已累计旁白长度平移）。"""
+    base = len(result[0])
+    result[0] += step[0]
+    result[1] += step[1]
+    if len(result) > 2 and len(step) > 2:
+        result[2].extend(step[2])
+    if len(result) > 3 and len(step) > 3:
+        result[3].extend((off + base, spk, txt) for off, spk, txt in step[3])
+    if len(result) > 4 and len(step) > 4:
+        result[4].extend((off + base, label) for off, label in step[4])
+
+
+# 裸值容错的单参数指令（[SET_FLAG hint_x] 这类漏写键名的旧习惯）→ 对应参数键
+_SOLO_ARG_KEY = {
+    "set_flag": "flag", "clear_flag": "flag", "handout": "id",
+    "scene_change": "scene_id", "rule_lookup": "query", "module_lookup": "query",
+}
+
+_TEXT_TAG_RE = re.compile(r"\[([A-Z_]{3,})(?:[:：\s]([^\]]*))?\]")
+
+
+def _tool_call_from_text(step_text: str) -> ToolCall | None:
+    """loop 兜底：模型没走工具、而是把指令写成了文本（手写 prompt 的旧习惯）——
+    把第一条终止型指令解析成等价的合成 ToolCall，交给同一执行器处理。
+
+    只认注册表里的终止型指令（MOVE 另行内联执行；GROUP/SAY 是文本标注不算动作）。
+    参数解析与旧正则同款宽容：键值对优先，单参数指令允许裸值。
+    """
+    text = (step_text or "").replace("【", "[").replace("】", "]")
+    for m in _TEXT_TAG_RE.finditer(text):
+        tag, inner = m.group(1), (m.group(2) or "").strip()
+        name = kp_tools.TAG_TO_TOOL.get(tag)
+        if name is None or name == "move":
+            continue
+        kv = _parse_tag_kv(inner)
+        if not kv and inner:
+            solo = _SOLO_ARG_KEY.get(name)
+            if solo:
+                kv = {solo: inner}
+        return ToolCall(id=f"text_{uuid.uuid4().hex[:8]}", name=name, arguments=kv)
+    return None
+
+
+def _plan_check_call(plan: turn_planner.TurnPlan) -> ToolCall:
+    """裁定轮兜底：按计划的 check 字段拼出确定性补掷的 dice_check 调用
+    （与 turn_planner._check_directive 同一语义，等价 KPAgent 的补指令兜底）。"""
+    check = plan.check
+    args: dict = {"skill": check.skill or "侦查"}
+    if check.difficulty:
+        args["difficulty"] = check.difficulty
+    if check.visibility and check.visibility != "open":
+        args["visibility"] = check.visibility
+    return ToolCall(id=f"fallback_{uuid.uuid4().hex[:8]}", name="dice_check", arguments=args)
+
+
+def _build_kp_tool_executor(
+    db: Session, session_id: str, game_session: GameSession, module: Module,
+    player_char: Character, teammates: list[Character] | None, llm,
+):
+    """构建 loop 路径的工具执行器：把注册表工具名分发到上面的共用执行函数（不复制逻辑）。
+
+    闭包内维护每轮查阅配额（rule_lookup 与 module_lookup 合计 MAX_RULE_LOOKUPS 次，
+    超限返回拒绝文本——与旧路径 lookup_depth 语义一致）。未知工具名回「无此工具」结果、
+    任何执行异常 fail-open 返回错误说明，绝不断流。
+    """
+    lookup_used = 0
+
+    async def execute(call: ToolCall) -> kp_tools.ToolOutcome:
+        nonlocal lookup_used
+        name = call.name
+        kv = {k: str(v).strip() for k, v in (call.arguments or {}).items() if v is not None}
+        spec = kp_tools.TOOLS_BY_NAME.get(name)
+        if spec is None:
+            return kp_tools.ToolOutcome(
+                f"无此工具：{name}。只可调用系统提供的工具；若无需工具，直接继续叙述。"
+            )
+        try:
+            if name == "dice_check":
+                if not kv.get("skill"):
+                    return kp_tools.ToolOutcome(
+                        "参数缺失：skill 为必填。请带上技能名重试，或直接继续叙述。"
+                    )
+                chunks, descs, pending = await _exec_dice_check(
+                    db, session_id, game_session, module, kv, player_char, teammates,
+                )
+                if pending:
+                    return kp_tools.ToolOutcome(
+                        "已向该玩家发出检定请求，等待其亲自掷骰。本轮叙述就此收束，绝不预测结果。",
+                        chunks=chunks, suspend=True,
+                    )
+                return kp_tools.ToolOutcome(
+                    KP_DICE_CONTINUATION_PROMPT.format(dice_results="\n".join(descs)),
+                    chunks=chunks,
+                )
+            if name == "opposed_check":
+                descs: list[str] = []
+                chunks = [
+                    c async for c in _resolve_opposed(
+                        db, session_id, kv, get_engine(module.rule_system),
+                        module, player_char, teammates, descs,
+                    )
+                ]
+                if not descs:
+                    return kp_tools.ToolOutcome(
+                        "参数缺失：skill（或 a_skill/b_skill）为必填。", chunks=chunks,
+                    )
+                return kp_tools.ToolOutcome(
+                    KP_DICE_CONTINUATION_PROMPT.format(dice_results="\n".join(descs)),
+                    chunks=chunks,
+                )
+            if name == "san_check":
+                chunks, descs = await _exec_san_check(
+                    db, session_id, game_session, kv, player_char, teammates,
+                )
+                if not descs:
+                    return kp_tools.ToolOutcome(
+                        "本次理智检定无需结算（目睹者均已对该恐怖源检定过）。", chunks=chunks,
+                    )
+                return kp_tools.ToolOutcome(
+                    KP_DICE_CONTINUATION_PROMPT.format(dice_results="\n".join(descs)),
+                    chunks=chunks,
+                )
+            if name in ("rule_lookup", "module_lookup"):
+                if lookup_used >= MAX_RULE_LOOKUPS:
+                    return kp_tools.ToolOutcome(
+                        f"本轮查阅配额已用完（规则书与模组原文合计最多 {MAX_RULE_LOOKUPS} 次），"
+                        "请依据既有资料直接续写，不要再查阅。"
+                    )
+                query = kv.get("query", "").strip()
+                if not query:
+                    return kp_tools.ToolOutcome("参数缺失：query 为必填。")
+                lookup_used += 1
+                if name == "rule_lookup":
+                    passages = _rule_lookup_passages(db, query, module.rule_system)
+                    return kp_tools.ToolOutcome(
+                        KP_RULE_CONTINUATION_PROMPT.format(query=query, passages=passages),
+                        chunks=[_make_chunk("system", "守秘人翻阅规则书……")],
+                    )
+                passages = _module_lookup_passages(db, module, game_session, query)
+                return kp_tools.ToolOutcome(
+                    KP_MODULE_CONTINUATION_PROMPT.format(query=query, passages=passages),
+                    chunks=[_make_chunk("system", "守秘人翻阅模组手稿……")],
+                )
+            if name == "npc_act":
+                npc_id = kv.get("npc_id", "").strip()
+                trigger = kv.get("trigger", "").strip()
+                if not npc_id or not trigger:
+                    return kp_tools.ToolOutcome("参数缺失：npc_id 与 trigger 均为必填。")
+                chunks, response = await _exec_npc_act(
+                    db, session_id, game_session, module, llm, player_char, npc_id, trigger,
+                )
+                return kp_tools.ToolOutcome(
+                    f"该 NPC 已行动/开口（台词已直接展示给玩家，续写时不要复述）：{response}",
+                    chunks=chunks,
+                )
+            if name == "scene_change":
+                chunks, sid = await _exec_scene_change(
+                    db, session_id, game_session, module,
+                    kv.get("scene_id", "").strip(), player_char, teammates,
+                )
+                if sid:
+                    return kp_tools.ToolOutcome(
+                        f"ok：场景已切换至 {_scene_name(module, sid)}", chunks=chunks,
+                    )
+                return kp_tools.ToolOutcome("场景引用无法解析或未变化（保持当前场景）。", chunks=chunks)
+            if name in ("set_flag", "clear_flag"):
+                flag = kv.get("flag", "").strip()
+                if not flag:
+                    return kp_tools.ToolOutcome("参数缺失：flag 为必填。")
+                chunks = _exec_flag(db, session_id, game_session, flag, name == "set_flag")
+                return kp_tools.ToolOutcome("ok", chunks=chunks)
+            if name == "hp_change":
+                chunks = await _exec_hp_change(
+                    db, session_id, player_char,
+                    kv.get("target", ""), kv.get("delta", ""), kv.get("reason", ""),
+                )
+                if chunks:
+                    return kp_tools.ToolOutcome("ok", chunks=chunks)
+                return kp_tools.ToolOutcome("未结算（target 当前仅支持 player，且 delta 须为整数）。")
+            if name == "move":
+                _exec_move(
+                    db, game_session,
+                    (kv.get("actor") or kv.get("char") or "").strip(),
+                    (kv.get("to") or kv.get("target") or "").strip(),
+                )
+                return kp_tools.ToolOutcome("ok")
+            if name == "handout":
+                hid = kv.get("id", "").strip()
+                if not hid:
+                    return kp_tools.ToolOutcome("参数缺失：id 为必填。")
+                chunks, note = await _exec_handout(
+                    db, session_id, game_session, module, hid, player_char, teammates,
+                )
+                return kp_tools.ToolOutcome(note, chunks=chunks)
+        except Exception:
+            logger.exception("工具执行失败: %s session=%s", name, session_id)
+            return kp_tools.ToolOutcome(
+                f"工具 {name} 执行出错，请不要重试该工具，直接继续叙述。"
+            )
+        return kp_tools.ToolOutcome(
+            f"工具 {name} 暂无 loop 行为（内部错误），请直接继续叙述。"
+        )
+
+    return execute
+
+
+async def _run_kp_agent_loop(
+    llm, messages: list[dict], result: list, execute_tool, *,
+    tools: list[dict] | None = None,
+    npcs: list[dict] | None = None,
+    group_label: str | None = None,
+    plan: turn_planner.TurnPlan | None = None,
+    max_steps: int = MAX_TOOL_LOOP_STEPS,
+) -> AsyncIterator[str]:
+    """KP agent loop：与 _stream_narration_filtered 并列的新路径（use_tool_calls 开启时用）。
+
+    stream_chat 流式生成：文本增量过同一套台词过滤后实时广播；tool_call 到达 →
+    执行器执行 → 结果作为 role="tool" 消息回注 → 继续循环。DICE_CHECK/RULE_LOOKUP/
+    MODULE_LOOKUP 由此天然取代旧路径的「续写 prompt」模式。
+
+    - 步数上限 max_steps（默认 6）：超限注入「请直接收束本轮叙述」再无工具生成一次收尾；
+    - 裁定轮（plan.requires_check）：采样降温 _CHECK_TURN_TEMPERATURE，且若模型始终没
+      发起 dice_check/opposed_check，则按计划确定性补掷（等价 KPAgent 的补指令兜底）；
+    - 模型把指令写成文本时（手写 prompt 旧习惯）：解析成合成 ToolCall 走同一执行器，
+      [MOVE] 内联标记照旧生效，[SAY]/[GROUP] 由文本过滤器照常处理；
+    - 执行器返回 suspend（如已挂「待玩家投骰」）：本轮生成就此收束。
+    产物写入 result（与旧路径同构）；validator 终检、落库、世界记忆钩子、幕后推演等
+    收尾由调用方与旧路径共用——loop 只替换「生成 + 指令执行」段。
+    """
+    tools = tools if tools is not None else kp_tools.openai_tool_schemas()
+    requires_check = bool(plan is not None and plan.requires_check)
+    temperature = _CHECK_TURN_TEMPERATURE if requires_check else 0.85
+    messages = list(messages)  # loop 会往里回注消息，不污染调用方的列表
+    did_check = False
+    natural_end = False
+
+    for _step in range(max_steps):
+        step = ["", "", [], [], []]
+        tool_calls: list[ToolCall] = []
+
+        async def _text_deltas(calls=tool_calls):
+            async for delta in llm.stream_chat(messages, tools=tools, temperature=temperature):
+                if delta.kind == "text" and delta.text:
+                    yield delta.text
+                elif delta.kind == "tool_call" and delta.tool_call is not None:
+                    calls.append(delta.tool_call)
+
+        try:
+            async for chunk in _filter_narration_stream(
+                _text_deltas(), step, npcs=npcs, group_label=group_label,
+            ):
+                yield chunk
+        except BaseException:
+            _merge_step_result(result, step)  # 断流也保住已生成片段（调用方负责落库）
+            raise
+        _merge_step_result(result, step)
+
+        step_text = (step[1] or "").replace("【", "[").replace("】", "]")
+        # [MOVE] 内联标记：文本形式照旧生效（过滤器只内联剔除、不终止流）
+        for match in MOVE_RE.finditer(step_text):
+            outcome = await execute_tool(ToolCall(
+                id=f"move_{uuid.uuid4().hex[:8]}", name="move",
+                arguments=_parse_tag_kv(match.group(1)),
+            ))
+            for chunk in outcome.chunks:
+                yield chunk
+
+        if not tool_calls:
+            synthetic = _tool_call_from_text(step_text)
+            if synthetic is not None:
+                tool_calls = [synthetic]
+        if not tool_calls and requires_check and not did_check:
+            # 裁定轮兜底：既没调工具也没写指令 → 确定性补掷计划指定的检定
+            tool_calls = [_plan_check_call(plan)]
+        if not tool_calls:
+            natural_end = True
+            break
+
+        messages.append({
+            "role": "assistant",
+            "content": step[1] or "",
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments or {}, ensure_ascii=False),
+                    },
+                }
+                for tc in tool_calls
+            ],
+        })
+        suspended = False
+        for tc in tool_calls:
+            if tc.name in ("dice_check", "opposed_check"):
+                did_check = True
+            outcome = await execute_tool(tc)
+            for chunk in outcome.chunks:
+                yield chunk
+            messages.append({
+                "role": "tool", "tool_call_id": tc.id, "content": outcome.result_text,
+            })
+            if outcome.suspend:
+                suspended = True
+        if suspended:
+            return
+
+    if not natural_end:
+        # 步数超限：注入收束指令，最后一次不带工具生成收尾
+        messages.append({
+            "role": "system",
+            "content": (
+                "（工具调用步数已达上限）请不要再调用任何工具、也不要输出任何指令，"
+                "直接收束本轮叙述：自然交代当前处境，停在等待玩家行动处。"
+            ),
+        })
+        step = ["", "", [], [], []]
+
+        async def _plain_deltas():
+            async for delta in llm.stream_chat(messages, tools=None, temperature=temperature):
+                if delta.kind == "text" and delta.text:
+                    yield delta.text
+
+        try:
+            async for chunk in _filter_narration_stream(
+                _plain_deltas(), step, npcs=npcs, group_label=group_label,
+            ):
+                yield chunk
+        except BaseException:
+            _merge_step_result(result, step)
+            raise
+        _merge_step_result(result, step)
+
+
 async def _process_commands(
     db: Session,
     session_id: str,
@@ -2215,206 +3005,33 @@ async def _process_commands(
 
     dice_descriptions: list[str] = []
 
-    from app.rules.coc.checks import san_check
-
-    # 同一角色对同一恐怖源只检定一次：用 world_state.san_checked 记 "source|char_id"。
-    ws = dict(game_session.world_state or {})
-    san_checked = set(ws.get("san_checked") or [])
-    san_dirty = False
-
     for match in SAN_CHECK_RE.finditer(kp_text):
         kv = _parse_tag_kv(match.group(1))
-        success_loss = (kv.get("success_loss") or "0").strip()
-        failure_loss = (kv.get("failure_loss") or "1d6").strip()
-        source = (kv.get("source") or "").strip()
-        targets = _resolve_san_targets(kv.get("chars"), player_char, teammates)
-
-        for tchar in targets:
-            key = f"{source}|{tchar.id}" if source else None
-            if key and key in san_checked:
-                continue  # 该角色已对此恐怖源检定过，不重复
-
-            char_data = {
-                "base_attributes": tchar.base_attributes,
-                "skills": tchar.skills,
-                "system_data": tchar.system_data,
-            }
-            result = san_check(char_data, success_loss, failure_loss)
-            check = result["check"]
-            _update_character_stat(db, tchar, "sanity.current", result["new_san"])
-
-            outcome_text = "成功" if check.outcome in (
-                "critical_success", "hard_success", "success") else "失败"
-            dice_content = (
-                f"{tchar.name}｜理智检定：{check.description}\n"
-                f"SAN 损失：{result['san_loss']}（{result['old_san']} → {result['new_san']}）"
-            )
-            if result["went_insane"]:
-                dice_content += "\n短暂疯狂！（一次性损失 SAN ≥ 当前 SAN/5）"
-
-            dice_meta = {
-                "skill": "SAN",
-                "actor": tchar.name,
-                "skill_value": result["old_san"],
-                "roll": check.roll,
-                "target": check.target,
-                "outcome": outcome_text,
-                "san_loss": result["san_loss"],
-                "new_san": result["new_san"],
-                "went_insane": result["went_insane"],
-            }
-            ev = session_service.add_event(
-                db, session_id, "dice", dice_content,
-                actor_name="系统", metadata=dice_meta,
-            )
-            yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id)
-            dice_descriptions.append(
-                f"{tchar.name} 理智检定（{outcome_text}）：损失 {result['san_loss']} SAN"
-                f"（{result['old_san']}→{result['new_san']}）"
-            )
-            if key:
-                san_checked.add(key)
-                san_dirty = True
-
-    if san_dirty:
-        ws["san_checked"] = sorted(san_checked)
-        game_session.world_state = ws
-        db.add(game_session)
-        db.commit()
+        san_chunks, san_descs = await _exec_san_check(
+            db, session_id, game_session, kv, player_char, teammates,
+        )
+        for chunk in san_chunks:
+            yield chunk
+        dice_descriptions.extend(san_descs)
 
     for match in HP_CHANGE_RE.finditer(kp_text):
-        target_str = match.group(1).strip()
-        delta_str = match.group(2).strip()
-        reason = match.group(3).strip()
-
-        if target_str == "player":
-            try:
-                delta = int(delta_str)
-            except ValueError:
-                continue
-            hp_data = player_char.system_data.get("hitPoints", {})
-            old_hp = hp_data.get("current", 0)
-            max_hp = hp_data.get("max", old_hp)
-            new_hp = max(0, min(max_hp, old_hp + delta))
-
-            _update_character_stat(db, player_char, "hitPoints.current", new_hp)
-
-            if delta < 0:
-                hp_content = f"{player_char.name} 受到 {abs(delta)} 点伤害（HP {old_hp} → {new_hp}）"
-                if reason:
-                    hp_content += f"——{reason}"
-                if abs(delta) >= max_hp // 2:
-                    hp_content += "\n重伤！"
-                if new_hp <= 0:
-                    hp_content += "\n濒死！"
-            else:
-                hp_content = f"{player_char.name} 恢复 {delta} 点生命（HP {old_hp} → {new_hp}）"
-                if reason:
-                    hp_content += f"——{reason}"
-
-            ev = session_service.add_event(
-                db, session_id, "system", hp_content,
-                actor_name="系统", metadata={"hp_change": delta, "old_hp": old_hp, "new_hp": new_hp},
-            )
-            yield _make_chunk("system", hp_content, event_id=ev.id)
+        hp_chunks = await _exec_hp_change(
+            db, session_id, player_char,
+            match.group(1).strip(), match.group(2).strip(), match.group(3).strip(),
+        )
+        for chunk in hp_chunks:
+            yield chunk
 
     engine = get_engine(module.rule_system)
 
     for match in DICE_CHECK_RE.finditer(kp_text):
         kv = _parse_tag_kv(match.group(1))
-        skill_name = (kv.get("skill") or "").strip()
-        if not skill_name:
-            continue
-        difficulty = (kv.get("difficulty") or "normal").strip() or "normal"
-        char_ref = (kv.get("char") or "").strip()
-        blind = (kv.get("visibility") or "open").strip().lower() == "blind"
-        # 心理学等技能一律强制暗投：即使 KP 写了 visibility=open 或没写，也不挂「待玩家投骰」、
-        # 不广播达成等级——结果只回灌 KP，玩家永远看不到成败。
-        if any(s in skill_name for s in ALWAYS_BLIND_SKILLS):
-            blind = True
-        source = (kv.get("source") or "").strip()
-
-        char_data, disp_name, is_npc, char_id = _resolve_check_actor(
-            char_ref, skill_name, player_char, teammates, module,
+        dice_chunks, dice_descs, _pending = await _exec_dice_check(
+            db, session_id, game_session, module, kv, player_char, teammates,
         )
-
-        # req 1/2：真人控制、且非暗投的检定 → 不自动掷，挂成「待玩家投骰」并给出提示；
-        # NPC 暗骰 / AI 队友 / 暗投 仍由系统自动掷（无人点投骰，避免卡住）。
-        if (
-            not is_npc and not blind
-            and session_service.is_human_controlled(db, session_id, char_id)
-        ):
-            check_id = uuid.uuid4().hex
-            pending = {
-                "id": check_id, "skill": skill_name, "difficulty": difficulty,
-                "char_ref": char_ref, "char_id": char_id, "actor_name": disp_name,
-                "source": source,
-            }
-            session_service.add_pending_check(db, session_id, pending)
-            prompt_text = _check_prompt_text(disp_name, skill_name, difficulty)
-            meta = {"check_request": True, **pending}
-            ev = session_service.add_event(
-                db, session_id, "system", prompt_text, actor_name="系统", metadata=meta,
-            )
-            yield _make_chunk(
-                "check_request", prompt_text, metadata=meta,
-                event_id=ev.id, actor_id=char_id,
-            )
-            continue  # 等玩家 /roll，本轮不掷、不续写
-
-        result = engine.resolve_check(char_data, skill_name, difficulty)
-        tier_cn = TIER_LABEL.get(result.tier, result.tier)
-
-        if blind:
-            # 暗投（玩家/队友）/暗骰（NPC）：聊天只显示"做了一次隐藏检定"，成败仅回灌 KP。
-            kind_word = "暗骰" if is_npc else "暗投"
-            dice_content = f"{disp_name} 进行了一次{kind_word}·{skill_name}（结果仅 KP 可见）"
-            dice_meta = {"skill": skill_name, "actor": disp_name, "blind": True}
-            dice_descriptions.append(
-                f"【{kind_word}·{disp_name}·{skill_name}（{difficulty}），结果仅你（KP）可见，"
-                f"绝不可直接把成败告诉玩家】：达成 {tier_cn}；{result.description}"
-            )
-        else:
-            dice_content = (
-                f"{disp_name}｜{skill_name} 检定（{difficulty}）：{tier_cn}（{result.description}）"
-            )
-            dice_meta = {
-                "skill": skill_name,
-                "skill_value": result.skill_value,
-                "roll": result.roll,
-                "target": result.target,
-                "outcome": result.outcome,
-                "tier": result.tier,
-                "actor": disp_name,
-            }
-            dice_descriptions.append(
-                f"{disp_name} {skill_name}（{difficulty}），达成 {tier_cn}"
-                + (f"（针对：{source}）" if source else "")
-                + f"：{result.description}"
-            )
-
-        ev = session_service.add_event(
-            db, session_id, "dice", dice_content,
-            actor_name="系统", metadata=dice_meta,
-        )
-        yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id)
-
-        # 世界记忆钩子 d：暗投（玩家/队友对 NPC 的心理学等）若能经 source= 确定性归属到
-        # 唯一 NPC，记录其「被看穿/未被看穿」；NPC 自己的暗骰或归属不成立则跳过。
-        if blind and not is_npc:
-            target = _match_single_npc(module, source)
-            if target:
-                seen_through = result.outcome in (
-                    "critical_success", "hard_success", "success",
-                )
-                verdict = "看穿" if seen_through else "试探，但未被看穿"
-                _apply_world_memory(
-                    db, game_session,
-                    lambda ws: world_memory.record_npc_interaction(
-                        ws, target[0], ev.sequence_num,
-                        f"被 {disp_name} 用{skill_name}{verdict}",
-                    ),
-                )
+        for chunk in dice_chunks:
+            yield chunk
+        dice_descriptions.extend(dice_descs)
 
     for match in OPPOSED_CHECK_RE.finditer(kp_text):
         async for chunk in _resolve_opposed(
@@ -2465,35 +3082,21 @@ async def _process_commands(
                 yield chunk
 
     for match in SCENE_CHANGE_RE.finditer(kp_text):
-        ref = match.group(1).strip()
-        sid = _resolve_scene_ref(module, ref)
-        # 只接受能对应到真实场景的 id/名字；解析不到就不动，
-        # 避免写入脏值后地图回退到「第一个场景」造成「玩家换图了地图却没切」。
-        old = session_service.get_char_location(game_session, player_char.id)
-        if sid and sid != old:
-            # 主角明确移动到新场景：更新其位置（→ current_scene_id、已访问、地图跟随）；
-            # 同处一地的队友一同前往，分头在别处的队友留在原地。
-            session_service.set_char_location(db, session_id, player_char.id, sid)
-            for t in (teammates or []):
-                if session_service.get_char_location(game_session, t.id) == old:
-                    session_service.set_char_location(db, session_id, t.id, sid)
-            db.refresh(game_session)
-            yield _make_chunk("system", f"场景切换至：{_scene_name(module, sid)}")
-        elif not sid:
-            logger.warning("SCENE_CHANGE 无法解析场景引用：%r（保持当前场景）", ref)
+        scene_chunks, _sid = await _exec_scene_change(
+            db, session_id, game_session, module, match.group(1).strip(),
+            player_char, teammates,
+        )
+        for chunk in scene_chunks:
+            yield chunk
 
     # 剧情状态推进：置/清标志后，刷新内存里的 game_session.world_state，使本次生成的后续
     # 处理（续写、NPC 行动）与下一轮上下文都能看到最新状态。
     for match in SET_FLAG_RE.finditer(kp_text):
-        flag = match.group(1).strip()
-        session_service.set_flag(db, session_id, flag, True)
-        db.refresh(game_session)
-        yield _make_chunk("system", f"剧情推进：{flag}")
+        for chunk in _exec_flag(db, session_id, game_session, match.group(1).strip(), True):
+            yield chunk
     for match in CLEAR_FLAG_RE.finditer(kp_text):
-        flag = match.group(1).strip()
-        session_service.set_flag(db, session_id, flag, False)
-        db.refresh(game_session)
-        yield _make_chunk("system", f"剧情状态解除：{flag}")
+        for chunk in _exec_flag(db, session_id, game_session, match.group(1).strip(), False):
+            yield chunk
 
     # 手书发放：[HANDOUT: id=xxx] → 把模组手书的原文落库为 system 事件并广播（handout 是
     # 给玩家看的实体文书，正常进聊天流，前端按 metadata.kind 渲染成信笺卡片）。
@@ -2501,87 +3104,28 @@ async def _process_commands(
     for match in HANDOUT_RE.finditer(kp_text):
         inner = match.group(1).strip()
         hid = (_parse_tag_kv(inner).get("id") or inner).strip()
-        handout = next(
-            (
-                h for h in (getattr(module, "handouts", None) or [])
-                if isinstance(h, dict) and str(h.get("id") or "").strip() == hid
-            ),
-            None,
+        handout_chunks, _note = await _exec_handout(
+            db, session_id, game_session, module, hid, player_char, teammates,
         )
-        if handout is None:
-            logger.warning("HANDOUT 指令引用了未知手书 id（跳过）：%r", hid)
-            continue
-        db.refresh(game_session)
-        if world_memory.handout_issued(game_session.world_state or {}, hid):
-            continue  # 已发放过：幂等，不再落库/广播
-        title = str(handout.get("title") or "").strip()
-        meta = {
-            "kind": "handout",
-            "handout_id": hid,
-            "title": title,
-            "handout_kind": str(handout.get("kind") or "").strip(),
-        }
-        ev = session_service.add_event(
-            db, session_id, "system", str(handout.get("content") or ""),
-            actor_name="系统", metadata=meta,
-        )
-        yield _make_chunk("system", ev.content, metadata=meta, event_id=ev.id)
-        # 世界记忆：记入 handouts_issued（幂等真源）+ 线索台账（status=known，kind=handout），
-        # 已发放的手书经台账自然进入后续 KP 上下文、并从「可发放清单」里消失。
-        present = [player_char.id] + [t.id for t in (teammates or [])]
-        _apply_world_memory(
-            db, game_session,
-            lambda ws, _hid=hid, _title=title, _seq=ev.sequence_num: (
-                world_memory.record_handout_issue(ws, _hid, _title, present, _seq)
-            ),
-        )
+        for chunk in handout_chunks:
+            yield chunk
 
     # 走位：把 [MOVE: actor, to] 解析成场景内坐标并落库（地图随 refreshTick 重新拉取反映）
     for match in MOVE_RE.finditer(kp_text):
         kv = _parse_tag_kv(match.group(1))
-        actor = (kv.get("actor") or kv.get("char") or "").strip()
-        target = (kv.get("to") or kv.get("target") or "").strip()
-        if actor and target:
-            try:
-                map_service.apply_move(db, game_session, actor, target)
-            except Exception:
-                logger.exception("走位更新失败: actor=%s to=%s", actor, target)
+        _exec_move(
+            db, game_session,
+            (kv.get("actor") or kv.get("char") or "").strip(),
+            (kv.get("to") or kv.get("target") or "").strip(),
+        )
 
     for match in NPC_ACT_RE.finditer(kp_text):
-        npc_id = match.group(1).strip()
-        trigger = match.group(2).strip()
-
-        events = session_service.get_session_events(db, session_id)
-        npc_messages = build_npc_context(
-            npc_id, game_session, module, events, trigger_context=trigger,
+        npc_chunks, _resp = await _exec_npc_act(
+            db, session_id, game_session, module, llm, player_char,
+            match.group(1).strip(), match.group(2).strip(),
         )
-
-        npc_def = None
-        for n in (module.npcs or []):
-            if n.get("id") == npc_id:
-                npc_def = n
-                break
-        npc_name = npc_def["name"] if npc_def else npc_id
-
-        npc_agent = NPCAgent(llm, npc_id)
-        npc_response = await npc_agent.respond(npc_messages)
-
-        ev = session_service.add_event(
-            db, session_id, "dialogue", npc_response,
-            actor_id=npc_id, actor_name=npc_name,
-            visibility=[npc_id, player_char.id],
-        )
-        yield _make_chunk(
-            "dialogue", npc_response, actor_name=npc_name,
-            event_id=ev.id, actor_id=npc_id,
-        )
-        # 世界记忆钩子 b：NPC 被触发行动后记入其互动史（trigger 原文截断，不调 LLM）
-        _apply_world_memory(
-            db, game_session,
-            lambda ws: world_memory.record_npc_interaction(
-                ws, npc_id, ev.sequence_num, f"受场景触发而行动/开口：{trigger}",
-            ),
-        )
+        for chunk in npc_chunks:
+            yield chunk
 
 
 async def _handle_rule_lookup(
@@ -2602,12 +3146,7 @@ async def _handle_rule_lookup(
     """
     yield _make_chunk("system", "守秘人翻阅规则书……")
 
-    hits = rulebook_service.retrieve(db, query, module.rule_system, k=3)
-    if hits:
-        passages = "\n\n".join(f"[第 {h['page']} 页] {h['text']}" for h in hits)
-    else:
-        passages = "（未在规则书中找到直接匹配的内容，请依据《裁定手册》与你的经验处理。）"
-
+    passages = _rule_lookup_passages(db, query, module.rule_system)
     continuation = KP_RULE_CONTINUATION_PROMPT.format(query=query, passages=passages)
     events = session_service.get_session_events(db, session_id)
     messages = build_kp_context(
@@ -2667,20 +3206,7 @@ async def _handle_module_lookup(
     """
     yield _make_chunk("system", "守秘人翻阅模组手稿……")
 
-    try:
-        hits = module_rag_service.retrieve(
-            db, module.id, query, k=3, scene_id=game_session.current_scene_id,
-        )
-    except Exception:  # noqa: BLE001 — 检索失败降级为无命中
-        logger.exception("模组原文检索失败（已降级）：module=%s", module.id)
-        hits = []
-    if hits:
-        passages = "\n\n".join(
-            f"[片段 {i}] {h['text']}" for i, h in enumerate(hits, start=1)
-        )
-    else:
-        passages = "（未在模组原文中找到直接匹配的内容，请依据结构化模组资料与你的经验续写。）"
-
+    passages = _module_lookup_passages(db, module, game_session, query)
     continuation = KP_MODULE_CONTINUATION_PROMPT.format(query=query, passages=passages)
     events = session_service.get_session_events(db, session_id)
     messages = build_kp_context(

@@ -32,6 +32,9 @@ class AIProfile(BaseModel):
     api_key: str = ""
     is_active: bool = False
     vision: bool = False  # 是否支持多模态（看图）。显式开关，覆盖按模型名的启发式判断
+    # KP 生成走 agent loop（标准工具调用）新路径的开关。默认关闭走旧正则指令路径；
+    # 开启且 Provider 支持工具（supports_tools）时才生效，见 chat_service._tool_loop_active。
+    use_tool_calls: bool = False
 
 
 class AIProfileCreate(BaseModel):
@@ -41,6 +44,7 @@ class AIProfileCreate(BaseModel):
     model_name: str = ""
     api_key: str = ""
     vision: bool = False
+    use_tool_calls: bool = False
 
 
 class AIProfileUpdate(BaseModel):
@@ -50,6 +54,7 @@ class AIProfileUpdate(BaseModel):
     model_name: str | None = None
     api_key: str | None = None
     vision: bool | None = None
+    use_tool_calls: bool | None = None
 
 
 class TestResult(BaseModel):
@@ -164,6 +169,7 @@ def create_profile(body: AIProfileCreate):
         model_name=body.model_name,
         api_key=body.api_key,
         vision=body.vision,
+        use_tool_calls=body.use_tool_calls,
         is_active=len(profiles) == 0,  # 第一个配置自动激活
     )
     profiles.append(new_profile)
@@ -194,6 +200,8 @@ def update_profile(profile_id: str, body: AIProfileUpdate):
         target.model_name = body.model_name
     if body.vision is not None:
         target.vision = body.vision
+    if body.use_tool_calls is not None:
+        target.use_tool_calls = body.use_tool_calls
     if body.api_key is not None:
         # 如果包含掩码字符，说明前端没有修改 key，保留旧值
         if "****" not in body.api_key:
