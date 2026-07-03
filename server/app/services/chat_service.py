@@ -2394,6 +2394,35 @@ def _update_character_stat(db: Session, char: Character, path: str, value) -> No
     db.refresh(char)
 
 
+# 疯狂/失能状态严重度：疯狂不覆盖更严重的既有状态，永久疯狂也不被临时疯狂降级。
+_STATUS_SEVERITY = {
+    "active": 0, "major_wound": 1, "temporary_insanity": 2,
+    "indefinite_insanity": 3, "unconscious": 4, "permanent_insanity": 5, "dead": 6,
+}
+
+
+def _apply_madness_status(
+    db: Session, char: Character, new_san: int, went_insane: bool,
+) -> str | None:
+    """据 SAN 结果落疯狂状态（确定性）：SAN 归零→永久疯狂；一次损失≥当前SAN/5→临时疯狂。
+
+    只在新状态比既有更严重时升级（不把昏迷/死亡/永久疯狂降级为临时疯狂）。返回落定的状态或 None。
+    """
+    if new_san <= 0:
+        target = "permanent_insanity"
+    elif went_insane:
+        target = "temporary_insanity"
+    else:
+        return None
+    cur = char.status or "active"
+    if _STATUS_SEVERITY.get(target, 0) <= _STATUS_SEVERITY.get(cur, 0):
+        return None  # 既有状态已同等或更严重，不降级
+    char.status = target
+    db.add(char)
+    db.commit()
+    return target
+
+
 # ── 指令执行器（旧正则路径与 agent loop 共用的单一实现）─────────────────────
 # 每个函数执行一条指令并返回「待广播的 chunks（事件已落库）」+ 路径各自需要的信息。
 # 旧路径（_process_commands）按正则匹配后调用；loop 路径（_build_kp_tool_executor）
@@ -2442,8 +2471,13 @@ async def _exec_san_check(
             f"{tchar.name}｜理智检定：{check.description}\n"
             f"SAN 损失：{result['san_loss']}（{result['old_san']} → {result['new_san']}）"
         )
-        if result["went_insane"]:
-            dice_content += "\n短暂疯狂！（一次性损失 SAN ≥ 当前 SAN/5）"
+        # 疯狂状态落库（确定性，不依赖 KP 自觉）：SAN 归零→永久疯狂；一次损失≥当前SAN/5→临时疯狂。
+        # 不覆盖更严重的既有状态（死亡/昏迷/永久疯狂不被降级）。
+        madness = _apply_madness_status(db, tchar, result["new_san"], result["went_insane"])
+        if madness == "permanent_insanity":
+            dice_content += "\n永久疯狂！SAN 归零，调查员就此永远失常。"
+        elif madness == "temporary_insanity":
+            dice_content += "\n临时疯狂！（一次性损失 SAN ≥ 当前 SAN/5）"
 
         dice_meta = {
             "skill": "SAN",
@@ -2489,34 +2523,53 @@ async def _exec_san_check(
     return chunks, descs
 
 
+def _resolve_hp_target(
+    target_str: str, player_char: Character, teammates: list[Character] | None,
+) -> Character | None:
+    """把 HP_CHANGE 的 target= 解析成玩家方角色：空/player/主角/主角名→主角；队友名→该队友。
+
+    NPC 或匹配不到 → None（NPC 的 HP 本系统不逐一追踪，维持不结算）。
+    """
+    name = (target_str or "").strip()
+    if not name or name.lower() == "player" or name in ("主角", "玩家", player_char.name):
+        return player_char
+    for t in (teammates or []):
+        if t.name and (t.name == name or name in t.name or t.name in name):
+            return t
+    return None
+
+
 async def _exec_hp_change(
     db: Session, session_id: str, player_char: Character,
     target_str: str, delta_str: str, reason: str,
     module: Module | None = None,
+    teammates: list[Character] | None = None,
 ) -> list[str]:
-    """执行一条 HP 变化结算（当前仅支持 target=player）。返回 chunks。
+    """执行一条 HP 变化结算（target=player/主角 或队友名；NPC/匹配不到则不结算）。返回 chunks。
 
     确定性规则钩子（CoC 7e，不依赖 KP 自觉）：单次伤害 ≥ 最大 HP 一半即重伤——
     落 major_wound 状态并**系统自动**过一次体质（CON）检定，失败则昏迷（unconscious）。
     昏迷判定是被动生理反应而非玩家主动行动，故不走「待玩家投骰」、直接自动掷。
+    队友受伤同样结算（多人局队友也会重伤/昏迷）。
     """
-    if target_str.strip() != "player":
+    char = _resolve_hp_target(target_str, player_char, teammates)
+    if char is None:
         return []
     try:
         delta = int(str(delta_str).strip())
     except ValueError:
         return []
     reason = (reason or "").strip()
-    hp_data = player_char.system_data.get("hitPoints", {})
+    hp_data = char.system_data.get("hitPoints", {})
     old_hp = hp_data.get("current", 0)
     max_hp = hp_data.get("max", old_hp)
     new_hp = max(0, min(max_hp, old_hp + delta))
 
-    _update_character_stat(db, player_char, "hitPoints.current", new_hp)
+    _update_character_stat(db, char, "hitPoints.current", new_hp)
 
     chunks: list[str] = []
     if delta < 0:
-        hp_content = f"{player_char.name} 受到 {abs(delta)} 点伤害（HP {old_hp} → {new_hp}）"
+        hp_content = f"{char.name} 受到 {abs(delta)} 点伤害（HP {old_hp} → {new_hp}）"
         if reason:
             hp_content += f"——{reason}"
         major_wound = abs(delta) >= max_hp // 2 and max_hp > 0
@@ -2525,49 +2578,50 @@ async def _exec_hp_change(
         if new_hp <= 0:
             hp_content += "\n濒死！需急救/医学稳定，否则将持续流失生命"
     else:
-        hp_content = f"{player_char.name} 恢复 {delta} 点生命（HP {old_hp} → {new_hp}）"
+        hp_content = f"{char.name} 恢复 {delta} 点生命（HP {old_hp} → {new_hp}）"
         if reason:
             hp_content += f"——{reason}"
         major_wound = False
 
     ev = session_service.add_event(
         db, session_id, "system", hp_content,
-        actor_name="系统", metadata={"hp_change": delta, "old_hp": old_hp, "new_hp": new_hp},
+        actor_name="系统",
+        metadata={"hp_change": delta, "old_hp": old_hp, "new_hp": new_hp, "actor": char.name},
     )
     chunks.append(_make_chunk("system", hp_content, event_id=ev.id))
 
     # 重伤（未至濒死）→ 状态落库 + 自动体质检定判昏迷。fail-open：检定异常不阻塞结算。
     if major_wound and new_hp > 0 and module is not None:
         try:
-            player_char.status = "major_wound"
-            db.add(player_char)
+            char.status = "major_wound"
+            db.add(char)
             db.commit()
             engine = get_engine(module.rule_system)
             cdata = {
-                "base_attributes": player_char.base_attributes,
-                "skills": player_char.skills,
-                "system_data": player_char.system_data,
+                "base_attributes": char.base_attributes,
+                "skills": char.skills,
+                "system_data": char.system_data,
             }
             result = engine.resolve_check(cdata, "体质", "normal")
             con_content = (
-                f"{player_char.name}｜重伤体质检定（判定是否昏迷）：{result.description}"
+                f"{char.name}｜重伤体质检定（判定是否昏迷）：{result.description}"
             )
             if result.outcome in ("failure", "fumble"):
-                player_char.status = "unconscious"
-                db.add(player_char)
+                char.status = "unconscious"
+                db.add(char)
                 db.commit()
-                con_content += f"\n{player_char.name} 眼前一黑，昏迷倒地！"
+                con_content += f"\n{char.name} 眼前一黑，昏迷倒地！"
             dev = session_service.add_event(
                 db, session_id, "dice", con_content,
                 actor_name="系统", metadata={
                     "skill": "体质", "roll": result.roll, "target": result.target,
-                    "outcome": result.outcome, "actor": player_char.name,
+                    "outcome": result.outcome, "actor": char.name,
                     "major_wound_check": True, "dice": _check_dice_detail(result),
                 },
             )
             chunks.append(_make_chunk("dice", con_content, event_id=dev.id))
         except Exception:
-            logger.exception("重伤体质检定失败（忽略，不阻塞结算）: char=%s", player_char.id)
+            logger.exception("重伤体质检定失败（忽略，不阻塞结算）: char=%s", char.id)
     return chunks
 
 
@@ -3070,7 +3124,7 @@ def _build_kp_tool_executor(
                 chunks = await _exec_hp_change(
                     db, session_id, player_char,
                     kv.get("target", ""), kv.get("delta", ""), kv.get("reason", ""),
-                    module=module,
+                    module=module, teammates=teammates,
                 )
                 if chunks:
                     return kp_tools.ToolOutcome("ok", chunks=chunks)
@@ -3283,7 +3337,7 @@ async def _process_commands(
         hp_chunks = await _exec_hp_change(
             db, session_id, player_char,
             match.group(1).strip(), match.group(2).strip(), match.group(3).strip(),
-            module=module,
+            module=module, teammates=teammates,
         )
         for chunk in hp_chunks:
             yield chunk

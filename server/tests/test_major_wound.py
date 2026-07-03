@@ -124,3 +124,74 @@ def test_无module时向后兼容不检定(db_factory):
 
     assert len(chunks) == 1  # 只有 HP 结算，无检定（module 缺省 → 与旧行为一致）
     assert char.status == "active"
+
+
+# ── 队友 HP 结算 ──
+
+def _ally(db, name="阿尔法", con=60, hp=10):
+    a = Character(
+        name=name, rule_system="coc", is_player=False,
+        base_attributes={"CON": con}, skills={},
+        system_data={"hitPoints": {"current": hp, "max": hp}}, status="active",
+    )
+    db.add(a); db.commit()
+    return a
+
+
+def test_队友受伤也结算并重伤昏迷(db_factory, monkeypatch):
+    db = db_factory()
+    module, hero, sid = _seed(db)
+    ally = _ally(db)
+    monkeypatch.setattr("app.rules.coc.checks.roll_percentile", lambda: 99)  # 体质必失败→昏迷
+    chunks = asyncio.run(chat_service._exec_hp_change(
+        db, sid, hero, "阿尔法", "-5", "被兽爪撕开", module=module, teammates=[ally],
+    ))
+    assert ally.system_data["hitPoints"]["current"] == 5   # 队友 HP 结算
+    assert ally.status == "unconscious"                    # 队友也会重伤昏迷
+    assert hero.status == "active"                         # 主角不受影响
+    assert any(e.metadata_.get("actor") == "阿尔法" for e in _events(db, sid) if e.event_type == "system")
+
+
+def test_未知target不结算(db_factory):
+    db = db_factory()
+    module, hero, sid = _seed(db)
+    chunks = asyncio.run(chat_service._exec_hp_change(
+        db, sid, hero, "路人甲", "-5", "", module=module, teammates=[],
+    ))
+    assert chunks == []                                    # NPC/匹配不到 → 不结算
+
+
+# ── SAN 疯狂落状态字段 ──
+
+def test_san归零落永久疯狂(db_factory):
+    db = db_factory()
+    module, hero, sid = _seed(db)
+    r = chat_service._apply_madness_status(db, hero, new_san=0, went_insane=False)
+    assert r == "permanent_insanity" and hero.status == "permanent_insanity"
+
+
+def test_大额损失落临时疯狂(db_factory):
+    db = db_factory()
+    module, hero, sid = _seed(db)
+    r = chat_service._apply_madness_status(db, hero, new_san=40, went_insane=True)
+    assert r == "temporary_insanity" and hero.status == "temporary_insanity"
+
+
+def test_疯狂不降级更严重状态(db_factory):
+    db = db_factory()
+    module, hero, sid = _seed(db)
+    # 已昏迷：临时疯狂（severity 2）< 昏迷（4）→ 不降级
+    hero.status = "unconscious"; db.add(hero); db.commit()
+    assert chat_service._apply_madness_status(db, hero, 40, True) is None
+    assert hero.status == "unconscious"
+    # 已永久疯狂：不被临时疯狂降级
+    hero.status = "permanent_insanity"; db.add(hero); db.commit()
+    assert chat_service._apply_madness_status(db, hero, 40, True) is None
+    assert hero.status == "permanent_insanity"
+
+
+def test_未疯狂不改状态(db_factory):
+    db = db_factory()
+    module, hero, sid = _seed(db)
+    assert chat_service._apply_madness_status(db, hero, 40, False) is None
+    assert hero.status == "active"

@@ -157,7 +157,7 @@ REGISTRY: tuple[ToolSpec, ...] = (
             "结算 HP 变化（命中伤害或治疗恢复）。伤害 = 武器骰 + 伤害加值(DB)，随叙述结果一同发出即可。"
         ),
         parameters=_params({
-            "target": {"type": "string", "description": "目标，当前仅支持 player（主角）"},
+            "target": {"type": "string", "description": "受伤/恢复的对象：player（主角）或队友名；NPC 不结算"},
             "delta": {"type": "integer", "description": "变化量：负数为受伤，正数为恢复"},
             "reason": {"type": "string", "description": "原因（可为空字符串）"},
         }, ["target", "delta", "reason"]),
