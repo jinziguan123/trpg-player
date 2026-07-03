@@ -348,6 +348,71 @@ def test_group_label_tags_all_output(db_factory):
     assert groups and all(g == "图书馆" for g in groups)
 
 
+def test_closing_quote_not_orphaned_into_narration():
+    """KP 写『台词……\\n”』（闭引号另起一行）+ 说话人歧义（多个 NPC 主语）时，
+    未抽成气泡的引号片段留旁白，闭引号不得孤立成行（用户报的「双引号被分到旁白」）。"""
+    raw = (
+        "护士催促着离开。维托里奥的身体一颤，一把将册子塞进伊芙琳手里。"
+        "“拿去……但也许你……\n”"
+        "\n\n他的声音压得极低："
+        "“那句话在册子背面。\n”"
+        "\n\n维托里奥重新缩回了姿态。"
+    )
+    npcs = [{"name": "护士"}, {"name": "维托里奥·马卡里奥"}]
+    result = ["", "", [], [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(raw), [], result, npcs=npcs)
+    ))
+    orphan_lines = [ln for ln in result[0].split("\n") if ln.strip() in ("”", "“")]
+    assert orphan_lines == []  # 没有孤立引号行
+    # 引号片段仍以「贴合的引号对」形式留在旁白里，可读
+    assert "“拿去……但也许你……”" in result[0]
+    assert "”\n" not in result[0].replace("”\n\n", "")  # 闭引号后除段落分隔外不单独跟换行
+
+
+def test_narr_quote_span_strips_adjacent_newlines():
+    """_narr_quote_span：剥掉贴着开/闭引号的换行，保留台词内部换行。"""
+    assert chat_service._narr_quote_span("“", "台词……\n", "”") == "“台词……”"
+    assert chat_service._narr_quote_span("“", "\n台词", "”") == "“台词”"
+    assert chat_service._narr_quote_span("“", "第一句\n第二句", "”") == "“第一句\n第二句”"
+
+
+def test_say_wrapping_quotes_stripped_and_close_not_orphaned(db_factory):
+    """[SAY] 内套了引号、闭引号写在 [/SAY] 之外（KP 常见坏习惯）→ 气泡去掉包裹引号，
+    落库后旁白里不留孤立的闭引号（用户报的「双引号被分到旁白中」）。"""
+    raw = "维托里奥抬起头：[SAY: who=维托里奥·马卡里奥]“拿去……但也许你……[/SAY]\n”\n\n他垂下了目光。"
+    npcs = [{"name": "维托里奥·马卡里奥"}]
+    result = ["", "", [], [], []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(raw), [], result, npcs=npcs)
+    ))
+    db = db_factory()
+    session_id = _seed_session(db)
+    chat_service._persist_narration(db, session_id, result)
+    evs = session_service.get_session_events(db_factory(), session_id)
+    dlg = [e for e in evs if e.event_type == "dialogue"]
+    assert dlg and dlg[0].content == "拿去……但也许你……"  # 气泡不含包裹引号
+    # 旁白里没有孤立引号行
+    for e in evs:
+        if e.event_type == "narration":
+            assert all(ln.strip() not in ("”", "“") for ln in (e.content or "").split("\n"))
+
+
+def test_orphan_quote_line_stripped_preserves_dialogue_offsets(db_factory):
+    """孤立引号行剥除后，其后的对话 mark 偏移同步前移。"""
+    narration = "他开口了：\n”\n\n她点了点头。"
+    marks = [(len(narration), "护士", "好的")]
+    result = ["", "", [], marks, []]
+    result[0] = narration
+    db = db_factory()
+    session_id = _seed_session(db)
+    chat_service._persist_narration(db, session_id, result)
+    evs = session_service.get_session_events(db_factory(), session_id)
+    ordered = [(e.event_type, e.content) for e in evs if e.event_type in ("narration", "dialogue")]
+    assert not any(ln.strip() == "”" for e in evs for ln in (e.content or "").split("\n"))
+    assert ("dialogue", "好的") in ordered
+
+
 def test_fake_check_result_line_stripped_on_persist(db_factory):
     """KP 把机检结果行误写进旁白（未发 [DICE_CHECK]）→ 落库前剥除，不留伪造结果。"""
     result = ["", "", [], [], []]

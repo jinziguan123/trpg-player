@@ -527,6 +527,15 @@ def event_to_chunk(ev) -> str:
     )
 
 
+def _narr_quote_span(open_q: str, buf: str, close_q: str) -> str:
+    """把「没抽成对话气泡、原样留旁白」的引号片段拼回旁白：剥掉紧贴开/闭引号的换行。
+
+    否则 KP 常写的『台词……\\n”』（闭引号另起一行）会让闭引号在旁白里孤立成一行——
+    即用户报的「双引号被分到旁白中」。只剥引号首尾贴着的换行，台词内部换行（多行台词）保留。
+    """
+    return open_q + buf.strip("\n") + close_q
+
+
 async def _stream_narration_filtered(
     kp: KPAgent, messages: list[dict], result: list,
     npcs: list[dict] | None = None,
@@ -721,7 +730,9 @@ async def _filter_narration_stream(
 
     def _emit_say():
         nonlocal in_say, say_speaker, say_buf, last_speaker
-        text = say_buf.strip()
+        # 气泡本身即「引号」，KP 若在 [SAY] 内又套了引号（[SAY]“台词”[/SAY]）会让气泡显示成
+        # 「“台词」——剥掉首尾包裹的引号；台词内部的引号保留。
+        text = say_buf.strip().strip("“”「」『』\"")
         speaker = _canon(say_speaker)
         in_say = False
         say_buf = ""
@@ -748,14 +759,14 @@ async def _filter_narration_stream(
                         dialogue_marks.append((len(narration), speaker, text))
                         yield _mk("npc_dialogue", text, actor_name=speaker)
                     else:
-                        pending += deferred_open + deferred_buf + deferred_close
+                        pending += _narr_quote_span(deferred_open, deferred_buf, deferred_close)
                     pending += deferred_tail  # 「她说……」等引导语作旁白
                     deferring = False
                     deferred_tail = ""
                     continue
                 if ch == "\n" or len(deferred_tail) > 12:
                     # 后面不是紧邻的说话动词 → 判定非台词，原样归还旁白
-                    pending += deferred_open + deferred_buf + deferred_close + deferred_tail
+                    pending += _narr_quote_span(deferred_open, deferred_buf, deferred_close) + deferred_tail
                     deferring = False
                     deferred_tail = ""
                     continue
@@ -855,7 +866,7 @@ async def _filter_narration_stream(
                     deferred_open, deferred_buf, deferred_close = quote_open, quote_buf, ch
                     deferred_tail = ""
                 else:
-                    pending += quote_open + quote_buf + ch  # 非台词：原样留旁白
+                    pending += _narr_quote_span(quote_open, quote_buf, ch)  # 非台词：留旁白
                 quote_buf = ""
                 pending_speaker = None
                 pending_weak = False
@@ -906,12 +917,12 @@ async def _filter_narration_stream(
             if chunk:
                 yield chunk
         if in_quote:
-            pending += quote_open + quote_buf   # 未闭合引号：留旁白
+            pending += quote_open + quote_buf.rstrip("\n")   # 未闭合引号：留旁白
         if in_bracket:
             pending += (bracket_open or "[") + bracket_buf
         if deferring:
             # 收尾仍在等后置说话人（后面没等到说话动词）：原样归还旁白
-            pending += deferred_open + deferred_buf + deferred_close + deferred_tail
+            pending += _narr_quote_span(deferred_open, deferred_buf, deferred_close) + deferred_tail
         out = _flush_pending()
         if out:
             yield _mk("narration", out, actor_name="KP")
@@ -1105,13 +1116,18 @@ def _persist_error_notice(db: Session, session_id: str, text: str) -> None:
         logger.exception("落库生成中断提示失败: session=%s", session_id)
 
 
-def _strip_fake_check_lines(narration: str, marks: list | None) -> tuple[str, list | None]:
-    """剥除 KP 误写进旁白的机检结果行（见 _FAKE_CHECK_RESULT_RE），并同步修正 dialogue_marks
-    偏移：删除点之前的 mark 不动，之后的按累计删除量前移（落在被删区间内的 mark 挪到区间起点）。"""
-    if not _FAKE_CHECK_RESULT_RE.search(narration):
+# 只由引号字符（±空白）组成的整行——KP 把闭引号写在台词/[SAY] 之外时留下的「孤立引号行」，
+# 渲染成旁白里孤零零的一个 ” / “（用户报的「双引号被分到旁白中」）。落库前整行剥除。
+_ORPHAN_QUOTE_LINE_RE = re.compile(r"(?m)^[ \t　]*[“”「」『』\"]+[ \t　]*(?:\n|$)")
+
+
+def _strip_marked_lines(narration: str, marks: list | None, regex) -> tuple[str, list | None]:
+    """按 regex 整段剥除旁白里的问题行，并同步修正 dialogue_marks 偏移：删除点之前的 mark
+    不动，之后的按累计删除量前移（落在被删区间内的 mark 挪到区间起点）。"""
+    if not regex.search(narration):
         return narration, marks
-    removals = [(m.start(), m.end()) for m in _FAKE_CHECK_RESULT_RE.finditer(narration)]
-    new_narr = _FAKE_CHECK_RESULT_RE.sub("", narration)
+    removals = [(m.start(), m.end()) for m in regex.finditer(narration)]
+    new_narr = regex.sub("", narration)
     if not marks:
         return new_narr, marks
 
@@ -1135,7 +1151,8 @@ def _persist_narration(db: Session, session_id: str, result: list) -> None:
     """
     narration = result[0]
     marks = result[3] if len(result) > 3 else None
-    narration, marks = _strip_fake_check_lines(narration, marks)
+    narration, marks = _strip_marked_lines(narration, marks, _FAKE_CHECK_RESULT_RE)
+    narration, marks = _strip_marked_lines(narration, marks, _ORPHAN_QUOTE_LINE_RE)
     group_marks = sorted(result[4], key=lambda g: g[0]) if len(result) > 4 and result[4] else []
 
     def _group_at(offset: int) -> str | None:
