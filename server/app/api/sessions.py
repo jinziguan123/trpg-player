@@ -251,6 +251,37 @@ def get_context_estimate(
     return result
 
 
+@router.get("/{session_id}/recaps")
+def list_recaps(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """列出本局已生成的战报（world_state.recaps）。"""
+    from app.services import recap_service
+
+    if not session_service.get_session(db, session_id):
+        raise HTTPException(404, "会话不存在")
+    return {"recaps": recap_service.list_recaps(db, session_id)}
+
+
+@router.post("/{session_id}/recap")
+async def generate_recap(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """生成一份章节战报并存入 world_state.recaps；生成失败返回 502（不落库）。"""
+    from app.services import recap_service
+
+    if not session_service.get_session(db, session_id):
+        raise HTTPException(404, "会话不存在")
+    entry = await recap_service.generate_and_store_recap(db, session_id)
+    if entry is None:
+        raise HTTPException(502, "战报生成失败（可能无事件或模型未配置），请稍后重试")
+    return entry
+
+
 @router.put("/{session_id}/status", response_model=SessionRead)
 def update_status(
     session_id: str, data: SessionStatusUpdate, db: Session = Depends(get_db)
