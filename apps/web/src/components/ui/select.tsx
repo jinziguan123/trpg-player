@@ -19,10 +19,10 @@ const SelectTrigger = React.forwardRef<
       className,
     )}
     style={{
-      borderColor: 'var(--color-border)',
-      background: 'rgba(255,255,255,0.4)',
+      borderColor: 'var(--color-border-strong)',
+      background: 'rgba(0,0,0,0.28)',
       color: 'var(--color-text-primary)',
-      fontFamily: 'var(--font-body)',
+      fontFamily: 'var(--font-ui)',
     }}
     {...props}
   >
@@ -52,9 +52,9 @@ const SelectContent = React.forwardRef<
         className,
       )}
       style={{
-        background: 'var(--color-bg-primary)',
-        borderColor: 'var(--color-border)',
-        fontFamily: 'var(--font-body)',
+        background: 'var(--color-bg-secondary)',
+        borderColor: 'var(--color-border-strong)',
+        fontFamily: 'var(--font-ui)',
       }}
       position={position}
       {...props}
@@ -80,7 +80,7 @@ const SelectItem = React.forwardRef<
     ref={ref}
     className={cn(
       'relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 px-2 text-sm outline-none',
-      'data-[highlighted]:bg-[rgba(139,37,0,0.08)] data-[highlighted]:text-[var(--color-text-accent)]',
+      'data-[highlighted]:bg-[rgba(212,162,78,0.12)] data-[highlighted]:text-[var(--color-text-accent)]',
       'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       className,
     )}

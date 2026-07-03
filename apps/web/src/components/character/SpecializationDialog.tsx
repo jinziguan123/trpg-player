@@ -57,7 +57,7 @@ export function SpecializationDialog({
                 style={{
                   borderColor: isPicked ? 'var(--color-success)' : 'var(--color-border)',
                   background: isPicked ? 'var(--color-success)' : 'var(--color-bg-tertiary)',
-                  color: isPicked ? '#fff' : isDisabled ? 'var(--color-text-secondary)' : 'var(--color-text-primary)',
+                  color: isPicked ? 'var(--color-on-accent)' : isDisabled ? 'var(--color-text-secondary)' : 'var(--color-text-primary)',
                   opacity: isDisabled ? 0.4 : 1,
                   cursor: isDisabled ? 'not-allowed' : 'pointer',
                 }}

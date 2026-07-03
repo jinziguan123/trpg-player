@@ -49,9 +49,9 @@ export function ConfirmDialog({
             disabled={loading}
             className="text-sm px-4 py-1.5 rounded-[3px] font-semibold transition-colors cursor-pointer"
             style={{
-              background: 'var(--color-danger)',
-              color: '#f0e6d3',
-              border: '1px solid var(--color-danger)',
+              background: 'var(--color-danger-deep)',
+              color: 'var(--color-on-danger)',
+              border: '1px solid var(--color-danger-deep)',
               opacity: loading ? 0.5 : 1,
             }}
           >

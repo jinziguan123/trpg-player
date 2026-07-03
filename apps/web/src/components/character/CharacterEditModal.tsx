@@ -287,7 +287,7 @@ export function CharacterEditModal({
                       key={b}
                       onClick={() => setSpecBase(b)}
                       disabled={!spec}
-                      className="text-xs px-2 py-0.5 rounded border transition-colors hover:bg-[var(--color-accent)] hover:text-white"
+                      className="text-xs px-2 py-0.5 rounded border transition-colors hover:bg-[var(--color-accent)] hover:text-[var(--color-on-accent)]"
                       style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-accent)' }}
                     >{b}</button>
                   ))}
@@ -305,7 +305,7 @@ export function CharacterEditModal({
                     </div>
                     <button
                       onClick={() => setSkills(skills.filter((_, j) => j !== i))}
-                      className="text-xs px-2 py-1 rounded hover:bg-[var(--color-danger)] hover:text-white transition-colors"
+                      className="text-xs px-2 py-1 rounded hover:bg-[var(--color-danger-deep)] hover:text-white transition-colors"
                       style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}
                     >删除</button>
                   </div>

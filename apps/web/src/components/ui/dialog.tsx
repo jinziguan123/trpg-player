@@ -14,7 +14,7 @@ const DialogOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      'fixed inset-0 z-50 bg-black/40 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+      'fixed inset-0 z-50 bg-black/60 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
       className,
     )}
     {...props}
@@ -41,10 +41,10 @@ const DialogContent = React.forwardRef<
       )}
       // 默认在前、调用方 style 在后合并——避免调用方传 style（如 maxHeight）把背景色覆盖没了
       style={{
-        background: 'var(--color-bg-primary)',
-        borderColor: 'var(--color-border)',
+        background: 'var(--color-bg-secondary)',
+        borderColor: 'var(--color-border-strong)',
         color: 'var(--color-text-primary)',
-        fontFamily: 'var(--font-body)',
+        fontFamily: 'var(--font-ui)',
         ...style,
       }}
       {...props}

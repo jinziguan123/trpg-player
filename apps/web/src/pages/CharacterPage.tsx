@@ -15,6 +15,7 @@ import {
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiDiceSixFacesSix, GiCharacter, GiReturnArrow, GiUpCard, GiPadlock } from 'react-icons/gi'
+import { ChevronRight } from 'lucide-react'
 
 interface Character {
   id: string
@@ -687,12 +688,12 @@ export function CharacterPage() {
             <div className="flex items-center gap-1 mb-4 text-xs">
               {STEPS.map((s, i) => (
                 <div key={s} className="flex items-center gap-1">
-                  {i > 0 && <span style={{ color: 'var(--color-border)' }}>›</span>}
+                  {i > 0 && <ChevronRight size={12} style={{ color: 'var(--color-border-strong)' }} />}
                   <span
                     className="px-2 py-0.5 rounded"
                     style={{
                       background: i === stepIndex ? 'var(--color-accent)' : i < stepIndex ? 'var(--color-bg-tertiary)' : 'transparent',
-                      color: i === stepIndex ? '#f0e6d3' : i < stepIndex ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                      color: i === stepIndex ? 'var(--color-on-accent)' : i < stepIndex ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
                       fontWeight: i === stepIndex ? 600 : 400,
                     }}
                   >
@@ -786,7 +787,7 @@ export function CharacterPage() {
                   </div>
                 </div>
                 {age >= 40 && (
-                  <div className="text-xs mb-3 px-2 py-1 rounded" style={{ background: 'rgba(139, 37, 0, 0.08)', color: 'var(--color-text-accent)' }}>
+                  <div className="text-xs mb-3 px-2 py-1 rounded" style={{ background: 'rgba(212, 162, 78, 0.12)', color: 'var(--color-text-accent)' }}>
                     注意：年龄 {age} 岁，移动力将减少 {age >= 80 ? 5 : age >= 70 ? 4 : age >= 60 ? 3 : age >= 50 ? 2 : 1} 点
                   </div>
                 )}
@@ -977,7 +978,7 @@ export function CharacterPage() {
                           style={{
                             borderColor: active ? 'var(--color-accent)' : 'var(--color-border)',
                             background: active ? 'var(--color-accent)' : 'var(--color-bg-tertiary)',
-                            color: active ? '#fff' : 'var(--color-text-primary)',
+                            color: active ? 'var(--color-on-accent)' : 'var(--color-text-primary)',
                           }}
                         >{c || '全部'}</button>
                       )
@@ -1075,7 +1076,7 @@ export function CharacterPage() {
                       key={b}
                       onClick={() => setSpecBase(b)}
                       disabled={!spec}
-                      className="text-xs px-2 py-0.5 rounded border transition-colors hover:bg-[var(--color-accent)] hover:text-white"
+                      className="text-xs px-2 py-0.5 rounded border transition-colors hover:bg-[var(--color-accent)] hover:text-[var(--color-on-accent)]"
                       style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-accent)' }}
                     >{b}</button>
                   ))}
@@ -1092,7 +1093,7 @@ export function CharacterPage() {
                       <div
                         key={skillName}
                         className="flex items-center justify-between py-1 px-2 rounded text-sm"
-                        style={{ background: isOcc ? 'rgba(139, 37, 0, 0.06)' : undefined }}
+                        style={{ background: isOcc ? 'rgba(212, 162, 78, 0.08)' : undefined }}
                       >
                         <div className="flex items-center gap-2">
                           {!isImported && isOcc && <span className="text-xs" style={{ color: 'var(--color-accent)' }}>职</span>}
@@ -1368,7 +1369,7 @@ export function CharacterPage() {
                       <span className="badge">{c.rule_system.toUpperCase()}</span>
                       <button
                         onClick={(e) => { e.stopPropagation(); setEditingChar(c) }}
-                        className="text-xs px-1.5 py-0.5 rounded transition-colors hover:bg-[var(--color-accent)] hover:text-white"
+                        className="text-xs px-1.5 py-0.5 rounded transition-colors hover:bg-[var(--color-accent)] hover:text-[var(--color-on-accent)]"
                         style={{ color: 'var(--color-text-accent)', border: '1px solid var(--color-border)' }}
                       >
                         编辑
@@ -1382,7 +1383,7 @@ export function CharacterPage() {
                         {(open) => (
                           <button
                             onClick={(e) => { e.stopPropagation(); open() }}
-                            className="text-xs px-1.5 py-0.5 rounded hover:bg-[var(--color-danger)] hover:text-white transition-colors"
+                            className="text-xs px-1.5 py-0.5 rounded hover:bg-[var(--color-danger-deep)] hover:text-white transition-colors"
                             style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}
                           >
                             删除

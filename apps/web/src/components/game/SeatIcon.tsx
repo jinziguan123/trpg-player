@@ -22,7 +22,7 @@ export function SeatIcon({ kind, size = 14 }: { kind: SeatKind; size?: number })
     case 'empty':
       return <GiRockingChair size={size} color="var(--color-text-secondary)" />
     case 'ai':
-      return <GiRobotGolem size={size} color="#6c8cff" />
+      return <GiRobotGolem size={size} color="#8fa7b5" />
     case 'host':
       return <GiCrown size={size} color="#e0a82e" />
     case 'me':

@@ -11,8 +11,8 @@ const buttonVariants = cva(
         default: 'btn-primary',
         secondary: 'btn-secondary',
         danger:
-          'border text-sm px-3 py-1.5 rounded-[3px] hover:text-white transition-colors',
-        ghost: 'hover:bg-[rgba(139,37,0,0.05)]',
+          'border text-sm px-3 py-1.5 rounded-[3px] hover:bg-[rgba(192,94,102,0.12)] transition-colors',
+        ghost: 'hover:bg-[rgba(212,162,78,0.08)]',
       },
       size: {
         default: 'h-9 px-4 py-2',

@@ -1,50 +1,59 @@
-@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=ZCOOL+XiaoWei&display=swap');
+/* 本地打包字体（离线桌面应用，禁 CDN）：
+   Noto Serif SC —— 标题 / KP 叙事 / 手书正文衬线
+   ZCOOL XiaoWei —— 大标题点缀 */
+@import '@fontsource/noto-serif-sc/400.css';
+@import '@fontsource/noto-serif-sc/600.css';
+@import '@fontsource/noto-serif-sc/700.css';
+@import '@fontsource/zcool-xiaowei/400.css';
 @import "tailwindcss";
 
+/* ===== Design Tokens：克苏鲁暗夜主题（唯一主题，无浅色切换） ===== */
 :root {
-  --color-bg-primary: #f0e6d3;
-  --color-bg-secondary: #e8dcc8;
-  --color-bg-tertiary: #ddd0b8;
-  --color-bg-card: #ece2cecc;
-  --color-text-primary: #3a2e1e;
-  --color-text-secondary: #6b5c4a;
-  --color-text-accent: #8b2500;
-  --color-border: #c4b394;
-  --color-accent: #8b2500;
-  --color-accent-hover: #a03000;
-  --color-danger: #8b0000;
-  --color-success: #2d5a1e;
-  --color-dice-gold: #b8860b;
-  --color-player-bg: #d4c4a8;
-  --font-body: 'Noto Serif SC', 'STSong', serif;
-  --font-ui: 'Noto Serif SC', 'STSong', serif;
-  --font-title: 'ZCOOL XiaoWei', 'Noto Serif SC', serif;
+  /* 基底：墨蓝黑三级分层（避免纯黑） */
+  --color-bg-primary: #0c0e13;
+  --color-bg-secondary: #14171f;
+  --color-bg-tertiary: #1a1e28;
+  --color-bg-card: #14171f;
 
-  color-scheme: light;
+  /* 文字：羊皮纸暖白为主，青铜灰为次 */
+  --color-text-primary: #e8dcc0;
+  --color-text-secondary: #98a2ad;
+  --color-text-accent: #d4a24e;
+
+  /* 烛光琥珀强调 */
+  --color-accent: #d4a24e;
+  --color-accent-hover: #e2b566;
+  --color-on-accent: #191307;                    /* 琥珀底上的深色文字 */
+  --color-border: rgba(212, 162, 78, 0.14);      /* 细边框：琥珀 14% */
+  --color-border-strong: rgba(212, 162, 78, 0.32);
+
+  /* 语义色 */
+  --color-danger: #c05e66;        /* 可读血红：文字 / 图标 / 描边 */
+  --color-danger-deep: #8f2f36;   /* 血酒红：填充底色（HP/SAN 警示、危险按钮） */
+  --color-on-danger: #f4e6da;
+  --color-success: #7da36b;
+  --color-dice-gold: #e0b75f;     /* 骰子 / 大成功 */
+  --color-dice-fumble: #d96459;   /* 大失败：比普通失败更刺目的血色 */
+  --color-player-bg: #262016;     /* 玩家气泡：暗琥珀 */
+
+  /* 字体：衬线读故事，无衬线操界面，等宽读数值 */
+  --font-body: 'Noto Serif SC', 'Songti SC', 'SimSun', serif;
+  --font-ui: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+             'Microsoft YaHei', 'Segoe UI', sans-serif;
+  --font-title: 'ZCOOL XiaoWei', 'Noto Serif SC', 'Songti SC', serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+
+  color-scheme: dark;
 }
 
 body {
   margin: 0;
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   color: var(--color-text-primary);
   background:
-    repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 28px,
-      rgba(139, 37, 0, 0.03) 28px,
-      rgba(139, 37, 0, 0.03) 29px
-    ),
-    repeating-linear-gradient(
-      90deg,
-      transparent,
-      transparent 28px,
-      rgba(139, 37, 0, 0.02) 28px,
-      rgba(139, 37, 0, 0.02) 29px
-    ),
-    radial-gradient(ellipse at 20% 50%, #f5ead5 0%, transparent 70%),
-    radial-gradient(ellipse at 80% 50%, #ebe0ca 0%, transparent 70%),
-    linear-gradient(180deg, #f0e6d3 0%, #e5d8c0 50%, #ddd0b5 100%);
+    radial-gradient(ellipse 90% 55% at 50% -10%, rgba(212, 162, 78, 0.055) 0%, transparent 60%),
+    radial-gradient(ellipse 130% 90% at 50% 115%, rgba(4, 5, 8, 0.85) 0%, transparent 55%),
+    linear-gradient(180deg, #0e1118 0%, #0c0e13 55%, #0a0c10 100%);
   background-attachment: fixed;
 }
 
@@ -52,13 +61,18 @@ body {
   min-height: 100vh;
 }
 
+::selection {
+  background: rgba(212, 162, 78, 0.28);
+}
+
 /* ===== Scrollbar ===== */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border);
+  background: rgba(212, 162, 78, 0.22);
   border-radius: 3px;
 }
+::-webkit-scrollbar-thumb:hover { background: rgba(212, 162, 78, 0.38); }
 
 /* ===== Global Components ===== */
 
@@ -69,16 +83,17 @@ body {
   color: var(--color-text-accent);
   margin-bottom: 1.5rem;
   letter-spacing: 0.05em;
+  text-shadow: 0 0 18px rgba(212, 162, 78, 0.18);
 }
 
 .card {
-  background: var(--color-bg-card);
+  background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   padding: 1rem 1.25rem;
   box-shadow:
-    1px 2px 4px rgba(90, 60, 20, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+    0 2px 8px rgba(0, 0, 0, 0.35),
+    inset 0 0 42px rgba(0, 0, 0, 0.22);   /* 微暗角 */
   position: relative;
 }
 .card::before {
@@ -86,7 +101,7 @@ body {
   position: absolute;
   inset: 0;
   border-radius: 4px;
-  background: url("data:image/svg+xml,%3Csvg width='100' height='100' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100' height='100' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  background: url("data:image/svg+xml,%3Csvg width='100' height='100' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100' height='100' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
   pointer-events: none;
 }
 
@@ -101,21 +116,22 @@ body {
 
 .input {
   padding: 0.375rem 0.75rem;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-strong);
   border-radius: 3px;
   font-size: 0.875rem;
-  font-family: var(--font-body);
-  background: rgba(255, 255, 255, 0.4);
+  font-family: var(--font-ui);
+  background: rgba(0, 0, 0, 0.28);
   color: var(--color-text-primary);
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 .input:focus {
   border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px rgba(212, 162, 78, 0.12);
 }
 .input::placeholder {
   color: var(--color-text-secondary);
-  opacity: 0.7;
+  opacity: 0.65;
 }
 
 .btn-primary {
@@ -126,13 +142,13 @@ body {
   font-family: var(--font-title);
   font-weight: 600;
   letter-spacing: 0.05em;
-  background: var(--color-accent);
-  color: #f0e6d3;
+  background: linear-gradient(180deg, var(--color-accent-hover), var(--color-accent));
+  color: var(--color-on-accent);
   cursor: pointer;
-  transition: background 0.2s;
+  transition: filter 0.2s;
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--color-accent-hover);
+  filter: brightness(1.08);
 }
 .btn-primary:disabled {
   opacity: 0.4;
@@ -141,18 +157,18 @@ body {
 
 .btn-secondary {
   padding: 0.375rem 1rem;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-strong);
   border-radius: 3px;
   font-size: 0.875rem;
-  font-family: var(--font-body);
+  font-family: var(--font-ui);
   background: transparent;
   color: var(--color-text-primary);
   cursor: pointer;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, color 0.2s;
 }
 .btn-secondary:hover {
   border-color: var(--color-accent);
-  color: var(--color-accent);
+  color: var(--color-text-accent);
 }
 
 .badge {
@@ -175,9 +191,8 @@ body {
   flex-direction: column;
   flex-shrink: 0;
   border-right: 1px solid var(--color-border);
-  background:
-    linear-gradient(180deg, #e8dcc8 0%, #ddd0b5 100%);
-  box-shadow: 2px 0 8px rgba(90, 60, 20, 0.06);
+  background: linear-gradient(180deg, #12151d 0%, #0d1016 100%);
+  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.4);
 }
 
 .sidebar-logo {
@@ -188,6 +203,7 @@ body {
   font-weight: 700;
   color: var(--color-text-accent);
   letter-spacing: 0.1em;
+  text-shadow: 0 0 14px rgba(212, 162, 78, 0.25);
 }
 
 .sidebar-nav {
@@ -209,16 +225,16 @@ body {
 }
 .sidebar-link:hover {
   color: var(--color-text-primary);
-  background: rgba(139, 37, 0, 0.05);
+  background: rgba(212, 162, 78, 0.06);
 }
 .sidebar-link.active {
   color: var(--color-text-accent);
-  background: rgba(139, 37, 0, 0.08);
+  background: rgba(212, 162, 78, 0.1);
   font-weight: 600;
 }
 .sidebar-link svg {
   font-size: 1.1rem;
-  opacity: 0.8;
+  opacity: 0.85;
   flex-shrink: 0;
 }
 
@@ -237,7 +253,7 @@ body {
 }
 .sidebar-toggle:hover {
   color: var(--color-text-primary);
-  background: rgba(139, 37, 0, 0.05);
+  background: rgba(212, 162, 78, 0.06);
 }
 
 .sidebar-footer {
@@ -280,24 +296,35 @@ body {
   animation: fadeIn 0.2s ease;
 }
 
+/* KP 叙事：像在读一本旧书——衬线、舒缓行距、烛光侧线。
+   中文斜体是伪斜、可读性差，故不用 italic，靠字体与排版区分。 */
 .chat-msg--narration .chat-content {
-  font-style: italic;
-  line-height: 1.8;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  line-height: 1.95;
   color: var(--color-text-primary);
   padding: 0.5rem 0;
-  border-left: 2px solid var(--color-border);
+  border-left: 2px solid rgba(212, 162, 78, 0.35);
   padding-left: 1rem;
 }
 
 .chat-msg--dice .chat-content {
-  font-family: var(--font-ui);
+  font-family: var(--font-mono);
   color: var(--color-dice-gold);
   font-weight: 600;
   padding: 0.5rem 0.75rem;
-  background: rgba(184, 134, 11, 0.08);
-  border: 1px solid rgba(184, 134, 11, 0.2);
+  background: rgba(224, 183, 95, 0.07);
+  border: 1px solid rgba(224, 183, 95, 0.22);
   border-radius: 3px;
   display: inline-block;
+}
+
+/* 骰子事件卡：青铜质感底 */
+.dice-card {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--color-bg-tertiary) 86%, #b08d57),
+    var(--color-bg-tertiary));
+  font-family: var(--font-mono);
 }
 
 .chat-msg--system .chat-content {
@@ -343,21 +370,21 @@ body {
 .markdown-body blockquote {
   margin: 0.4em 0;
   padding: 0.2em 0 0.2em 0.8em;
-  border-left: 3px solid var(--color-border);
+  border-left: 3px solid var(--color-border-strong);
   color: var(--color-text-secondary);
 }
 .markdown-body code {
-  font-family: var(--font-ui, monospace);
+  font-family: var(--font-mono);
   font-style: normal;
   font-size: 0.9em;
-  background: rgba(139, 37, 0, 0.08);
+  background: rgba(212, 162, 78, 0.1);
   padding: 0.05em 0.35em;
   border-radius: 3px;
 }
 .markdown-body pre {
   margin: 0.5em 0;
   padding: 0.6em 0.8em;
-  background: var(--color-bg-tertiary, rgba(0, 0, 0, 0.04));
+  background: rgba(0, 0, 0, 0.3);
   border-radius: 4px;
   overflow-x: auto;
 }
@@ -375,7 +402,7 @@ body {
 }
 .markdown-body th,
 .markdown-body td {
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-strong);
   padding: 0.3em 0.6em;
 }
 
@@ -400,26 +427,30 @@ body {
   justify-content: flex-end;
 }
 
+/* 玩家气泡：暗琥珀调，与 NPC 冷色区分 */
 .chat-bubble-player {
   display: inline-block;
   max-width: 75%;
   padding: 0.5rem 0.85rem;
+  font-family: var(--font-body);
   background: var(--color-player-bg);
-  border: 1px solid var(--color-border);
+  border: 1px solid rgba(212, 162, 78, 0.28);
   border-radius: 4px 4px 0 4px;
-  line-height: 1.6;
-  box-shadow: 1px 1px 3px rgba(90, 60, 20, 0.1);
+  line-height: 1.7;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
 }
 
+/* NPC 气泡：冷暗底；按 NPC 微调色相（--npc-hue 由消息按角色名注入） */
 .chat-bubble-npc {
   display: inline-block;
   max-width: 80%;
   padding: 0.5rem 0.85rem;
-  background: rgba(255, 255, 255, 0.35);
-  border: 1px solid var(--color-border);
+  font-family: var(--font-body);
+  background: hsl(var(--npc-hue, 222) 18% 13%);
+  border: 1px solid hsl(var(--npc-hue, 222) 24% 30% / 0.55);
   border-radius: 4px 4px 4px 0;
-  line-height: 1.6;
-  box-shadow: 1px 1px 3px rgba(90, 60, 20, 0.06);
+  line-height: 1.7;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
 
 /* 行动/协助（emote）：与对话气泡区分——斜体、虚线框、低饱和，表示"做了某事"而非说话 */
@@ -427,8 +458,8 @@ body {
   display: inline-block;
   max-width: 80%;
   padding: 0.4rem 0.8rem;
-  background: rgba(139, 37, 0, 0.045);
-  border: 1px dashed var(--color-border);
+  background: rgba(212, 162, 78, 0.05);
+  border: 1px dashed var(--color-border-strong);
   border-radius: 4px;
   line-height: 1.6;
   font-style: italic;
@@ -501,8 +532,27 @@ body {
 /* ===== Select styling ===== */
 select.input {
   appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b5c4a' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2398a2ad' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 0.5rem center;
   padding-right: 1.5rem;
+}
+select.input option {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+/* ===== React Flow（模组场景关系图）暗色适配：默认控件是白底 ===== */
+.react-flow__controls {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+.react-flow__controls-button {
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border);
+}
+.react-flow__controls-button:hover {
+  background: var(--color-bg-tertiary);
+}
+.react-flow__controls-button svg {
+  fill: var(--color-text-secondary);
 }

@@ -50,8 +50,8 @@ const WS_FIELDS: { key: string; label: string }[] = [
 
 const DANGER_OPTS: { value: string; label: string; color: string }[] = [
   { value: 'calm', label: '平静', color: 'var(--color-text-secondary)' },
-  { value: 'uneasy', label: '不安', color: '#b8860b' },
-  { value: 'dangerous', label: '危险', color: '#c2410c' },
+  { value: 'uneasy', label: '不安', color: '#cfa93f' },
+  { value: 'dangerous', label: '危险', color: '#d1703c' },
   { value: 'deadly', label: '致命', color: 'var(--color-danger)' },
 ]
 const dangerMeta = (v?: string) => DANGER_OPTS.find((o) => o.value === v)
@@ -188,7 +188,7 @@ export function ModuleDetailPage() {
   const graph = view === 'graph'
   const wide = graph && !edit
   const tabBtn = (v: 'detail' | 'graph' | 'timeline', icon: React.ReactNode, label: string) => (
-    <button onClick={() => setView(v)} className="flex items-center gap-1 px-2 py-1" style={view === v ? { background: 'var(--color-accent)', color: '#fff' } : { color: 'var(--color-text-secondary)' }}>{icon} {label}</button>
+    <button onClick={() => setView(v)} className="flex items-center gap-1 px-2 py-1" style={view === v ? { background: 'var(--color-accent)', color: 'var(--color-on-accent)' } : { color: 'var(--color-text-secondary)' }}>{icon} {label}</button>
   )
   return (
     <div className={wide ? 'max-w-6xl' : 'max-w-3xl'}>
@@ -353,7 +353,7 @@ export function ModuleDetailPage() {
       <Section title={`触发器（${data.triggers.length}）`} onAdd={edit ? addTrigger : undefined}>
         {edit && (
           <p className="text-xs mb-2" style={{ color: 'var(--color-text-secondary)', opacity: 0.8 }}>
-            定义剧情推进：当某事发生 → 置/清剧情标志；标志名需与场景/NPC 变体的「条件」一致呼应。
+            定义剧情推进：当某事发生时，置/清对应的剧情标志；标志名需与场景/NPC 变体的「条件」一致呼应。
           </p>
         )}
         {data.triggers.map((t, i) => (
@@ -503,7 +503,7 @@ function MapPanel({ scenes, sceneId, onPick, generating, onGenerate, onSaveMap, 
             <div className="flex flex-wrap gap-1 mb-2">
               {floors!.map((fl, i) => (
                 <button key={i} onClick={() => setFloorIdx(i)} className="text-xs px-2 py-0.5 rounded border"
-                  style={{ borderColor: i === floorIdx ? 'var(--color-accent)' : 'var(--color-border)', background: i === floorIdx ? 'var(--color-accent)' : 'transparent', color: i === floorIdx ? '#fff' : 'var(--color-text-secondary)' }}>
+                  style={{ borderColor: i === floorIdx ? 'var(--color-accent)' : 'var(--color-border)', background: i === floorIdx ? 'var(--color-accent)' : 'transparent', color: i === floorIdx ? 'var(--color-on-accent)' : 'var(--color-text-secondary)' }}>
                   {fl.name || `第 ${i + 1} 层`}
                 </button>
               ))}
@@ -562,7 +562,7 @@ function ItemCard({ onRemove, children }: { onRemove?: () => void; children: Rea
   return (
     <div className="rounded-md p-2 mb-2 relative" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
       {onRemove && (
-        <button onClick={onRemove} className="absolute top-1.5 right-1.5 p-1 rounded hover:bg-[var(--color-danger)] hover:text-white transition-colors" style={{ color: 'var(--color-danger)' }} title="删除">
+        <button onClick={onRemove} className="absolute top-1.5 right-1.5 p-1 rounded hover:bg-[var(--color-danger-deep)] hover:text-white transition-colors" style={{ color: 'var(--color-danger)' }} title="删除">
           <Trash2 size={13} />
         </button>
       )}

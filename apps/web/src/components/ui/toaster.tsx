@@ -9,9 +9,9 @@ export function Toaster() {
           background: 'var(--color-bg-card)',
           border: '1px solid var(--color-border)',
           color: 'var(--color-text-primary)',
-          fontFamily: 'var(--font-body)',
+          fontFamily: 'var(--font-ui)',
           fontSize: '0.875rem',
-          boxShadow: '2px 4px 12px rgba(90, 60, 20, 0.15)',
+          boxShadow: '0 4px 16px rgba(0, 0, 0, 0.5)',
         },
       }}
     />

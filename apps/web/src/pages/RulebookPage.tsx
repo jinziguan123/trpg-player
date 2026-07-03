@@ -160,7 +160,7 @@ export function RulebookPage() {
           className="border-2 border-dashed rounded-md p-6 mb-3 text-center cursor-pointer transition-colors"
           style={{
             borderColor: dragOver ? 'var(--color-accent)' : 'var(--color-border)',
-            background: dragOver ? 'rgba(139, 37, 0, 0.04)' : 'rgba(255, 255, 255, 0.2)',
+            background: dragOver ? 'rgba(212, 162, 78, 0.07)' : 'rgba(255, 255, 255, 0.03)',
           }}
         >
           <input
@@ -226,7 +226,7 @@ export function RulebookPage() {
                     {(open) => (
                       <button
                         onClick={open}
-                        className="text-xs px-1.5 py-0.5 rounded hover:bg-[var(--color-danger)] hover:text-white transition-colors"
+                        className="text-xs px-1.5 py-0.5 rounded hover:bg-[var(--color-danger-deep)] hover:text-white transition-colors"
                         style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}
                       >
                         删除
