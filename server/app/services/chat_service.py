@@ -42,6 +42,15 @@ logger = logging.getLogger(__name__)
 # DICE_CHECK 升级为键值解析（参数顺序无关）：skill=必填；difficulty/char/visibility 选填。
 # char=对谁投（空/主角=主角，队友名，NPC 名）；visibility=open|blind（blind=暗投/暗骰，结果只给 KP）。
 DICE_CHECK_RE = re.compile(r"\[DICE_CHECK:([^\]]*)\]")
+# KP 有时（尤其多人回合）不发 [DICE_CHECK]、而是把「X 检定（normal）：困难成功 (10 ≤ 60)」这类
+# **机检结果行**当散文写进旁白——那本是系统掷骰后才产生的内容，KP 自撰＝伪造结果，且玩家看不到
+# 投骰提示/动画、结果卡也渲染不出。落库前确定性剥除这类行（要求「检定（<真实难度词>）：<成败等级>」
+# 连写，机检签名极强、正常叙事不会出现，误伤概率极低）。配套 kp_system 规则3 的提示词硬约束。
+_FAKE_CHECK_RESULT_RE = re.compile(
+    r"^[^\n]*?检定（(?:normal|hard|extreme|regular|常规|困难|极难)）\s*[:：]\s*"
+    r"(?:大成功|极难成功|困难成功|普通成功|普通失败|大失败|成功|失败)[^\n]*\n?",
+    re.M,
+)
 # 对抗骰：两方各投同名或不同技能，比成功等级。a/b 为角色名（主角/队友/NPC）。
 OPPOSED_CHECK_RE = re.compile(r"\[OPPOSED_CHECK:([^\]]*)\]")
 # SAN_CHECK 升级为键值解析：success_loss/failure_loss + chars=（目睹者，缺省在场全体）
@@ -1096,6 +1105,28 @@ def _persist_error_notice(db: Session, session_id: str, text: str) -> None:
         logger.exception("落库生成中断提示失败: session=%s", session_id)
 
 
+def _strip_fake_check_lines(narration: str, marks: list | None) -> tuple[str, list | None]:
+    """剥除 KP 误写进旁白的机检结果行（见 _FAKE_CHECK_RESULT_RE），并同步修正 dialogue_marks
+    偏移：删除点之前的 mark 不动，之后的按累计删除量前移（落在被删区间内的 mark 挪到区间起点）。"""
+    if not _FAKE_CHECK_RESULT_RE.search(narration):
+        return narration, marks
+    removals = [(m.start(), m.end()) for m in _FAKE_CHECK_RESULT_RE.finditer(narration)]
+    new_narr = _FAKE_CHECK_RESULT_RE.sub("", narration)
+    if not marks:
+        return new_narr, marks
+
+    def _shift(off: int) -> int:
+        removed = 0
+        for s, e in removals:
+            if e <= off:
+                removed += e - s
+            elif s < off < e:
+                removed += off - s
+        return off - removed
+
+    return new_narr, [(_shift(o), spk, txt) for o, spk, txt in marks]
+
+
 def _persist_narration(db: Session, session_id: str, result: list) -> None:
     """落库 KP 这一轮产物，保留旁白与对话的交错顺序（与流式渲染一致）。
 
@@ -1104,6 +1135,7 @@ def _persist_narration(db: Session, session_id: str, result: list) -> None:
     """
     narration = result[0]
     marks = result[3] if len(result) > 3 else None
+    narration, marks = _strip_fake_check_lines(narration, marks)
     group_marks = sorted(result[4], key=lambda g: g[0]) if len(result) > 4 and result[4] else []
 
     def _group_at(offset: int) -> str | None:

@@ -348,6 +348,52 @@ def test_group_label_tags_all_output(db_factory):
     assert groups and all(g == "图书馆" for g in groups)
 
 
+def test_fake_check_result_line_stripped_on_persist(db_factory):
+    """KP 把机检结果行误写进旁白（未发 [DICE_CHECK]）→ 落库前剥除，不留伪造结果。"""
+    result = ["", "", [], [], []]
+    result[0] = (
+        "伊芙琳·哈特的话术 检定（normal）：困难成功 (10 ≤ 60)\n"
+        "你压低声音说出那番话时，维托里奥的脸微微抬了起来。"
+    )
+    db = db_factory()
+    session_id = _seed_session(db)
+    chat_service._persist_narration(db, session_id, result)
+    narrs = _narrations(db_factory, session_id)
+    text = "".join(e.content or "" for e in narrs)
+    assert "检定（normal）" not in text and "困难成功" not in text
+    assert "你压低声音说出那番话时" in text  # 其余叙事保留
+
+
+def test_fake_check_strip_keeps_dialogue_offsets(db_factory):
+    """剥除机检行后，其后的对话 mark 偏移同步前移，交错顺序不错位。"""
+    narration = (
+        "X 检定（hard）：失败 (99 > 20)\n"
+        "他抬起头，喃喃自语。"
+    )
+    marks = [(len(narration), "维托里奥·马卡里奥", "容器")]
+    result = ["", "", [], marks, []]
+    result[0] = narration
+    db = db_factory()
+    session_id = _seed_session(db)
+    chat_service._persist_narration(db, session_id, result)
+    evs = session_service.get_session_events(db_factory(), session_id)
+    # 机检行没了；旁白（他抬起头…）在前、对话（容器）在后，顺序正确
+    assert not any("检定（hard）" in (e.content or "") for e in evs)
+    ordered = [(e.event_type, e.content) for e in evs if e.event_type in ("narration", "dialogue")]
+    assert ordered == [("narration", "他抬起头，喃喃自语。"), ("dialogue", "容器")]
+
+
+def test_normal_narration_with_check_word_not_stripped(db_factory):
+    """正常叙事里出现『检定』但非机检格式（无难度括号+成败连写）→ 不误删。"""
+    result = ["", "", [], [], []]
+    result[0] = "这是一次艰难的检定：成功与否，全看运气。他深吸一口气。"
+    db = db_factory()
+    session_id = _seed_session(db)
+    chat_service._persist_narration(db, session_id, result)
+    text = "".join(e.content or "" for e in _narrations(db_factory, session_id))
+    assert "这是一次艰难的检定" in text
+
+
 def test_split_focus_prompt_forbids_acting_for_members():
     """分头聚焦提示词必须禁止 KP 替该场景成员（玩家角色）说话/行动，只叙述场景与 NPC 反应。"""
     p = chat_service.SPLIT_FOCUS_PROMPT.format(label="疗养院", members="莫妮卡")
