@@ -11,6 +11,15 @@ from app.models.module import Module
 from app.models.session import GameSession
 from app.models.session_participant import SessionParticipant
 
+# 「仅 KP 可见」的 visibility 哨兵：带此哨兵的事件（如幕后推演）只进 KP 上下文，
+# 对一切玩家侧出口（历史/重连分页、搜索、AI 队友上下文、NPC 上下文、广播）全部不可见。
+KP_ONLY_SENTINEL = "kp"
+
+
+def is_kp_only_event(ev: EventLog) -> bool:
+    """该事件是否「仅 KP 可见」（visibility 含 kp 哨兵）——玩家侧查询一律过滤。"""
+    return KP_ONLY_SENTINEL in (ev.visibility or [])
+
 
 def _gen_room_code(db: Session) -> str:
     for _ in range(20):
@@ -539,13 +548,19 @@ def get_session_events(
 def get_latest_events(
     db: Session, session_id: str, limit: int = 50, before_seq: int | None = None,
 ) -> tuple[list[EventLog], bool]:
+    """前端历史/重连分页用的最新事件页（升序返回）。
+
+    「仅 KP 可见」事件（visibility 含 kp 哨兵，如幕后推演）在此过滤——本端点面向
+    所有玩家，幕后事件永远不下发前端。过滤在取页之后做（幕后事件稀疏），某页可能
+    略少于 limit，但 has_more/before_seq 分页语义不受影响。
+    """
     q = db.query(EventLog).filter(EventLog.session_id == session_id)
     if before_seq is not None:
         q = q.filter(EventLog.sequence_num < before_seq)
     q = q.order_by(EventLog.sequence_num.desc())
     rows = q.limit(limit + 1).all()
     has_more = len(rows) > limit
-    results = rows[:limit]
+    results = [e for e in rows[:limit] if not is_kp_only_event(e)]
     results.reverse()
     return results, has_more
 
@@ -559,7 +574,7 @@ def search_events(
     if not q:
         return []
     like = f"%{q}%"
-    return (
+    rows = (
         db.query(EventLog)
         .filter(
             EventLog.session_id == session_id,
@@ -570,6 +585,9 @@ def search_events(
         .limit(limit)
         .all()
     )
+    # 双保险：幕后事件（event_type=system）本就被类型过滤挡住，这里再按 kp 哨兵
+    # 显式过滤一次，防未来搜索范围扩大后泄露「仅 KP 可见」内容。
+    return [e for e in rows if not is_kp_only_event(e)]
 
 
 def human_character_ids(db: Session, session_id: str) -> set[str]:

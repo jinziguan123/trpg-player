@@ -36,6 +36,8 @@ MIN_RECENT_EVENTS = 10
 MAX_RECENT_EVENTS = 60
 # 被动注入的模组原文摘录：单块截断 400 字（摘录段计入 MAX_SYSTEM_TOKENS 预算）
 MODULE_EXCERPT_MAX_CHARS = 400
+# 「幕后动态」小节最多注入最近几条幕后事件（visibility=["kp"]，仅 KP 可见）
+MAX_BACKSTAGE_IN_CONTEXT = 5
 
 
 def _estimate_tokens(text: str) -> int:
@@ -407,6 +409,37 @@ def _format_module_excerpts(excerpts: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_backstage_section(events: list[EventLog]) -> str:
+    """KP 上下文的「幕后动态」小节：最近几条幕后推演事件（metadata.kind=backstage）。
+
+    这是「仅 KP 可见」事件的唯一注入出口——玩家侧（历史/搜索/队友/NPC/广播）全部
+    过滤。无幕后事件返回空串（向后兼容，不注入）。
+    """
+    rows = [
+        e for e in (events or [])
+        if (e.metadata_ or {}).get("kind") == "backstage"
+    ][-MAX_BACKSTAGE_IN_CONTEXT:]
+    if not rows:
+        return ""
+    lines = [
+        "【幕后动态】（玩家不可见——世界在他们视野之外的演进，仅供你把握局势，"
+        "绝不直接复述给玩家）"
+    ]
+    for e in rows:
+        meta = e.metadata_ or {}
+        line = f"- {(e.content or '').strip()}"
+        flags = [str(f) for f in (meta.get("suggest_flags") or []) if str(f).strip()]
+        if flags:
+            line += f"（若剧情落实，可考虑推进标志：{'、'.join(flags)}）"
+        lines.append(line)
+    lines.append(
+        "以上幕后事件玩家尚未目睹：绝不在旁白中直接宣告、总结或暗示它们发生过；"
+        "只有当玩家到场、调查或与相关 NPC 互动时，才让他们以「结果与痕迹」的方式自然发现。"
+        "所列推进标志只是建议，是否 [SET_FLAG] 由你在叙事时机成熟时决定。"
+    )
+    return "\n".join(lines)
+
+
 def build_kp_context(
     session: GameSession,
     module: Module,
@@ -541,6 +574,16 @@ def build_kp_context(
                 system_content += "\n\n" + npc_memory_section
         except Exception:
             logger.exception("世界记忆注入 KP 上下文失败（忽略）")
+
+    # 幕后动态（Backstage Clock）：最近几条幕后推演事件注入 KP 专属小节。
+    # fail-open：格式化异常绝不阻塞出牌；无幕后事件时不注入（与现状完全一致）。
+    if not is_opening:
+        try:
+            backstage_section = _format_backstage_section(events)
+            if backstage_section:
+                system_content += "\n\n" + backstage_section
+        except Exception:
+            logger.exception("幕后动态注入 KP 上下文失败（忽略）")
 
     party_char_ids = {player_char.id} | {t.id for t in teammates}
 
@@ -799,6 +842,10 @@ def _format_recent_events_digest(
     """把最近事件渲染成给 AI 队友看的纯文本摘要（玩家角色一视同仁，只区分"你"与他人）。"""
     lines: list[str] = []
     for ev in events:
+        # 「仅 KP 可见」事件（visibility 含 kp 哨兵，如幕后推演）绝不进玩家侧
+        # 队友的上下文——AI 队友是玩家方，看到即泄露。
+        if "kp" in (ev.visibility or []):
+            continue
         content = (ev.content or "").strip()
         if not content:
             continue

@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from sqlalchemy.orm import Session
 
 from app.ai import story_summarizer, turn_planner, turn_validator
+from app.ai.agents import backstage_agent
 from app.ai.agents.kp_agent import KPAgent
 from app.ai.agents.npc_agent import NPCAgent
 from app.ai.agents.team_agent import TeamAgent
@@ -1089,7 +1090,14 @@ async def _maybe_roll_story_summary(db: Session, session_id: str, llm) -> None:
         events = session_service.get_session_events(db, session_id, limit=0)
         ws = session.world_state or {}
         cursor = ws.get("story_summary_seq") or 0
-        uncovered = [e for e in events if (e.sequence_num or 0) > cursor]
+        # 幕后事件（仅 KP 可见）不进剧情摘要：摘要以「玩家已经历的剧情」口吻注入后续
+        # 所有 KP 上下文，混入会让幕后内容脱离「幕后动态」小节的守密措辞（格式混入风险）；
+        # KP 本就能从专属小节看到幕后动态，摘要里无需重复。
+        uncovered = [
+            e for e in events
+            if (e.sequence_num or 0) > cursor
+            and not session_service.is_kp_only_event(e)
+        ]
         if len(uncovered) <= STORY_SUMMARY_TRIGGER:
             return
         to_summ = uncovered[: len(uncovered) - STORY_SUMMARY_KEEP_RECENT]
@@ -1125,6 +1133,137 @@ async def _maybe_roll_story_summary(db: Session, session_id: str, llm) -> None:
         )
     except Exception:
         logger.exception("滚动剧情摘要失败（忽略）: session=%s", session_id)
+
+
+# 幕后推演触发间隔：自游标（world_state.backstage.last_run_seq）起累计的「玩家回合」
+# 事件数（玩家方角色的 action/dialogue，近似计数——与导演信号的判定思路一致）。
+BACKSTAGE_TURN_INTERVAL = 6
+# validator 预筛：最多把最近几条幕后事件文本挂进 plan.safety.do_not_reveal
+BACKSTAGE_DO_NOT_REVEAL_MAX = 3
+
+
+async def _maybe_run_backstage(db: Session, session_id: str, llm) -> None:
+    """幕后推演（Backstage Clock）：让世界在玩家不在场时按 NPC 的动机演进。
+
+    触发（在 KP 每轮生成收尾处评估，不阻塞叙事主流程）：
+    - 自游标起累计 ≥ ``BACKSTAGE_TURN_INTERVAL`` 个玩家回合事件；或
+    - 场景已切换（``backstage.last_scene_id`` ≠ 当前场景，[SCENE_CHANGE] 的天然时间流逝点）。
+    模组无带 secrets/goals 的 NPC → 永不触发、零调用；条件不满足 → 零成本返回。
+
+    安全约束（最重要）：幕后事件绝不直接改 flags / 剧情状态——只落 event_logs
+    （``visibility=["kp"]``，不广播，玩家永远不可见）+ 注入 KP 上下文；
+    ``suggest_flags`` 只是给 KP 的建议，是否 [SET_FLAG] 由 KP 后续叙事决定。
+
+    fail-open：LLM 异常 / 坏 JSON → 游标不动、无事件落库、下轮重试；任何异常不上抛。
+    """
+    try:
+        session = db.get(GameSession, session_id)
+        if not session or not session.module_id:
+            return
+        module = db.get(Module, session.module_id)
+        if not module:
+            return
+        secret_npcs = backstage_agent.npcs_with_secrets(module)
+        if not secret_npcs:
+            return  # 模组无幕后主体：永不触发，零调用
+        ws = session.world_state or {}
+        bs = dict(ws.get("backstage") or {})
+        if not bs:
+            # 首次评估：立基线（游标 0 + 当前场景），此后场景切换才可比对触发
+            _apply_world_memory(
+                db, session,
+                lambda w: world_memory.advance_backstage_cursor(
+                    w, 0, session.current_scene_id,
+                ),
+            )
+            bs = {"last_run_seq": 0, "last_scene_id": session.current_scene_id}
+        cursor = int(bs.get("last_run_seq") or 0)
+        events = session_service.get_session_events(db, session_id)
+        if not events:
+            return
+        last_seq = int(events[-1].sequence_num or 0)
+        if last_seq <= cursor:
+            return
+        party_ids = {session.player_character_id} | {
+            c.id for c in session_service.get_party_members(db, session_id)
+        }
+        turns = sum(
+            1 for e in events
+            if (e.sequence_num or 0) > cursor
+            and e.event_type in ("action", "dialogue")
+            and e.actor_id in party_ids
+        )
+        last_scene = bs.get("last_scene_id")
+        scene_changed = bool(
+            last_scene and session.current_scene_id
+            and session.current_scene_id != last_scene
+        )
+        if turns < BACKSTAGE_TURN_INTERVAL and not scene_changed:
+            return
+
+        since = [e for e in events if (e.sequence_num or 0) > cursor]
+        messages = backstage_agent.build_backstage_messages(
+            session, module, secret_npcs, since,
+        )
+        agent = backstage_agent.BackstageAgent(llm)
+        valid_ids = {n.get("id") for n in (module.npcs or []) if n.get("id")}
+        bevents = await agent.infer(messages, valid_ids)
+        if bevents is None:
+            return  # 调用/解析失败：游标不动、不落库（fail-open，下轮重试）
+
+        npc_names = {
+            n.get("id"): n.get("name") or n.get("id")
+            for n in (module.npcs or []) if n.get("id")
+        }
+        for be in bevents:
+            content = f"{npc_names.get(be['npc_id'], be['npc_id'])}：{be['action']}"
+            if be.get("affected_scene"):
+                content += f"（涉及：{_scene_name(module, be['affected_scene'])}）"
+            # 只落库，不广播（幕后事件玩家永远不可见，无 UI）
+            session_service.add_event(
+                db, session_id, "system", content, actor_name="幕后",
+                visibility=[session_service.KP_ONLY_SENTINEL],
+                metadata={
+                    "kind": "backstage",
+                    "npc_id": be["npc_id"],
+                    "affected_scene": be.get("affected_scene") or "",
+                    "suggest_flags": be.get("suggest_flags") or [],
+                },
+            )
+        # 推演成功（含 0 条＝「无事发生」也是结果）：游标推进到评估时的最新事件序号
+        _apply_world_memory(
+            db, session,
+            lambda w: world_memory.advance_backstage_cursor(
+                w, last_seq, session.current_scene_id,
+            ),
+        )
+        logger.info(
+            "幕后推演完成：session=%s 事件=%d 游标→%s", session_id, len(bevents), last_seq,
+        )
+    except Exception:
+        logger.exception("幕后推演失败（忽略）: session=%s", session_id)
+
+
+def _augment_plan_with_backstage(plan: turn_planner.TurnPlan | None, events: list) -> None:
+    """validator 预筛：把最近的幕后事件文本挂进 ``plan.safety.do_not_reveal``。
+
+    选它作为「预筛清单加幕后文本」的最小侵入实现：do_not_reveal 非空会让
+    ``turn_validator._looks_suspicious`` 判定值得校验（KP 直接复述幕后事件即被
+    改写拦下），且校验器把这些文本当硬性隐藏信息，连转述/暗示式泄露也能兜住；
+    turn_validator 本身零改动。代价是幕后事件存续期间每轮多一次低温校验调用，可接受。
+    KP 自身也会在计划消息里看到这份 do_not_reveal，等于再叮嘱一次守密。
+    """
+    if plan is None:
+        return
+    texts = [
+        (e.content or "").strip()
+        for e in (events or [])
+        if (e.metadata_ or {}).get("kind") == "backstage" and (e.content or "").strip()
+    ]
+    for text in texts[-BACKSTAGE_DO_NOT_REVEAL_MAX:]:
+        entry = "幕后事件（玩家不可见，绝不复述或暗示）：" + text[:80]
+        if entry not in plan.safety.do_not_reveal:
+            plan.safety.do_not_reveal.append(entry)
 
 
 def _team_blind_message(blind_results: list[str] | None) -> dict | None:
@@ -1372,6 +1511,11 @@ async def _run_generation(
                 db, game_session, plan, events, player_char, teammates,
             )
 
+    # 幕后推演 → validator 预筛：最近幕后事件文本挂进 plan.safety.do_not_reveal，
+    # 防 KP 把「玩家不可见」的幕后动态直接复述进旁白（单场景与分头路径共用此 plan）。
+    if plan is not None:
+        _augment_plan_with_backstage(plan, events)
+
     # 分头行动：按各成员「真实所在场景」归并（玩家经大地图、队友经 travel 动作更新的确定性位置）。
     # 身处 ≥2 个场景即分头 → 逐场景生成叙事。不再靠 LLM 猜分组、也不因「打算去X」误判。
     scene_groups = _location_groups(game_session, module, player_char, teammates)
@@ -1428,6 +1572,8 @@ async def _run_generation(
 
     room_hub.broadcast(session_id, _make_chunk("done"))
     await _maybe_roll_story_summary(db, session_id, llm)
+    # 幕后推演：KP 回合收尾处评估（不阻塞叙事主流程；条件不满足零调用）
+    await _maybe_run_backstage(db, session_id, llm)
 
 
 def _tag_turn_events_by_group(db: Session, turn_events: list, groups: list[dict]) -> None:
@@ -1546,6 +1692,8 @@ async def _run_split_generation(
 
     room_hub.broadcast(session_id, _make_chunk("done"))
     await _maybe_roll_story_summary(db, session_id, llm)
+    # 幕后推演：KP 回合收尾处评估（不阻塞叙事主流程；条件不满足零调用）
+    await _maybe_run_backstage(db, session_id, llm)
 
 
 def _skill_names(char: Character) -> list[str]:
@@ -1761,6 +1909,8 @@ async def _run_kp_turn(
 
     room_hub.broadcast(session_id, _make_chunk("done"))
     await _maybe_roll_story_summary(db, session_id, llm)
+    # 幕后推演：KP 回合收尾处评估（不阻塞叙事主流程；条件不满足零调用）
+    await _maybe_run_backstage(db, session_id, llm)
 
 
 async def run_check_request_generation(
