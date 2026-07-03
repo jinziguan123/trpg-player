@@ -14,6 +14,8 @@ __pycache__/
 
 # 用户上传的地图素材（运行时文件，不入库）
 server/data/
+# 嵌入模型缓存（fastembed 首次使用时下载 bge-small-zh-v1.5，~90MB，运行时重下，不入库）
+server/models/
 # 打包用的内置种子（由 make_seed.py 从开发库生成，构建时重建，不入库）
 server/seed/
 # 评估 scorecard 运行产物（本地对比用，不入库；fixtures/ 入库）
@@ -26,6 +28,8 @@ ai_settings.json
 target/
 .claude/
 .worktrees/
+# 本地开发工具配置（mcporter 等 MCP 工具管理器，与应用无关）
+config/
 
 # Tauri 打包：Rust 产物、生成的 schema、以及按平台构建的后端产物（由脚本重建）
 src-tauri/gen/
