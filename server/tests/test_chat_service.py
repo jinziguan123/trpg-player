@@ -1003,3 +1003,44 @@ def test_quote_without_trailing_verb_stays_narration():
     ))
     assert result[2] == []
     assert "咚" in result[0]
+
+
+def test_multi_npc_ambiguous_quote_stays_in_narration():
+    """窗口内出现 ≥2 个 NPC 主语时，弱信号归属≈瞎猜（气泡挂错名比留旁白更伤）——
+    不出气泡、整段留旁白；多说话人场景由 KP 的 [SAY] 显式指定。"""
+    text = (
+        "格雷夫斯端着烛台走进书房，霍尔护士长跟在他身后合上了门。"
+        "“老爷生前最后见的人，就是您二位。”"
+    )
+    npcs = [{"name": "格雷夫斯"}, {"name": "霍尔护士长"}]
+    result = ["", "", []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    assert result[2] == []  # 歧义场景不猜
+    assert "老爷生前最后见的人" in result[0]  # 台词原样留在旁白
+
+
+def test_single_npc_weak_signal_still_attributed():
+    """收紧只针对多 NPC 歧义：窗口内唯一 NPC 主语时，弱信号归属照常生效（行为不变）。"""
+    text = "格雷夫斯放下烛台。“老爷书房的钥匙，只有我这里有一把。”"
+    npcs = [{"name": "格雷夫斯"}, {"name": "霍尔护士长"}]
+    result = ["", "", []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    assert [name for name, _ in result[2]] == ["格雷夫斯"]
+
+
+def test_multi_npc_with_say_tag_attributed_correctly():
+    """多 NPC 场景配合 [SAY] 显式指定 → 正确归属（prompt 已强制该场景必用 SAY）。"""
+    text = (
+        "格雷夫斯端着烛台走进书房，霍尔护士长跟在他身后。"
+        "[SAY: who=霍尔护士长]老爷生前最后见的人，就是您二位。[/SAY]"
+    )
+    npcs = [{"name": "格雷夫斯"}, {"name": "霍尔护士长"}]
+    result = ["", "", []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    assert [name for name, _ in result[2]] == ["霍尔护士长"]

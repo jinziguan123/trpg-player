@@ -124,7 +124,9 @@ def _strip_speaker_prefix(text: str, speaker: str) -> str:
     return text
 # 句首/小句边界后充当「主语·动作」的 NPC 名（如「诺特点点头」「史蒂芬转过身」），用于
 # 在说话人以代词「他/她」承接、附近又有玩家名时，仍能把台词归给真正在行动的 NPC。
-_SUBJECT_BOUNDARY = "。！？!?\n　 ”」』）)】"
+# 含逗号/分号：并列小句的主语常跟在逗号后（「格雷夫斯走进书房，霍尔护士长跟在身后」），
+# 漏识别会让多说话人歧义保护（≥2 主语不猜）失效。
+_SUBJECT_BOUNDARY = "。！？!?\n　 ”」』）)】，,；;"
 
 CMD_TAG_PREFIXES = (
     "DICE_CHECK:", "OPPOSED_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:",
@@ -539,9 +541,14 @@ async def _filter_narration_stream(
         return name
 
     def _recent_npc_subject(s: str) -> str | None:
-        """最近作为「小句主语」出现的非玩家 NPC（名字紧跟在句首/句末标点后）→ 其后台词的说话人。"""
+        """最近作为「小句主语」出现的非玩家 NPC（名字紧跟在句首/句末标点后）→ 其后台词的说话人。
+
+        窗口内出现 **≥2 个不同 NPC 主语**时返回 None：此时「取最近者」≈瞎猜（约一半会归错，
+        气泡挂错名字比台词留在旁白更伤沉浸感），宁可留旁白——多说话人场景由 KP 的 [SAY]
+        显式指定（prompt 已强制），不靠启发式赌。"""
         recent = s[-200:]
         best_pos, best = -1, None
+        subjects: set[str] = set()
         for canonical, parts, is_player in npc_matchers:
             if is_player:
                 continue
@@ -552,9 +559,12 @@ async def _filter_narration_stream(
                     if p < 0:
                         break
                     if p == 0 or recent[p - 1] in _SUBJECT_BOUNDARY:
+                        subjects.add(canonical)
                         if p > best_pos:
                             best_pos, best = p, canonical
                     start = p + 1
+        if len(subjects) >= 2:
+            return None
         return best
 
     def _resolve_speaker(pre: str) -> tuple[str | None, bool, bool, bool]:
@@ -1842,9 +1852,12 @@ async def _detect_check_request(llm, text: str, char: Character) -> str | None:
     user = (
         f"玩家这轮的输入：\n{text}\n\n"
         + (f"该角色可用技能：{'、'.join(skills)}\n" if skills else "")
-        + "判断玩家是否在【主动要求做一次技能/属性检定】"
-        "（如「我用心理学看看他说的真假」「我要过一个侦查检定」「掷个聆听」）。\n"
-        '是 → {"check": true, "skill": "技能名（尽量用上面列表里的原名）"}\n'
+        + "此外九维属性也可申请检定（返回其中文名即可）：力量、体质、体型、敏捷、外貌、"
+        "智力、意志、教育、幸运；「灵感」=智力、「知识」=教育。\n"
+        "判断玩家是否在【主动要求做一次技能/属性检定】"
+        "（如「我用心理学看看他说的真假」「我要过一个侦查检定」「掷个聆听」"
+        "「我想过个教育检定回忆一下」「过一个力量把门撞开」）。\n"
+        '是 → {"check": true, "skill": "技能名或属性中文名（尽量用上面列出的原名）"}\n'
         '否（只是普通说话/行动/移动/环境互动）→ {"check": false}\n只输出 JSON。'
     )
     try:

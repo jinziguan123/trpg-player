@@ -310,7 +310,9 @@ def build_turn_plan_messages(
                 "玩家行动没有贴切技能时选最相关的属性。"
                 "导演信号显示卡关时，应主动裁定一次灵感/教育/相关知识检定作为解卡手段"
                 "（requires_check=true，并让 direction.nudge 与之呼应：成功给一点方向、"
-                "失败不给或给误导），不要干等玩家自己想起来申请。\n"
+                "失败不给或给误导），不要干等玩家自己想起来申请。"
+                "但主动裁定仅限被动/本能类（感知/抗性/灵光/SAN）；心理学、话术、图书馆使用等"
+                "**主动运用型技能**只能因应玩家自己的宣言裁定，玩家没说要用就不发——那是替玩家行动。\n"
                 + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
                 + director_block
             ),
