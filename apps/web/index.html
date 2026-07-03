@@ -6,7 +6,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0c0e13" />
     <title>TRPG Player</title>
-    <style>html { background: #0c0e13; }</style>
+    <style>
+      html { background: #0c0e13; }
+      html[data-theme="parchment"] { background: #f0e6d3; }
+    </style>
+    <!-- 防白闪：在 #root 渲染前，据 localStorage 设好主题（与 src/lib/theme.ts 保持一致） -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('trpg_theme');
+          if (t === 'parchment') {
+            document.documentElement.setAttribute('data-theme', 'parchment');
+            var m = document.querySelector('meta[name="theme-color"]');
+            if (m) m.setAttribute('content', '#f0e6d3');
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

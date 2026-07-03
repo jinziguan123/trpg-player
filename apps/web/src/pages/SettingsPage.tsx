@@ -8,6 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { THEMES, getTheme, setTheme, type Theme } from '@/lib/theme'
 
 /* ---------- 类型定义 ---------- */
 
@@ -64,6 +65,7 @@ const PROTOCOL_INFO: Record<
 
 const SETTINGS_TABS = [
   { key: 'ai', label: 'AI 配置' },
+  { key: 'appearance', label: '外观' },
   // 未来扩展：{ key: 'game', label: '游戏设置' },
 ] as const
 
@@ -83,7 +85,7 @@ export function SettingsPage() {
           flexShrink: 0,
           borderRight: '1px solid var(--color-border)',
           paddingTop: '1rem',
-          background: 'rgba(232, 220, 200, 0.3)',
+          background: 'var(--color-bg-secondary)',
         }}
       >
         <div
@@ -134,6 +136,95 @@ export function SettingsPage() {
       {/* 右侧内容区 */}
       <div style={{ flex: 1, padding: '1rem 1.5rem', overflow: 'auto' }}>
         {activeTab === 'ai' && <AISettingsPanel />}
+        {activeTab === 'appearance' && <AppearanceSettingsPanel />}
+      </div>
+    </div>
+  )
+}
+
+/* ---------- 外观 / 主题面板 ---------- */
+
+function AppearanceSettingsPanel() {
+  const [theme, setThemeState] = useState<Theme>(() => getTheme())
+
+  const choose = (t: Theme) => {
+    setTheme(t) // 写 localStorage + 改 documentElement.dataset.theme，即时生效
+    setThemeState(t)
+  }
+
+  return (
+    <div>
+      <h2 className="page-title">外观</h2>
+      <div className="card">
+        <h3 className="card-title">主题</h3>
+        <p
+          className="text-xs"
+          style={{ color: 'var(--color-text-secondary)', marginBottom: '0.85rem' }}
+        >
+          切换即时生效，刷新后保持。
+        </p>
+        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+          {THEMES.map((opt) => {
+            const active = theme === opt.value
+            return (
+              <button
+                key={opt.value}
+                onClick={() => choose(opt.value)}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.5rem',
+                  padding: '0.75rem',
+                  minWidth: '9rem',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  borderRadius: '4px',
+                  border: `1px solid ${active ? 'var(--color-accent)' : 'var(--color-border-strong)'}`,
+                  background: active
+                    ? 'rgba(212, 162, 78, 0.08)'
+                    : 'var(--color-input-bg)',
+                  transition: 'border-color 0.2s',
+                }}
+              >
+                {/* 色板预览 */}
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {opt.swatch.map((c) => (
+                    <span
+                      key={c}
+                      style={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: '3px',
+                        background: c,
+                        border: '1px solid rgba(128,128,128,0.35)',
+                      }}
+                    />
+                  ))}
+                </div>
+                <span
+                  style={{
+                    fontFamily: 'var(--font-title)',
+                    fontSize: '0.9rem',
+                    fontWeight: 600,
+                    color: active
+                      ? 'var(--color-text-accent)'
+                      : 'var(--color-text-primary)',
+                  }}
+                >
+                  {opt.label}
+                </span>
+                <span
+                  style={{
+                    fontSize: '0.72rem',
+                    color: 'var(--color-text-secondary)',
+                  }}
+                >
+                  {active ? '当前使用' : '点击切换'}
+                </span>
+              </button>
+            )
+          })}
+        </div>
       </div>
     </div>
   )

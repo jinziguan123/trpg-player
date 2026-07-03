@@ -20,7 +20,7 @@ const SelectTrigger = React.forwardRef<
     )}
     style={{
       borderColor: 'var(--color-border-strong)',
-      background: 'rgba(0,0,0,0.28)',
+      background: 'var(--color-input-bg)',
       color: 'var(--color-text-primary)',
       fontFamily: 'var(--font-ui)',
     }}
