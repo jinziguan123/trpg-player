@@ -65,3 +65,9 @@ class RuleEngine(ABC):
 
     def roll_dice(self, notation: str):
         return roll(notation)
+
+    def improvement_check(self, current_value: int) -> dict | None:
+        """技能成长检定（战后结算）。默认规则系统不支持成长，返回 None；
+        支持的引擎（如 CoC）覆盖此方法，返回
+        ``{"roll", "improved", "gain", "old_value", "new_value"}``。"""
+        return None

@@ -282,6 +282,40 @@ async def generate_recap(
     return entry
 
 
+@router.get("/{session_id}/growth")
+def growth_eligible(
+    session_id: str,
+    character_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """列出某角色本局可成长的技能（成功用过的技能）。"""
+    from app.services import growth_service
+
+    if not session_service.get_session(db, session_id):
+        raise HTTPException(404, "会话不存在")
+    return {"skills": growth_service.eligible_skills(db, session_id, character_id)}
+
+
+@router.post("/{session_id}/growth/settle")
+def growth_settle(
+    session_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """对某角色的可成长技能逐项做成长检定并落库，返回逐项结果。"""
+    from app.services import growth_service
+
+    character_id = (body or {}).get("character_id")
+    if not character_id:
+        raise HTTPException(400, "缺少 character_id")
+    result = growth_service.settle_growth(db, session_id, character_id)
+    if result is None:
+        raise HTTPException(404, "会话或角色不存在")
+    return result
+
+
 @router.put("/{session_id}/status", response_model=SessionRead)
 def update_status(
     session_id: str, data: SessionStatusUpdate, db: Session = Depends(get_db)

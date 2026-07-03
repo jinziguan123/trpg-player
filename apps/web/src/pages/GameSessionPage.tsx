@@ -11,9 +11,10 @@ import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { DiceRoller, type DiceRollerHandle, type DiceSpec } from '../components/game/DiceRoller'
 import { ContextUsageBadge } from '../components/game/ContextUsageBadge'
 import { RecapModal } from '../components/game/RecapModal'
+import { GrowthModal } from '../components/game/GrowthModal'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { useMapAssets } from '../components/module/useMapAssets'
-import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers } from 'react-icons/gi'
+import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade } from 'react-icons/gi'
 import { Copy, Bot, Map as MapIcon, ChevronUp, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 
@@ -136,6 +137,7 @@ export function GameSessionPage() {
   const [showMap, setShowMap] = useState(false)
   const [showBigMap, setShowBigMap] = useState(false)         // 大地图（已知地点前往）
   const [showRecap, setShowRecap] = useState(false)           // 战报 / 章节小结弹窗
+  const [showGrowth, setShowGrowth] = useState(false)         // 成长结算弹窗
   const [locations, setLocations] = useState<KnownLocation[]>([])
   const [confirmTravel, setConfirmTravel] = useState<KnownLocation | null>(null)  // 前往二次确认
   const [splitView, setSplitView] = useState(true)            // 分头行动分栏（检测到多组时生效）
@@ -741,6 +743,15 @@ export function GameSessionPage() {
             >
               <GiScrollUnfurled size={13} /> 战报
             </button>
+            {myCharId && (
+              <button
+                onClick={() => setShowGrowth(true)}
+                className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
+                title="成长结算：本局成功用过的技能做成长检定"
+              >
+                <GiUpgrade size={13} /> 成长
+              </button>
+            )}
             <button
               onClick={() => { setConfirmTravel(null); setShowBigMap((v) => !v) }}
               className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
@@ -766,6 +777,9 @@ export function GameSessionPage() {
           </div>
         </div>
         {showRecap && <RecapModal sessionId={currentSession.id} onClose={() => setShowRecap(false)} />}
+        {showGrowth && myCharId && (
+          <GrowthModal sessionId={currentSession.id} characterId={myCharId} onClose={() => setShowGrowth(false)} />
+        )}
         {showSearch && (
           // 历史检索悬浮窗：遮罩 + 居中浮层，点遮罩 / Esc / X 关闭；不占据聊天区布局。
           <div

@@ -1,6 +1,7 @@
 """CoC 7th Edition 规则引擎"""
 
 from app.rules.base import CheckResult, DamageResult, RuleEngine
+from app.rules.dice import roll, roll_percentile
 from app.rules.coc.character import (
     COC_DEFAULT_SKILLS,
     apply_attr_derived_skills,
@@ -82,6 +83,20 @@ class CoCRuleEngine(RuleEngine):
         return resolve_skill_check(
             character_data, skill_name, difficulty, bonus=bonus, penalty=penalty,
         )
+
+    def improvement_check(self, current_value: int) -> dict:
+        """CoC 成长检定：d100 > 当前技能值（或 > 95）即成长，+1d10（上限 99）。"""
+        r = roll_percentile()
+        improved = r > current_value or r > 95
+        gain = roll("1d10").total if improved else 0
+        new_value = min(current_value + gain, 99) if improved else current_value
+        return {
+            "roll": r,
+            "improved": improved and new_value > current_value,
+            "gain": new_value - current_value,
+            "old_value": current_value,
+            "new_value": new_value,
+        }
 
     def apply_damage(
         self, target_data: dict, damage: int, damage_type: str = "physical"
