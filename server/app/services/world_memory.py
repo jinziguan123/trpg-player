@@ -186,6 +186,23 @@ def apply_memory_delta(
     return ws
 
 
+def advance_backstage_cursor(ws: dict, seq: int, scene_id: str | None = None) -> dict:
+    """推进幕后推演游标（``world_state.backstage``，设计稿 1.1 预留的子键）。
+
+    ``last_run_seq``：下次推演从此事件序号之后起算「玩家回合」；
+    ``last_scene_id``：上次推演时所在场景——之后发生 [SCENE_CHANGE] 即触发下一次推演。
+    纯函数：不改入参，返回更新后的新 dict。只动 backstage 子键，绝不触碰
+    flags / clue_ledger 等剧情状态（幕后推演的安全约束）。
+    """
+    ws = dict(ws or {})
+    bs = dict(ws.get("backstage") or {})
+    bs["last_run_seq"] = int(seq or 0)
+    if scene_id:
+        bs["last_scene_id"] = scene_id
+    ws["backstage"] = bs
+    return ws
+
+
 def discovered_clue_status(ws: dict) -> dict[str, str]:
     """{clue_id: status}，只含已被触碰的线索——给 planner 做 candidate 过滤输入。"""
     out: dict[str, str] = {}
