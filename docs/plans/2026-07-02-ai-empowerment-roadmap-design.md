@@ -388,9 +388,15 @@ P3（大工程，独立分支）
   └── 方案四 Handouts（依赖解析 prompt 改版 + 前端卡片）
 
 P4（战略层）
-  ├── 5.2 战后资产（无依赖，可随时提前，适合当节奏调剂）
-  └── 5.1 KP 副驾模式（依赖方案一/四的服务化能力）
+  ├── 5.2 战后资产（无依赖，可随时提前，适合当节奏调剂）✅ 已落地
+  │      战报 recap（recap.py/recap_service.py，world_state.recaps）、
+  │      成长结算（RuleEngine.improvement_check + growth_service）、
+  │      团记导出（replay.py/replay_service.py，/replay?style=novel|script）
+  └── 5.1 KP 副驾模式（依赖方案一/四的服务化能力）— 暂缓
 ```
+
+> 另：上下文占用预估（context_estimate + /context-estimate + 前端徽标 + AIProfile.context_window）
+> 已落地，作为后续「上下文压缩」的基础（不属原 P4，独立小特性）。
 
 **风险备忘**：
 - 模组原文注入的泄密风险靠三重防线缓释但非归零，评估集里必须有「摘录含秘密」的危险轮 fixture。
