@@ -31,6 +31,26 @@ function Section({ label, items }: { label: string; items: string[] }) {
 export function RecapModal({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
   const [recaps, setRecaps] = useState<Recap[]>([])
   const [genning, setGenning] = useState(false)
+  const [exporting, setExporting] = useState<string | null>(null)
+
+  const exportReplay = async (style: 'novel' | 'script') => {
+    setExporting(style)
+    try {
+      const r = await api.get<{ markdown: string; title: string }>(`/sessions/${sessionId}/replay?style=${style}`)
+      const blob = new Blob([r.markdown], { type: 'text/markdown;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${r.title || '团记'}-${style === 'novel' ? '小说体' : '剧本体'}.md`
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.success('团记已导出')
+    } catch {
+      toast.error('团记导出失败，请稍后重试')
+    } finally {
+      setExporting(null)
+    }
+  }
 
   const load = useCallback(() => {
     api.get<{ recaps: Recap[] }>(`/sessions/${sessionId}/recaps`)
@@ -69,6 +89,12 @@ export function RecapModal({ sessionId, onClose }: { sessionId: string; onClose:
             <GiScrollUnfurled /> 战报 / 章节小结
           </h2>
           <div className="flex items-center gap-2">
+            <button onClick={() => exportReplay('novel')} disabled={!!exporting} className="btn-secondary !px-2 !py-1 text-sm disabled:opacity-50" title="把整局改写成小说体 markdown 下载">
+              {exporting === 'novel' ? '导出中…' : '导出小说'}
+            </button>
+            <button onClick={() => exportReplay('script')} disabled={!!exporting} className="btn-secondary !px-2 !py-1 text-sm disabled:opacity-50" title="把整局改写成剧本体 markdown 下载">
+              {exporting === 'script' ? '导出中…' : '导出剧本'}
+            </button>
             <button onClick={generate} disabled={genning} className="btn-primary !px-3 !py-1 text-sm disabled:opacity-50">
               {genning ? '生成中…' : '生成战报'}
             </button>

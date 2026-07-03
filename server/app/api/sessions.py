@@ -316,6 +316,24 @@ def growth_settle(
     return result
 
 
+@router.get("/{session_id}/replay")
+async def export_replay(
+    session_id: str,
+    style: str = "novel",
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """把整局改写成小说体/剧本体 markdown 团记（离线批处理，逐窗改写）。"""
+    from app.services import replay_service
+
+    if not session_service.get_session(db, session_id):
+        raise HTTPException(404, "会话不存在")
+    result = await replay_service.export_replay(db, session_id, style)
+    if result is None:
+        raise HTTPException(404, "会话无可导出的事件")
+    return result
+
+
 @router.put("/{session_id}/status", response_model=SessionRead)
 def update_status(
     session_id: str, data: SessionStatusUpdate, db: Session = Depends(get_db)
