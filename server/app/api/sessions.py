@@ -236,6 +236,21 @@ def get_session(
     )
 
 
+@router.get("/{session_id}/context-estimate")
+def get_context_estimate(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """预估下一回合 KP 上下文的 token 占用与模型窗口占比，供判断能否继续跑团。"""
+    from app.services.context_estimate import estimate_session_context
+
+    result = estimate_session_context(db, session_id)
+    if result is None:
+        raise HTTPException(404, "会话不存在或缺少模组/角色")
+    return result
+
+
 @router.put("/{session_id}/status", response_model=SessionRead)
 def update_status(
     session_id: str, data: SessionStatusUpdate, db: Session = Depends(get_db)

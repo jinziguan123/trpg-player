@@ -35,6 +35,9 @@ class AIProfile(BaseModel):
     # KP 生成走 agent loop（标准工具调用）新路径的开关。默认关闭走旧正则指令路径；
     # 开启且 Provider 支持工具（supports_tools）时才生效，见 chat_service._tool_loop_active。
     use_tool_calls: bool = False
+    # 模型上下文窗口（token）。0 = 未知，由 resolve_context_window 按模型名启发式回落。
+    # 用于「上下文占用预估」判断模型是否还撑得住继续跑团。
+    context_window: int = 0
 
 
 class AIProfileCreate(BaseModel):
@@ -45,6 +48,7 @@ class AIProfileCreate(BaseModel):
     api_key: str = ""
     vision: bool = False
     use_tool_calls: bool = False
+    context_window: int = 0
 
 
 class AIProfileUpdate(BaseModel):
@@ -55,6 +59,38 @@ class AIProfileUpdate(BaseModel):
     api_key: str | None = None
     vision: bool | None = None
     use_tool_calls: bool | None = None
+    context_window: int | None = None
+
+
+# 常见模型的上下文窗口（token）——用于用户没显式配 context_window 时的启发式回落。
+# 只做子串匹配，覆盖主流；未命中回落 _DEFAULT_CONTEXT_WINDOW（偏保守但 ≥ 现有上下文预算）。
+_MODEL_CONTEXT_WINDOWS: list[tuple[str, int]] = [
+    ("claude", 200_000),
+    ("gpt-4o", 128_000),
+    ("gpt-4.1", 1_000_000),
+    ("o1", 200_000),
+    ("o3", 200_000),
+    ("gemini", 1_000_000),
+    ("deepseek", 65_536),
+    ("qwen", 131_072),
+    ("glm", 131_072),
+    ("moonshot", 131_072),
+    ("kimi", 131_072),
+    ("doubao", 131_072),
+    ("yi", 65_536),
+]
+_DEFAULT_CONTEXT_WINDOW = 65_536
+
+
+def resolve_context_window(profile: "AIProfile | None") -> int:
+    """解析模型的有效上下文窗口：显式配置优先，否则按模型名启发式，最后回落默认值。"""
+    if profile and profile.context_window and profile.context_window > 0:
+        return profile.context_window
+    name = (profile.model_name if profile else "").lower()
+    for key, window in _MODEL_CONTEXT_WINDOWS:
+        if key in name:
+            return window
+    return _DEFAULT_CONTEXT_WINDOW
 
 
 class TestResult(BaseModel):
@@ -170,6 +206,7 @@ def create_profile(body: AIProfileCreate):
         api_key=body.api_key,
         vision=body.vision,
         use_tool_calls=body.use_tool_calls,
+        context_window=body.context_window,
         is_active=len(profiles) == 0,  # 第一个配置自动激活
     )
     profiles.append(new_profile)
@@ -202,6 +239,8 @@ def update_profile(profile_id: str, body: AIProfileUpdate):
         target.vision = body.vision
     if body.use_tool_calls is not None:
         target.use_tool_calls = body.use_tool_calls
+    if body.context_window is not None:
+        target.context_window = body.context_window
     if body.api_key is not None:
         # 如果包含掩码字符，说明前端没有修改 key，保留旧值
         if "****" not in body.api_key:

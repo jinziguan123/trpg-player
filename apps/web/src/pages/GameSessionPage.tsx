@@ -9,6 +9,7 @@ import { CharacterPanel } from '../components/character/CharacterPanel'
 import { PartyRoster } from '../components/game/PartyRoster'
 import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { DiceRoller, type DiceRollerHandle, type DiceSpec } from '../components/game/DiceRoller'
+import { ContextUsageBadge } from '../components/game/ContextUsageBadge'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { useMapAssets } from '../components/module/useMapAssets'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers } from 'react-icons/gi'
@@ -723,6 +724,7 @@ export function GameSessionPage() {
             </button>
           )}
           <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            <ContextUsageBadge sessionId={currentSession.id} refreshKey={messages.length} paused={streaming} />
             <button
               onClick={() => setShowSearch((v) => !v)}
               className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"

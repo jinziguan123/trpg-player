@@ -21,6 +21,7 @@ interface AIProfile {
   api_key: string
   is_active: boolean
   vision?: boolean
+  context_window?: number
 }
 
 interface TestResult {
@@ -36,6 +37,7 @@ type FormData = {
   model_name: string
   api_key: string
   vision: boolean
+  context_window: number
 }
 
 const EMPTY_FORM: FormData = {
@@ -45,6 +47,7 @@ const EMPTY_FORM: FormData = {
   model_name: '',
   api_key: '',
   vision: false,
+  context_window: 0,
 }
 
 const PROTOCOL_INFO: Record<
@@ -273,6 +276,7 @@ function AISettingsPanel() {
       model_name: p.model_name,
       api_key: p.api_key,
       vision: !!p.vision,
+      context_window: p.context_window || 0,
     })
   }
 
@@ -610,6 +614,24 @@ function AISettingsPanel() {
               </label>
               <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
                 勾选后才能用「据图片生成地图 / 图片模组解析」等看图功能。请确保所选模型确实支持视觉（如 GPT-4o / Claude / Gemini / Qwen-VL）。
+              </p>
+            </div>
+
+            {/* 上下文窗口 */}
+            <div>
+              <label className="block text-sm font-semibold mb-1" style={{ fontSize: '0.85rem' }}>
+                上下文窗口（token）
+              </label>
+              <input
+                type="number"
+                min={0}
+                className="input w-full"
+                placeholder="留空/0：按模型名自动判断（如 deepseek≈64k、claude≈200k）"
+                value={form.context_window || ''}
+                onChange={(e) => setForm({ ...form, context_window: Number(e.target.value) || 0 })}
+              />
+              <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+                用于游戏页「上下文占用」预估，判断模型还撑不撑得住继续跑团。填 0 则自动按模型名推断。
               </p>
             </div>
 
