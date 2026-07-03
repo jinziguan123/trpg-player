@@ -39,6 +39,8 @@ REQUIRED_ARGS = {
 _CMD_TOKEN_RE = re.compile(r"\[(/?[A-Z][A-Z_]{2,})(?:[:：]([^\]]*))?\]")
 # 叙事文本里的裸内部 id（指令参数里出现是合法的，检查前先剥指令）
 _BARE_ID_RE = re.compile(r"\b(?:scene|npc|clue|trigger)_[a-z0-9_]+", re.IGNORECASE)
+# 玩家消息格式回显：KP 把玩家自己的输入「[某某 行动] …」「[某某 发言] …」复读进旁白。
+_EVENT_ECHO_RE = re.compile(r"\[[^\[\]]{1,20}[\s　](?:行动|发言|说道|台词)\]")
 
 # 替玩家行动启发式：玩家名紧跟说话动词+引号 → KP 疑似替玩家角色开口。
 # 前置 对/向/朝/跟/和/与 时是 NPC 对玩家说话，排除。
@@ -101,6 +103,17 @@ def check_command_syntax(narration: str) -> list[Finding]:
     return findings
 
 
+def check_event_echo(narration: str) -> list[Finding]:
+    """旁白里回显了玩家消息格式「[某某 行动]/[某某 发言]」——KP 复读玩家输入，判错。"""
+    return [
+        Finding(
+            check="event_echo", severity="error",
+            detail=f"旁白回显了玩家消息格式「{m.group(0)}」",
+        )
+        for m in _EVENT_ECHO_RE.finditer(narration)
+    ]
+
+
 def check_player_control(narration: str, player_names: list[str]) -> list[Finding]:
     text = _strip_commands(narration)
     findings = []
@@ -126,5 +139,6 @@ def run_all_checks(narration: str, player_names: list[str]) -> list[Finding]:
     findings += check_internal_ids(narration)
     findings += check_report_style(narration)
     findings += check_command_syntax(narration)
+    findings += check_event_echo(narration)
     findings += check_player_control(narration, player_names)
     return findings

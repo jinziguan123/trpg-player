@@ -65,6 +65,23 @@ class TestCommandSyntax:
         assert not checks.check_command_syntax("他递来一张纸条[字迹潦草]。")
 
 
+class TestEventEcho:
+    def _errs(self, text):
+        return [f for f in checks.check_event_echo(text) if f.severity == "error"]
+
+    def test_回显玩家行动格式判错(self):
+        assert self._errs("[亨利·卡特 行动] 我重点关注侧板接缝。")
+
+    def test_回显玩家发言格式判错(self):
+        assert self._errs("话音落下。[格雷夫斯 发言] 「请随我来」")
+
+    def test_正常方括号旁白不误报(self):
+        assert not self._errs("他递来一张纸条[字迹潦草]。")
+
+    def test_指令标签不误报(self):
+        assert not self._errs("你俯身细听。[DICE_CHECK: skill=聆听]")
+
+
 class TestPlayerControl:
     NAMES = ["亨利·卡特"]
 
