@@ -31,6 +31,8 @@ class CheckPlan(BaseModel):
     difficulty: str = "normal"
     visibility: str = "open"
     reason: str = ""
+    bonus: int = 0    # 奖励骰数量：情境明显有利时 1，系统多掷十位取优
+    penalty: int = 0  # 惩罚骰数量：情境明显不利时 1，系统多掷十位取劣
 
 
 class CluePolicy(BaseModel):
@@ -399,6 +401,10 @@ def _check_directive(check: CheckPlan) -> str:
         parts.append(f"difficulty={check.difficulty}")
     if check.visibility and check.visibility != "open":
         parts.append(f"visibility={check.visibility}")
+    if check.bonus:
+        parts.append(f"bonus={check.bonus}")
+    if check.penalty:
+        parts.append(f"penalty={check.penalty}")
     return f"[DICE_CHECK: {', '.join(parts)}]"
 
 

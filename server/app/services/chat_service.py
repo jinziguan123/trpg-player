@@ -298,6 +298,49 @@ def _resolve_check_actor(
     return cdata_of(player_char), player_char.name, False, player_char.id
 
 
+def _parse_bonus_penalty(kv: dict) -> tuple[int, int]:
+    """从指令 kv 解析奖励/惩罚骰数量（缺省 0，非法值按 0，负数取绝对值）。"""
+    def _n(key: str) -> int:
+        raw = str(kv.get(key) or "").strip()
+        try:
+            return abs(int(raw)) if raw else 0
+        except ValueError:
+            return 0
+    return _n("bonus"), _n("penalty")
+
+
+def _check_dice_detail(result) -> dict:
+    """把 CheckResult 的逐骰明细组装成前端契约的 dice 对象（kind=check）。
+
+    供 3D 骰子动画严格还原：tens 含所有掷出的十位、tens_kept 是采用值、units 个位、
+    bonus/penalty 数量。result 由 tens_kept + units 合成（十位00+个位0=100）。
+    """
+    return {
+        "kind": "check",
+        "result": result.roll,
+        "tens": list(result.tens),
+        "tens_kept": result.tens_kept,
+        "units": result.units,
+        "bonus": result.bonus,
+        "penalty": result.penalty,
+    }
+
+
+def _pool_dice_detail(roll_result) -> dict:
+    """把 DiceRollResult（NdM+K 骰池，如 SAN 损失/伤害）组装成契约的 dice 对象（kind=pool）。"""
+    sides = 0
+    m = re.match(r"\s*\d+d(\d+)", (roll_result.notation or "").strip().lower())
+    if m:
+        sides = int(m.group(1))
+    return {
+        "kind": "pool",
+        "notation": roll_result.notation,
+        "dice": [{"sides": sides, "value": v} for v in roll_result.rolls],
+        "modifier": roll_result.modifier,
+        "total": roll_result.total,
+    }
+
+
 _ALL_TOKENS = {"在场", "全体", "全部", "所有人", "所有", "all", "everyone"}
 
 
@@ -358,9 +401,11 @@ async def _resolve_opposed(
     dice_meta = {
         "opposed": True,
         "a": {"actor": a_name, "skill": a_skill, "roll": a_res.roll,
-              "target": a_res.target, "outcome": a_res.outcome},
+              "target": a_res.target, "outcome": a_res.outcome,
+              "dice": _check_dice_detail(a_res)},
         "b": {"actor": b_name, "skill": b_skill, "roll": b_res.roll,
-              "target": b_res.target, "outcome": b_res.outcome},
+              "target": b_res.target, "outcome": b_res.outcome,
+              "dice": _check_dice_detail(b_res)},
         "winner": winner,
     }
     ev = session_service.add_event(
@@ -975,6 +1020,7 @@ async def _run_team_turn(
                     "skill": skill, "skill_value": result.skill_value,
                     "roll": result.roll, "target": result.target,
                     "outcome": result.outcome, "actor": teammate.name,
+                    "dice": _check_dice_detail(result),
                 }
             dev = session_service.add_event(
                 db, session_id, "dice", dice_content,
@@ -2097,11 +2143,13 @@ async def run_roll_generation(session_id: str, check_id: str) -> None:
         skill = check["skill"]
         difficulty = check.get("difficulty", "normal")
         source = check.get("source", "")
+        bonus = int(check.get("bonus") or 0)
+        penalty = int(check.get("penalty") or 0)
         char_data, disp_name, _is_npc, _cid = _resolve_check_actor(
             check.get("char_ref", ""), skill, player_char, party_others, module,
         )
         engine = get_engine(module.rule_system)
-        result = engine.resolve_check(char_data, skill, difficulty)
+        result = engine.resolve_check(char_data, skill, difficulty, bonus=bonus, penalty=penalty)
         tier_cn = TIER_LABEL.get(result.tier, result.tier)
 
         dice_content = (
@@ -2110,7 +2158,7 @@ async def run_roll_generation(session_id: str, check_id: str) -> None:
         dice_meta = {
             "skill": skill, "skill_value": result.skill_value, "roll": result.roll,
             "target": result.target, "outcome": result.outcome, "tier": result.tier,
-            "actor": disp_name,
+            "actor": disp_name, "dice": _check_dice_detail(result),
         }
         ev = session_service.add_event(
             db, session_id, "dice", dice_content, actor_name="系统", metadata=dice_meta,
@@ -2365,6 +2413,18 @@ async def _exec_san_check(
             "new_san": result["new_san"],
             "went_insane": result["went_insane"],
         }
+        # SAN 检定明骰：先落 SAN 判定本身的 d100 明细（check），再落损失骰池（pool）。
+        # 前端据 dice 播 SAN 判定动画，据 loss_dice 播损失骰动画。
+        dice_meta["check_dice"] = _check_dice_detail(check)
+        loss_roll = result.get("loss_roll")
+        if loss_roll is not None:
+            dice_meta["dice"] = _pool_dice_detail(loss_roll)
+        else:
+            # 固定损失（如成功 0）：无骰池，明细直给定值，前端不必播骰。
+            dice_meta["dice"] = {
+                "kind": "pool", "notation": "0", "dice": [],
+                "modifier": result["san_loss"], "total": result["san_loss"],
+            }
         ev = session_service.add_event(
             db, session_id, "dice", dice_content,
             actor_name="系统", metadata=dice_meta,
@@ -2459,7 +2519,7 @@ async def _exec_hp_change(
                 actor_name="系统", metadata={
                     "skill": "体质", "roll": result.roll, "target": result.target,
                     "outcome": result.outcome, "actor": player_char.name,
-                    "major_wound_check": True,
+                    "major_wound_check": True, "dice": _check_dice_detail(result),
                 },
             )
             chunks.append(_make_chunk("dice", con_content, event_id=dev.id))
@@ -2490,6 +2550,7 @@ async def _exec_dice_check(
     if any(s in skill_name for s in ALWAYS_BLIND_SKILLS):
         blind = True
     source = (kv.get("source") or "").strip()
+    bonus, penalty = _parse_bonus_penalty(kv)
 
     char_data, disp_name, is_npc, char_id = _resolve_check_actor(
         char_ref, skill_name, player_char, teammates, module,
@@ -2505,7 +2566,7 @@ async def _exec_dice_check(
         pending = {
             "id": check_id, "skill": skill_name, "difficulty": difficulty,
             "char_ref": char_ref, "char_id": char_id, "actor_name": disp_name,
-            "source": source,
+            "source": source, "bonus": bonus, "penalty": penalty,
         }
         session_service.add_pending_check(db, session_id, pending)
         prompt_text = _check_prompt_text(disp_name, skill_name, difficulty)
@@ -2520,11 +2581,14 @@ async def _exec_dice_check(
         return chunks, descs, True  # 等玩家 /roll，本轮不掷、不续写
 
     engine = get_engine(module.rule_system)
-    result = engine.resolve_check(char_data, skill_name, difficulty)
+    result = engine.resolve_check(char_data, skill_name, difficulty, bonus=bonus, penalty=penalty)
     tier_cn = TIER_LABEL.get(result.tier, result.tier)
 
     if blind:
         # 暗投（玩家/队友）/暗骰（NPC）：聊天只显示"做了一次隐藏检定"，成败仅回灌 KP。
+        # 暗投/暗骰刻意不带 dice 明细：check 的 result/tens_kept/units 会暴露确切骰值，
+        # 结合可知的技能值即可反推成败，与「成败仅 KP 可见」冲突，故不落（前端本就不为
+        # blind 播动画）。奖惩 net 不影响此取舍。
         kind_word = "暗骰" if is_npc else "暗投"
         dice_content = f"{disp_name} 进行了一次{kind_word}·{skill_name}（结果仅 KP 可见）"
         dice_meta = {"skill": skill_name, "actor": disp_name, "blind": True}
@@ -2544,6 +2608,7 @@ async def _exec_dice_check(
             "outcome": result.outcome,
             "tier": result.tier,
             "actor": disp_name,
+            "dice": _check_dice_detail(result),
         }
         descs.append(
             f"{disp_name} {skill_name}（{difficulty}），达成 {tier_cn}"

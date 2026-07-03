@@ -93,6 +93,20 @@ REGISTRY: tuple[ToolSpec, ...] = (
                 "type": "string",
                 "description": "检定针对的具体对象/目标（如「书桌暗格」「管家的说辞」），便于结果归属",
             },
+            "bonus": {
+                "type": "integer",
+                "description": (
+                    "奖励骰数量（缺省 0）。情境明显有利（充足时间/合适工具/队友协助等）时填 1，"
+                    "系统多掷一个十位取更优。极有利可 2，但慎用。"
+                ),
+            },
+            "penalty": {
+                "type": "integer",
+                "description": (
+                    "惩罚骰数量（缺省 0）。情境明显不利（黑暗/受伤/干扰/时间紧迫等）时填 1，"
+                    "系统多掷一个十位取更差。奖励骰与惩罚骰互相抵消，别与 difficulty 叠用来重复施压。"
+                ),
+            },
         }, ["skill"]),
         kind="check",
     ),
