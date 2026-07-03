@@ -1,7 +1,9 @@
 """CoC 7th Edition 检定逻辑"""
 
+import random
+
 from app.rules.base import CheckResult
-from app.rules.dice import roll_percentile
+from app.rules.dice import compose_d100, decompose_d100, roll_percentile
 
 
 # 属性骰别名：base_attributes 用英文键存（INT/EDU…），但 KP/规则常用中文属性名或
@@ -42,6 +44,8 @@ def resolve_skill_check(
     character_data: dict,
     skill_name: str,
     difficulty: str = "normal",
+    bonus: int = 0,
+    penalty: int = 0,
 ) -> CheckResult:
     """CoC 技能检定
 
@@ -49,6 +53,9 @@ def resolve_skill_check(
     - normal: 普通（≤ 技能值）
     - hard: 困难（≤ 技能值/2）
     - extreme: 极难（≤ 技能值/5）
+
+    奖励/惩罚骰（bonus/penalty，缺省 0，均为 0 时行为与旧版完全一致）：净奖惩>0 多掷十位
+    取最有利、<0 取最不利，明细透传到 CheckResult 的 tens/tens_kept/units/bonus/penalty。
     """
     skills = character_data.get("skills", {})
     attrs = character_data.get("base_attributes", {})
@@ -69,7 +76,14 @@ def resolve_skill_check(
     else:
         target = skill_value
 
-    d100 = roll_percentile()
+    # 基础 d100 走 roll_percentile 这个模块级接缝（测试会 monkeypatch 它钉死骰值）；
+    # 由它拆出常规十位/个位。净奖惩 ≠ 0 时再额外掷十位并按取优/取劣重挑，个位不变。
+    base_d100 = roll_percentile()
+    base_tens, units = decompose_d100(base_d100)
+    net = bonus - penalty
+    tens = [base_tens] + [random.randint(0, 9) * 10 for _ in range(abs(net))]
+    tens_kept = min(tens) if net > 0 else (max(tens) if net < 0 else base_tens)
+    d100 = compose_d100(tens_kept, units)
 
     if d100 == 1:
         outcome = "critical_success"
@@ -111,6 +125,11 @@ def resolve_skill_check(
         description=desc,
         tier=tier,
         meets_difficulty=meets,
+        tens=tens,
+        tens_kept=tens_kept,
+        units=units,
+        bonus=bonus,
+        penalty=penalty,
     )
 
 
@@ -139,14 +158,17 @@ def san_check(character_data: dict, success_loss: str, failure_loss: str) -> dic
 
     if loss_expr == "0":
         loss = 0
+        loss_roll = None
     else:
-        loss = roll(loss_expr).total
+        loss_roll = roll(loss_expr)
+        loss = loss_roll.total
 
     new_san = max(0, current_san - loss)
 
     return {
         "check": check,
         "san_loss": loss,
+        "loss_roll": loss_roll,   # DiceRollResult（损失骰池，供前端动画）；固定损失 "0" 时为 None
         "old_san": current_san,
         "new_san": new_san,
         "went_insane": loss >= current_san // 5,

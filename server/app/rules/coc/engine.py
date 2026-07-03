@@ -76,9 +76,12 @@ class CoCRuleEngine(RuleEngine):
         return (len(errors) == 0, errors)
 
     def resolve_check(
-        self, character_data: dict, skill_name: str, difficulty: str = "normal"
+        self, character_data: dict, skill_name: str, difficulty: str = "normal",
+        bonus: int = 0, penalty: int = 0,
     ) -> CheckResult:
-        return resolve_skill_check(character_data, skill_name, difficulty)
+        return resolve_skill_check(
+            character_data, skill_name, difficulty, bonus=bonus, penalty=penalty,
+        )
 
     def apply_damage(
         self, target_data: dict, damage: int, damage_type: str = "physical"
