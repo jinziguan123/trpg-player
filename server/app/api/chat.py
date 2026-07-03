@@ -356,7 +356,7 @@ def scene_map(session_id: str, char_id: str | None = None, db: Session = Depends
 
 @router.get("/{session_id}/locations")
 def locations(session_id: str, char_id: str | None = None, db: Session = Depends(get_db)):
-    """大地图：已知地点列表（已访问 ∪ 与之相连的场景；未探索的不显示），含当前所在标记。"""
+    """大地图/调查板：已知地点列表（含当前所在、相互连接、队友分布；未探索的不显示）。"""
     game_session = db.get(GameSession, session_id)
     if not game_session:
         raise HTTPException(404, "会话不存在")
@@ -364,7 +364,10 @@ def locations(session_id: str, char_id: str | None = None, db: Session = Depends
     if not module:
         raise HTTPException(404, "模组不存在")
     events = session_service.get_session_events(db, session_id)
-    return {"locations": session_service.list_known_locations(module, game_session, char_id=char_id, events=events)}
+    char_names = {c.id: c.name for c in session_service.get_party_members(db, session_id)}
+    return {"locations": session_service.list_known_locations(
+        module, game_session, char_id=char_id, events=events, char_names=char_names,
+    )}
 
 
 @router.post("/{session_id}/travel")

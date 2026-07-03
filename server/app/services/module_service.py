@@ -37,6 +37,7 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       "description": "场景详细描述",
       "danger": "该场景的危险等级，仅限四选一：calm（安全平静）/uneasy（隐隐不安）/dangerous（明确危险）/deadly（致命凶险）",
       "atmosphere": "一句话氛围基调，给 KP 渲染用：以感官（声/味/光/体感）+ 情绪基调描述，如『腐臭、低压、木板随时塌陷』。不要写成剧透或台词",
+      "kind": "二选一：location（一个真实存在的地点，默认）/ chapter（纯叙事章节或抽象阶段，如『委托与准备』『尾声』——它不是玩家能在地图上前往的地方）",
       "connections": ["scene_2"],
       "states": [
         {{"when": ["剧情标志名，如 basement_flooded"], "danger": "切换后的危险度", "atmosphere": "切换后的氛围", "description": "（可选）切换后的场景描述，覆盖默认", "structural": false}}

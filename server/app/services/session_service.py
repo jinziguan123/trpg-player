@@ -877,19 +877,40 @@ def known_scene_ids(module, session: GameSession, events: list | None = None) ->
 
 def list_known_locations(
     module, session: GameSession, char_id: str | None = None, events: list | None = None,
+    char_names: dict[str, str] | None = None,
 ) -> list[dict]:
-    """供「大地图」渲染：已知地点列表（当前所在高亮、已访问标记）。"""
+    """供「大地图/调查板」渲染：已知地点列表（当前所在、已访问、相互连接、队友分布）。
+
+    - ``kind == "chapter"`` 的场景是叙事章节而非地点，不上图（当前正身处其中时除外）。
+    - ``connections`` 只回已知集合内的邻居——未知地点绝不经边泄露。
+    - ``char_names``（char_id → 名字）给定时，按 party_locations 归并各地点的在场成员。
+    """
     by_id = {s.get("id"): s for s in (module.scenes or []) if s.get("id")}
     visited = set((session.world_state or {}).get("visited_scenes") or [])
     cur = get_char_location(session, char_id)
+    shown = {
+        sid for sid in known_scene_ids(module, session, events)
+        if by_id[sid].get("kind") != "chapter" or sid == cur
+    }
+    # 队伍分布：各成员所在场景（party_locations 缺省回落主场景）
+    party_at: dict[str, list[str]] = {}
+    if char_names:
+        pl = (session.world_state or {}).get("party_locations") or {}
+        for cid, name in char_names.items():
+            sid = pl.get(cid) or session.current_scene_id
+            if sid:
+                party_at.setdefault(sid, []).append(name)
     out = []
-    for sid in known_scene_ids(module, session, events):
+    for sid in shown:
         s = by_id[sid]
+        conns = [c for c in (s.get("connections") or []) if c in shown and c != sid]
         out.append({
             "id": sid,
             "name": s.get("title") or s.get("name") or sid,
             "current": sid == cur,
             "visited": sid in visited,
+            "connections": conns,
+            "party": party_at.get(sid, []),
         })
     out.sort(key=lambda x: (not x["current"], not x["visited"], x["id"]))
     return out

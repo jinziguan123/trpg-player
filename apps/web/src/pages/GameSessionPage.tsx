@@ -12,6 +12,7 @@ import { DiceRoller, type DiceRollerHandle, type DiceSpec } from '../components/
 import { ContextUsageBadge } from '../components/game/ContextUsageBadge'
 import { RecapModal } from '../components/game/RecapModal'
 import { GrowthModal } from '../components/game/GrowthModal'
+import { InvestigationBoard } from '../components/game/InvestigationBoard'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { useMapAssets } from '../components/module/useMapAssets'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade } from 'react-icons/gi'
@@ -20,7 +21,7 @@ import { ConfirmDialog } from '../components/ui/confirm-dialog'
 
 interface SceneFloor { name: string; map: TileMap; entities: MapEntity[] }
 interface SceneMapPayload { scene_id: string | null; scene_name: string | null; floors: SceneFloor[] }
-interface KnownLocation { id: string; name: string; current: boolean; visited: boolean }
+interface KnownLocation { id: string; name: string; current: boolean; visited: boolean; connections?: string[]; party?: string[] }
 interface SearchHit { id: string; sequence_num: number; event_type: string; actor_name: string; content: string }
 
 const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE|SAY|GROUP|MOVE|HANDOUT)[^\]]*\]|\[\/SAY\]/g
@@ -853,31 +854,7 @@ export function GameSessionPage() {
                 </span>
                 <button onClick={() => { setConfirmTravel(null); setShowBigMap(false) }} title="收起大地图" style={{ color: 'var(--color-text-secondary)' }}><ChevronUp size={14} /></button>
               </div>
-              {locations.length === 0 ? (
-                <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>暂无已知的可前往地点。</p>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {locations.map((loc) => (
-                    <button
-                      key={loc.id}
-                      disabled={loc.current || streaming}
-                      onClick={() => setConfirmTravel(loc)}
-                      className="text-xs px-2.5 py-1 rounded border inline-flex items-center gap-1"
-                      style={{
-                        borderColor: loc.current ? 'var(--color-accent)' : 'var(--color-border)',
-                        background: loc.current ? 'var(--color-accent)' : 'transparent',
-                        color: loc.current ? 'var(--color-on-accent)' : 'var(--color-text-primary)',
-                        opacity: streaming && !loc.current ? 0.5 : 1,
-                        cursor: loc.current || streaming ? 'default' : 'pointer',
-                      }}
-                      title={loc.current ? '你正在此处' : (loc.visited ? '前往（已探索）' : '前往（新地点）')}
-                    >
-                      {loc.current ? <GiPositionMarker size={12} /> : <GiReturnArrow size={12} style={{ transform: 'scaleX(-1)' }} />}
-                      {loc.name}{loc.current ? '（当前）' : ''}
-                    </button>
-                  ))}
-                </div>
-              )}
+              <InvestigationBoard locations={locations} disabled={streaming} onPick={setConfirmTravel} />
               {confirmTravel ? (
                 <div className="mt-2 rounded-md px-3 py-2 text-xs flex items-center gap-3 flex-wrap"
                   style={{ background: 'var(--color-bg-secondary)', border: '1px solid var(--color-accent)' }}>

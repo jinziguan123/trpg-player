@@ -66,6 +66,58 @@ def test_known_locations_are_visited_plus_mentioned(db_factory):
     assert "d" not in by_id
 
 
+def test_locations_connections_only_within_known(db_factory):
+    """connections 只回已知集合内的邻居——未知地点（d）绝不经边泄露。"""
+    db = db_factory()
+    sid, pc_id, _, mod_id = _seed(db)
+    session = db.get(GameSession, sid)
+    module = db.get(Module, mod_id)
+    events = [_Ev("narration", "门上挂着牌子：图书馆、档案馆。")]
+    locs = session_service.list_known_locations(module, session, char_id=pc_id, events=events)
+    by_id = {x["id"]: x for x in locs}
+    # c 与 a、d 相连，但 d 未知 → 边里只剩 a
+    assert by_id["c"]["connections"] == ["a"]
+    assert set(by_id["a"]["connections"]) == {"b", "c"}
+
+
+def test_locations_chapter_scenes_hidden_unless_current(db_factory):
+    """kind=chapter 的叙事章节不上调查板；但当前正身处其中时仍显示（玩家得能找到自己）。"""
+    db = db_factory()
+    sid, pc_id, _, mod_id = _seed(db)
+    module = db.get(Module, mod_id)
+    module.scenes = _SCENES + [{"id": "ch", "title": "委托与准备", "kind": "chapter", "connections": []}]
+    db.commit()
+    session = db.get(GameSession, sid)
+    ws = dict(session.world_state); ws["visited_scenes"] = ["a", "ch"]
+    session.world_state = ws; db.commit()
+    # 已访问但非当前 → 不显示
+    locs = session_service.list_known_locations(module, session, char_id=pc_id, events=[])
+    assert "ch" not in {x["id"] for x in locs}
+    # 正身处其中 → 显示
+    session.current_scene_id = "ch"; db.commit()
+    locs = session_service.list_known_locations(module, session, char_id=pc_id, events=[])
+    assert "ch" in {x["id"] for x in locs}
+
+
+def test_locations_party_distribution(db_factory):
+    """char_names 给定时，按 party_locations（缺省回落主场景）归并各地点在场成员。"""
+    db = db_factory()
+    sid, pc_id, ally_id, mod_id = _seed(db)
+    session = db.get(GameSession, sid)
+    module = db.get(Module, mod_id)
+    ws = dict(session.world_state)
+    ws["visited_scenes"] = ["a", "c"]
+    ws["party_locations"] = {ally_id: "c"}   # 亨利分头去了档案馆；莫妮卡缺省在主场景 a
+    session.world_state = ws; db.commit()
+    locs = session_service.list_known_locations(
+        module, session, char_id=pc_id, events=[],
+        char_names={pc_id: "莫妮卡", ally_id: "亨利"},
+    )
+    by_id = {x["id"]: x for x in locs}
+    assert by_id["a"]["party"] == ["莫妮卡"]
+    assert by_id["c"]["party"] == ["亨利"]
+
+
 def test_known_location_unlocked_by_facility_suffix(db_factory):
     """提到设施类型后缀（「疗养院」）即可解锁完整标题含该后缀的地点（如「罗克斯伯里疗养院」）。"""
     db = db_factory()
