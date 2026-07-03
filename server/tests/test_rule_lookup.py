@@ -1,7 +1,8 @@
 """[RULE_LOOKUP] 按需规则书查阅的集成回归（不依赖真实 LLM / 嵌入）。
 
 覆盖：上下文按是否挂载规则书广告该能力、_process_commands 把 RULE_LOOKUP
-当终止性指令路由并短路其余、_handle_rule_lookup 检索→回灌→续写落库与降级。
+当终止性指令路由并短路其余、_handle_rule_lookup 检索→回灌→续写落库与降级、
+以及规则书按回合类型的被动注入（_rule_excerpts_for_context + 规则要点小节）。
 """
 
 import asyncio
@@ -11,6 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.ai import context as ctx
+from app.ai.turn_planner import CheckPlan, TurnPlan
 from app.models.base import Base
 from app.models.character import Character
 from app.models.event_log import EventLog  # noqa: F401 注册建表
@@ -162,3 +164,135 @@ def test_handle_rule_lookup_fallback_when_no_hits(db_factory, monkeypatch):
 
     last_user = [m for m in captured["messages"] if m["role"] == "user"][-1]["content"]
     assert "未在规则书中找到" in last_user  # 检索不到 → 降级文案
+
+
+# ---------- 规则书按回合类型被动注入 ----------
+
+def _make_event(content, seq=1):
+    return EventLog(
+        session_id="s", sequence_num=seq, event_type="narration",
+        actor_name="KP", content=content,
+    )
+
+
+def test_rule_excerpts_query_mapping_by_turn_kind(db_factory, monkeypatch):
+    """turn_kind → 规则术语 query 的映射；roleplay/mixed 不检索不注入。"""
+    db = db_factory()
+    module, char, session = _seed(db)
+    events = session_service.get_session_events(db, session.id)
+
+    monkeypatch.setattr(rulebook_service, "has_rulebook", lambda *a, **k: True)
+    captured = {}
+
+    def fake_retrieve(db_, q, rule_system, k=3):
+        captured["q"], captured["k"] = q, k
+        return [{"text": "条文片段", "page": 1, "score": 0.9, "rulebook_id": "x"}]
+
+    monkeypatch.setattr(rulebook_service, "retrieve", fake_retrieve)
+
+    expected = {
+        "combat": "战斗 轮次 伤害 护甲",
+        "investigate": "线索 检定 困难等级",
+        "knowledge": "线索 检定 困难等级",
+        "social": "社交 话术 取悦 恐吓 对抗",
+        "move": "追逐 攀爬 跳跃",
+    }
+    for kind, query in expected.items():
+        plan = TurnPlan(turn_kind=kind)
+        hits = chat_service._rule_excerpts_for_context(db, module, plan, events)
+        assert hits and hits[0]["text"] == "条文片段", kind
+        assert captured["q"] == query, kind
+        assert captured["k"] == 2  # top-2 控制注入体量
+
+    # roleplay / mixed：无明确规则情境 → 不检索、不注入
+    captured.clear()
+    for kind in ("roleplay", "mixed"):
+        assert chat_service._rule_excerpts_for_context(
+            db, module, TurnPlan(turn_kind=kind), events,
+        ) is None
+    assert captured == {}
+
+
+def test_rule_excerpts_san_context_overrides_turn_kind(db_factory, monkeypatch):
+    """理智/疯狂情境优先：plan 检定涉理智，或最近事件刚发生理智结算 → 改查疯狂规则。"""
+    db = db_factory()
+    module, char, session = _seed(db)
+    events = session_service.get_session_events(db, session.id)
+
+    monkeypatch.setattr(rulebook_service, "has_rulebook", lambda *a, **k: True)
+    captured = {}
+
+    def fake_retrieve(db_, q, rule_system, k=3):
+        captured["q"] = q
+        return [{"text": "疯狂条文", "page": 7, "score": 0.9, "rulebook_id": "x"}]
+
+    monkeypatch.setattr(rulebook_service, "retrieve", fake_retrieve)
+
+    # plan 的检定涉及理智
+    plan = TurnPlan(turn_kind="investigate", check=CheckPlan(skill="理智"))
+    chat_service._rule_excerpts_for_context(db, module, plan, events)
+    assert captured["q"] == "疯狂 症状 恐惧"
+
+    # 最近事件含理智结算（如「调查员 理智检定（失败）：损失 4 SAN」）
+    san_events = events + [_make_event("调查员 理智检定（失败）：损失 4 SAN", seq=99)]
+    chat_service._rule_excerpts_for_context(
+        db, module, TurnPlan(turn_kind="combat"), san_events,
+    )
+    assert captured["q"] == "疯狂 症状 恐惧"
+
+
+def test_rule_excerpts_gates_and_fail_open(db_factory, monkeypatch):
+    """无 plan / 开场（无事件）/ 未挂规则书 / 检索抛错 → 一律 None（行为不变）。"""
+    db = db_factory()
+    module, char, session = _seed(db)
+    events = session_service.get_session_events(db, session.id)
+    plan = TurnPlan(turn_kind="combat")
+
+    called = {"n": 0}
+
+    def fake_retrieve(*a, **k):
+        called["n"] += 1
+        return [{"text": "条文", "page": 1, "score": 0.9, "rulebook_id": "x"}]
+
+    monkeypatch.setattr(rulebook_service, "retrieve", fake_retrieve)
+
+    # plan=None / 开场：连 has_rulebook 都不必查
+    assert chat_service._rule_excerpts_for_context(db, module, None, events) is None
+    assert chat_service._rule_excerpts_for_context(db, module, plan, []) is None
+
+    # 未挂规则书 → None 且不发起检索
+    monkeypatch.setattr(rulebook_service, "has_rulebook", lambda *a, **k: False)
+    assert chat_service._rule_excerpts_for_context(db, module, plan, events) is None
+    assert called["n"] == 0
+
+    # 检索抛错 → fail-open 返回 None
+    monkeypatch.setattr(rulebook_service, "has_rulebook", lambda *a, **k: True)
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(rulebook_service, "retrieve", boom)
+    assert chat_service._rule_excerpts_for_context(db, module, plan, events) is None
+
+
+def test_kp_context_injects_rule_excerpts_section(db_factory):
+    """rule_excerpts 注入独立「规则要点」小节：单块按 RULE_EXCERPT_MAX_CHARS 截断；
+    None（未挂书/开场/plan 缺失）→ 不含小节，行为与现状一致。"""
+    db = db_factory()
+    module, char, session = _seed(db)
+    events = session_service.get_session_events(db, session.id)
+
+    long_text = "规" * (ctx.RULE_EXCERPT_MAX_CHARS + 100)
+    system = ctx.build_kp_context(
+        session, module, char, events,
+        rule_excerpts=[{"text": long_text}, {"text": "短条文"}],
+    )[0]["content"]
+
+    assert "规则要点" in system
+    assert "裁定时优先遵此执行" in system
+    assert long_text not in system  # 单块截断
+    assert long_text[:ctx.RULE_EXCERPT_MAX_CHARS] + "…" in system
+    assert "短条文" in system
+
+    plain = ctx.build_kp_context(session, module, char, events)[0]["content"]
+    assert "规则要点" not in plain

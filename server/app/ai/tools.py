@@ -64,7 +64,11 @@ REGISTRY: tuple[ToolSpec, ...] = (
         parameters=_params({
             "skill": {
                 "type": "string",
-                "description": "技能或属性名（如 侦查/聆听/图书馆使用/母语/灵感）",
+                "description": (
+                    "技能名（如 侦查/聆听/图书馆使用/母语），也可为九维属性中文名"
+                    "（力量/体质/体型/敏捷/外貌/智力/意志/教育/幸运；灵感=智力、知识=教育），"
+                    "系统自动按属性值判定"
+                ),
             },
             "difficulty": {
                 "type": "string",

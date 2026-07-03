@@ -57,6 +57,10 @@ def resolve_skill_check(
     # 技能表/同名属性都没命中时，按属性骰别名回落到英文属性键（如 灵感→INT、智力→INT）
     if not skill_value and skill_name in _CHARACTERISTIC_ALIAS:
         skill_value = attrs.get(_CHARACTERISTIC_ALIAS[skill_name], 0)
+    # 幸运骰：幸运不在 base_attributes（存于 system_data.luck），单独回落，
+    # 否则 KP 按手册发起「幸运」检定会以 0 结算（必失败）。
+    if not skill_value and skill_name in ("幸运", "运气"):
+        skill_value = (character_data.get("system_data") or {}).get("luck") or 0
 
     if difficulty == "hard":
         target = skill_value // 2

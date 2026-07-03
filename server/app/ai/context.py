@@ -15,6 +15,7 @@ from app.ai.prompts.kp_system import (
     MODULE_LOOKUP_INSTRUCTION,
     MOVE_INSTRUCTION,
     GROUP_INSTRUCTION,
+    RULE_EXCERPT_SECTION,
     RULE_LOOKUP_INSTRUCTION,
     PLOT_FLAG_INSTRUCTION,
 )
@@ -44,6 +45,9 @@ MAX_RECENT_EVENTS = 60
 # 被动注入的模组原文摘录：单块截断（摘录段计入 MAX_SYSTEM_TOKENS 预算）。系统预算放宽后
 # 可给更完整的原文片段，从 400 提到 600 字。
 MODULE_EXCERPT_MAX_CHARS = 600
+# 被动注入的规则书要点：单块截断更紧（top-2 × 260 字 ≈ 800 token）——条文密度高于叙事原文，
+# 截断到要点即够裁定用，省下的预算留给事件史。
+RULE_EXCERPT_MAX_CHARS = 260
 # 「幕后动态」小节最多注入最近几条幕后事件（visibility=["kp"]，仅 KP 可见）
 MAX_BACKSTAGE_IN_CONTEXT = 5
 
@@ -404,15 +408,17 @@ def _format_handout_list(module: Module, session: GameSession) -> str:
     return "\n".join(lines)
 
 
-def _format_module_excerpts(excerpts: list[dict]) -> str:
+def _format_module_excerpts(
+    excerpts: list[dict], max_chars: int = MODULE_EXCERPT_MAX_CHARS,
+) -> str:
     """把检索到的原文片段渲染成摘录小节正文：逐块截断 + 编号平铺。"""
     lines: list[str] = []
     for i, ex in enumerate(excerpts, start=1):
         text = (ex.get("text") or "").strip()
         if not text:
             continue
-        if len(text) > MODULE_EXCERPT_MAX_CHARS:
-            text = text[:MODULE_EXCERPT_MAX_CHARS] + "…"
+        if len(text) > max_chars:
+            text = text[:max_chars] + "…"
         lines.append(f"[摘录 {i}] {text}")
     return "\n".join(lines)
 
@@ -458,9 +464,11 @@ def build_kp_context(
     viewer_scene_id: str | None = None,
     module_excerpts: list[dict] | None = None,
     module_lookup_enabled: bool = False,
+    rule_excerpts: list[dict] | None = None,
 ) -> list[dict]:
     # 本函数保持纯粹（不触数据库）：module_excerpts 是调用方（chat_service）检索好的
     # 模组原文片段（[{"text", ...}]），未建索引/检索失败时传 None → 行为与无此特性时完全一致。
+    # rule_excerpts 同一模式：调用方按本轮回合类型检索好的规则书片段，None → 行为不变。
     # 分头行动时，每个分组各以「该组所在场景」为锚构建上下文（current_scene / 可见 NPC / 线索 /
     # 场景清单），否则所有分组都拿到主角场景的资料，KP 只能把主角场景重复叙述一遍。
     # 默认 None → 回落主角所在场景（session.current_scene_id），非分头场景行为不变。
@@ -527,6 +535,13 @@ def build_kp_context(
         excerpt_body = _format_module_excerpts(module_excerpts)
         if excerpt_body:
             system_content += MODULE_EXCERPT_SECTION.format(excerpts=excerpt_body)
+
+    # 规则要点（被动注入）：调用方按本轮回合类型检索好的规则书片段，裁定时优先遵此执行。
+    # 截断/编号复用模组摘录逻辑，单块上限更紧（RULE_EXCERPT_MAX_CHARS，top-2 合计 ≈800 token）。
+    if rule_excerpts:
+        rule_body = _format_module_excerpts(rule_excerpts, max_chars=RULE_EXCERPT_MAX_CHARS)
+        if rule_body:
+            system_content += RULE_EXCERPT_SECTION.format(excerpts=rule_body)
 
     # 仅在挂载了规则书时广告 [RULE_LOOKUP] 能力（无书时不让 KP 发空查询）。
     if rules_lookup_enabled:

@@ -1494,6 +1494,61 @@ def _module_excerpts_for_context(
         return None
 
 
+# plan.turn_kind → 规则书被动检索 query（规则术语导向）。roleplay/mixed 不注入：
+# 无明确规则情境，检索命中噪声大且白耗 token。
+_RULE_QUERY_BY_TURN_KIND = {
+    "combat": "战斗 轮次 伤害 护甲",
+    "investigate": "线索 检定 困难等级",
+    "knowledge": "线索 检定 困难等级",
+    "social": "社交 话术 取悦 恐吓 对抗",
+    "move": "追逐 攀爬 跳跃",
+}
+# 疯狂/理智情境优先于 turn_kind：本轮计划或最近事件涉及理智损失时改查疯狂规则。
+_SAN_RULE_QUERY = "疯狂 症状 恐惧"
+
+
+def _plan_involves_san(plan: turn_planner.TurnPlan, events: list) -> bool:
+    """本轮是否处于理智/疯狂情境：plan 的检定涉及理智，或最近事件刚发生过理智结算。"""
+    skill = plan.check.skill or ""
+    if "理智" in skill or "SAN" in skill.upper():
+        return True
+    for ev in (events or [])[-6:]:
+        content = getattr(ev, "content", "") or ""
+        if "理智检定" in content or "SAN" in content:
+            return True
+    return False
+
+
+def _rule_excerpts_for_context(
+    db: Session,
+    module: Module,
+    plan: turn_planner.TurnPlan | None,
+    events: list,
+) -> list[dict] | None:
+    """被动注入用的规则书要点：按本轮 plan.turn_kind 组规则术语 query，检索 top-2。
+
+    镜像 ``_module_excerpts_for_context`` 的 fail-open 模式：无 plan、开场（无事件）、
+    turn_kind 无对应规则情境、该规则系统未挂规则书、或检索失败，一律返回 None——
+    build_kp_context 收到 None 时行为与无此特性完全一致。
+    query 用固定规则术语而非玩家输入：规则书语料是条文术语，掺入剧情叙述文本反而
+    稀释余弦命中（与模组原文检索相反——那边语料本身就是叙事文本，才拼玩家输入）。
+    """
+    if plan is None or not events:
+        return None
+    query = _RULE_QUERY_BY_TURN_KIND.get(plan.turn_kind)
+    if _plan_involves_san(plan, events):
+        query = _SAN_RULE_QUERY
+    if not query:
+        return None
+    try:
+        if not rulebook_service.has_rulebook(db, module.rule_system):
+            return None
+        return rulebook_service.retrieve(db, query, module.rule_system, k=2) or None
+    except Exception:  # noqa: BLE001 — 检索失败不得阻塞生成主流程
+        logger.exception("规则书被动检索失败（已降级）：rule_system=%s", module.rule_system)
+        return None
+
+
 async def _run_generation(
     db: Session,
     session_id: str,
@@ -1541,13 +1596,17 @@ async def _run_generation(
     # 本回合队友暗骰（心理学等）的真实结果 → 一条「仅 KP 可见」的上下文消息（不落库/不广播）。
     blind_message = _team_blind_message(blind_results)
 
+    # 规则书要点被动注入：按本轮 plan.turn_kind 预取规则条文（与 [RULE_LOOKUP] 主动查互补）。
+    # 规则片段不依赖场景，分头行动时各分组共用同一份检索结果（与模组摘录「分头也注入」对齐）。
+    rule_excerpts = _rule_excerpts_for_context(db, module, plan, events)
+
     if len(scene_groups) >= 2:
         # 分头行动 v1 仍走旧正则路径（与 use_tool_calls 开关无关）：多分组编排与
         # loop 的 group 标签/指令归并交互留待下一步，先保证主路径可开关灰度。
         await _run_split_generation(
             db, session_id, game_session, module, player_char, events,
             teammates, kp, llm, rules_enabled, matcher_npcs, scene_groups,
-            plan=plan, blind_message=blind_message,
+            plan=plan, blind_message=blind_message, rule_excerpts=rule_excerpts,
         )
         return
 
@@ -1558,6 +1617,7 @@ async def _run_generation(
             db, module, game_session, events, party_ids,
         ),
         module_lookup_enabled=module_rag_enabled,
+        rule_excerpts=rule_excerpts,
     )
     if plan is not None:
         messages.append(turn_planner.build_turn_plan_message(plan))
@@ -1675,6 +1735,7 @@ async def _run_split_generation(
     groups: list[dict],
     plan: turn_planner.TurnPlan | None = None,
     blind_message: dict | None = None,
+    rule_excerpts: list[dict] | None = None,
 ) -> None:
     """分头行动：对每个分组各跑一次聚焦叙事，后端确定性地把产物归入该组。
 
@@ -1709,6 +1770,8 @@ async def _run_split_generation(
                 scene_id=grp.get("scene_id"),
             ),
             module_lookup_enabled=module_rag_enabled,
+            # 规则要点不依赖场景：各分组共用调用方预取的同一份（与模组摘录注入现状对齐）
+            rule_excerpts=rule_excerpts,
         )
         if plan_message is not None:
             messages.append(plan_message)

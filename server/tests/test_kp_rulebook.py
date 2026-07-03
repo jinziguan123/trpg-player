@@ -16,6 +16,7 @@ def test_rulebook_sections_present():
     s = KP_SYSTEM_PROMPT
     for marker in (
         "技能检定流程",
+        "属性（特征）检定",
         "调查与信息揭示纪律",
         "检定先行",
         "信息分层",
@@ -26,6 +27,19 @@ def test_rulebook_sections_present():
         "孤注一掷",
     ):
         assert marker in s, f"裁定手册缺少分区：{marker}"
+
+
+def test_characteristic_checks_and_proactive_guidance():
+    """属性检定入册 + KP 主动推进指引：九维属性可作 [DICE_CHECK] 的 skill、
+    典型用途映射在册；卡关/需专业知识时 KP 应主动发起灵感/教育检定，不干等玩家申请。"""
+    s = KP_SYSTEM_PROMPT
+    # 九维属性典型用途映射（中文名直接作 skill）
+    for kw in ("力量", "体质", "敏捷", "外貌", "意志", "灵感", "知识", "幸运"):
+        assert kw in s, f"属性检定小节缺少属性：{kw}"
+    assert "系统自动按属性值判定" in s
+    # 主动推进：困在原地/多轮无进展/需专业知识 → KP 主动发起检定
+    assert "应当主动" in s
+    assert "不要干等玩家想起来申请" in s
 
 
 def test_rulebook_static_leaves_budget_for_module_data():
