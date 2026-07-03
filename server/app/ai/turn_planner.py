@@ -304,7 +304,13 @@ def build_turn_plan_messages(
                 "不得使用 visible_clues 以外的线索。"
                 "clue_ledger 是玩家已掌握线索的台账：status=known（或 discovered=true）"
                 "的线索已完全揭示，不得再进入 candidate_clue_ids；"
-                "status=partial 的仅在玩家行动继续深入时可作为升级揭示的 candidate。\n"
+                "status=partial 的仅在玩家行动继续深入时可作为升级揭示的 candidate。"
+                "check.skill 除技能名外也可以是九维属性中文名"
+                "（力量/体质/体型/敏捷/外貌/智力/意志/教育/幸运；灵感=智力、知识=教育）——"
+                "玩家行动没有贴切技能时选最相关的属性。"
+                "导演信号显示卡关时，应主动裁定一次灵感/教育/相关知识检定作为解卡手段"
+                "（requires_check=true，并让 direction.nudge 与之呼应：成功给一点方向、"
+                "失败不给或给误导），不要干等玩家自己想起来申请。\n"
                 + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
                 + director_block
             ),

@@ -93,6 +93,20 @@ def test_turn_plan_messages_include_trigger_condition(db_factory):
     assert "地下室手记" not in text
 
 
+def test_turn_plan_messages_include_characteristic_and_unstuck_hint(db_factory):
+    """planner 指令须告知：check.skill 可用九维属性中文名；卡关时主动裁定灵感/教育检定解卡。"""
+    db = db_factory()
+    module, hero, session = _seed(db)
+    messages = turn_planner.build_turn_plan_messages(
+        session, module, hero, [], teammates=[], rules_lookup_enabled=False,
+    )
+    instruction = messages[1]["content"]
+    assert "九维属性中文名" in instruction
+    assert "灵感=智力" in instruction
+    assert "卡关" in instruction and "解卡" in instruction
+    assert "direction.nudge" in instruction
+
+
 def test_turn_plan_messages_apply_flag_resolved_npc_state(db_factory):
     """NPC 的位置/秘密可能因剧情 flag 变化（states 机制）。build_kp_context 会先按已激活
     flags 解析出『当前样貌』再喂给 KP；planner 必须看到同一份解析结果，否则会因为看着模组

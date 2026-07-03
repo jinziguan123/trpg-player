@@ -225,6 +225,14 @@ class TestCharacteristicRolls:
         # 普通技能不受别名影响
         assert resolve_skill_check(cd, "侦查").skill_value == 60
 
+    def test_luck_roll_uses_system_data(self):
+        """幸运不在 base_attributes（存于 system_data.luck），需单独回落。"""
+        cd = {"skills": {}, "base_attributes": {"INT": 70}, "system_data": {"luck": 55}}
+        assert resolve_skill_check(cd, "幸运").skill_value == 55
+        assert resolve_skill_check(cd, "运气").skill_value == 55
+        # 没有 system_data 时不抛错、按 0 结算
+        assert resolve_skill_check({"skills": {}}, "幸运").skill_value == 0
+
 
 class TestOccupationWeaponData:
     """112 职业 / 106 武器 / 专精数据完整性。"""
