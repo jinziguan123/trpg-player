@@ -8,6 +8,7 @@ import { useSessionStore, type ChatMessage } from '../stores/sessionStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { PartyRoster } from '../components/game/PartyRoster'
 import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
+import { DiceRoller, type DiceRollerHandle, type DiceSpec } from '../components/game/DiceRoller'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { useMapAssets } from '../components/module/useMapAssets'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers } from 'react-icons/gi'
@@ -175,6 +176,16 @@ export function GameSessionPage() {
   // 关键：渲染阶段只「读」不「写」ref（保持纯函数，兼容 StrictMode 双渲染）；所有 ref 变更放在 effect 里。
   const renderedIds = useRef<Set<string>>(new Set())
   const firstBatchDone = useRef(false)
+
+  // —— 3D 骰子动画层 ——
+  // diceRollerRef：命令式触发投掷；revealedDice：已「放行」显示结果卡的 dice 事件 id
+  // （新到达的非暗投 dice 事件先播 3D 投掷、落定后才并入此集合 → 卡片随之显现，不先于动画蹦出）。
+  const diceRollerRef = useRef<DiceRollerHandle>(null)
+  // diceAnimating：正在（或即将）播 3D 投掷的 dice id → 结果卡先隐藏；revealedDice：已放行显示的 id。
+  // 两者都是 state，且在 layout effect 里同步置入（paint 前），确保结果卡不会先于动画闪一下再消失。
+  const [diceAnimating, setDiceAnimating] = useState<Set<string>>(new Set())
+  const [revealedDice, setRevealedDice] = useState<Set<string>>(new Set())
+  const animatedDiceIds = useRef<Set<string>>(new Set())   // 已处理过（播过或跳过）的 dice id，防重播
   // 本轮「新到达」的 id 集合——纯派生，供渲染函数读取决定是否加 class。
   const enterIds = useMemo(() => {
     if (!firstBatchDone.current) return new Set<string>()   // 首屏整批不播入场
@@ -194,7 +205,41 @@ export function GameSessionPage() {
   useEffect(() => {
     renderedIds.current = new Set()
     firstBatchDone.current = false
+    animatedDiceIds.current = new Set()
+    setDiceAnimating(new Set())
+    setRevealedDice(new Set())
   }, [sessionId])
+
+  // 3D 骰子投掷触发：新到达（enterIds）的非暗投、带 metadata.dice 的 dice 事件先隐藏结果卡并播 3D 投掷，
+  // 落定后再放行结果卡（revealedDice）。历史/重连整批（firstBatchDone 前）不在 enterIds 里 → 绝不重播。
+  // 暗投（blind）/无 metadata.dice（旧事件）/reduced-motion/无 WebGL：不播动画，直接显示结果卡。
+  // 用 useLayoutEffect + state：paint 前同步把需播动画的骰子标进 diceAnimating，结果卡首帧即隐藏、不闪现。
+  useLayoutEffect(() => {
+    const toAnimate: { id: string; spec: DiceSpec }[] = []
+    for (const m of messages) {
+      if (!m.id || m.type !== 'dice') continue
+      if (animatedDiceIds.current.has(m.id)) continue      // 已处理过，防重播
+      if (!enterIds.has(m.id)) continue                    // 非本轮新到达（历史/重连）→ 直接显示
+      animatedDiceIds.current.add(m.id)
+      const spec = m.metadata?.dice as DiceSpec | undefined
+      const blind = !!m.metadata?.blind
+      // 暗投 / 无骰子数据 / reduced-motion / 无 WebGL / 组件未就绪：不动画，直接显示（不进 diceAnimating）。
+      const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+      if (blind || !spec || reduced || !diceRollerRef.current) continue
+      toAnimate.push({ id: m.id, spec })
+    }
+    if (toAnimate.length === 0) return
+    // 同步隐藏这些结果卡（state 更新在 paint 前生效）。
+    setDiceAnimating((prev) => { const next = new Set(prev); for (const t of toAnimate) next.add(t.id); return next })
+    // 逐条播动画（覆盖层同一时刻只播一个，队列串行；落定后放行对应结果卡）。
+    void (async () => {
+      for (const t of toAnimate) {
+        try { await diceRollerRef.current?.roll(t.spec) } catch { /* 降级：直接放行 */ }
+        setRevealedDice((prev) => new Set(prev).add(t.id))
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, enterIds])
 
   // 场景切换转场：current_scene_id 变化时放一层 600ms 暗幕淡入淡出（翻页感）。
   // 首帧/切会话只记基线，不放暗幕。
@@ -654,7 +699,9 @@ export function GameSessionPage() {
   return (
     <div className="flex h-full gap-4">
       {sceneVeil && <div className="scene-veil" aria-hidden="true" />}
-      <div className="flex flex-col flex-1 min-w-0">
+      <div className="flex flex-col flex-1 min-w-0 relative">
+        {/* 3D 骰子投掷覆盖层：覆盖聊天主列，投掷时半透明暗底聚焦，落定后淡出 */}
+        <DiceRoller ref={diceRollerRef} />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
           <button
             onClick={() => navigate('/game')}
@@ -979,6 +1026,11 @@ export function GameSessionPage() {
               )
             }
             if (msg.type === 'dice') {
+              // 3D 投掷进行中：这条骰子正在播动画且尚未放行 → 先隐藏结果卡，落定后再显现。
+              // diceAnimating 在 layout effect 里于 paint 前置入，故结果卡首帧即隐藏、绝不先于动画闪现。
+              if (msg.id && diceAnimating.has(msg.id) && !revealedDice.has(msg.id)) {
+                return <div key={msg.id} className="chat-msg py-1" style={{ minHeight: 0 }} />
+              }
               // 暗投/暗骰：结果对玩家隐藏 → 用中性灰、不按成败着色
               const blind = !!msg.metadata?.blind
               const accent = blind
