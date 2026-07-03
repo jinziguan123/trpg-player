@@ -91,6 +91,48 @@ def record_clue_reveal(
     return ws
 
 
+def handout_issued(ws: dict, handout_id: str) -> bool:
+    """某手书是否已发放过（幂等判定的唯一真源：world_state.handouts_issued）。"""
+    return str(handout_id or "") in set((ws or {}).get("handouts_issued") or [])
+
+
+def record_handout_issue(
+    ws: dict,
+    handout_id: str,
+    title: str,
+    discovered_by: list[str],
+    seq: int,
+) -> dict:
+    """把一次手书发放写入世界记忆：handouts_issued（幂等真源）+ clue_ledger（status=known，
+    kind 标注 handout——发放即全文可见，玩家「完全掌握」，经台账自然进入 KP 上下文）。
+
+    纯函数，与 ``record_clue_reveal`` 同风格：不改入参、返回更新后的拷贝；重复发放为 no-op。
+    """
+    handout_id = str(handout_id or "").strip()
+    if not handout_id:
+        return ws
+    ws = dict(ws or {})
+    issued = list(ws.get("handouts_issued") or [])
+    if handout_id not in issued:
+        issued.append(handout_id)
+    ws["handouts_issued"] = issued
+    ledger = dict(ws.get("clue_ledger") or {})
+    entry = dict(ledger.get(handout_id) or {})
+    entry["status"] = "known"
+    entry["kind"] = "handout"
+    known_by = list(entry.get("discovered_by") or [])
+    for who in discovered_by or []:
+        if who and who not in known_by:
+            known_by.append(who)
+    entry["discovered_by"] = known_by
+    entry["seq"] = entry.get("seq") or int(seq or 0)
+    if title:
+        entry["note"] = _truncate(f"手书《{title}》已发放，全桌可见全文")
+    ledger[handout_id] = entry
+    ws["clue_ledger"] = ledger
+    return ws
+
+
 def record_npc_interaction(ws: dict, npc_id: str, seq: int, summary: str) -> dict:
     """给某 NPC 的互动史追加一条（环形缓冲，只保留最近 ``MAX_NPC_INTERACTIONS`` 条）。"""
     npc_id = str(npc_id or "").strip()

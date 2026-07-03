@@ -33,6 +33,14 @@ def test_run_migrations_builds_full_schema(tmp_path, monkeypatch):
     assert "modules" in tables
     assert "game_sessions" in tables
 
+    # Handouts 迁移（20260703）：modules 表带 handouts JSON 列
+    con = sqlite3.connect(db_file)
+    try:
+        module_cols = {r[1] for r in con.execute("PRAGMA table_info(modules)")}
+    finally:
+        con.close()
+    assert "handouts" in module_cols
+
 
 def test_run_migrations_is_idempotent(tmp_path, monkeypatch):
     db_file = tmp_path / "again.db"

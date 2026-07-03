@@ -65,6 +65,9 @@ MODULE_LOOKUP_RE = re.compile(
 # 容忍：漏写「flag=」、冒号写成空格（如「[SET_FLAG hint_x]」）。全角括号在处理前已归一为半角。
 SET_FLAG_RE = re.compile(r"\[SET_FLAG[:：\s]\s*(?:flag=)?\s*([^\]]+?)\s*\]")
 CLEAR_FLAG_RE = re.compile(r"\[CLEAR_FLAG[:：\s]\s*(?:flag=)?\s*([^\]]+?)\s*\]")
+# 手书发放：KP 在剧情达成发放条件时发 [HANDOUT: id=xxx]，系统把该手书原文以信笺卡片发给全桌。
+# 容忍漏写「id=」、冒号写成空格（与 SET_FLAG 同款宽容）。全角括号在处理前已归一为半角。
+HANDOUT_RE = re.compile(r"\[HANDOUT[:：\s]\s*([^\]]+?)\s*\]")
 # 走位：KP 在叙述里就地标记角色移动到某锚点（物体/出口/NPC/其他角色/坐标）。内联剔除、不打断叙述。
 MOVE_RE = re.compile(r"\[MOVE:([^\]]*)\]")
 # 分头行动：KP 在每个分组/场景内容前标 [GROUP: scene=<场景标签>]，后续内容归该组，前端据此分栏。内联剔除。
@@ -123,6 +126,7 @@ _SUBJECT_BOUNDARY = "。！？!?\n　 ”」』）)】"
 CMD_TAG_PREFIXES = (
     "DICE_CHECK:", "OPPOSED_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:",
     "SCENE_CHANGE:", "RULE_LOOKUP:", "MODULE_LOOKUP:", "SET_FLAG:", "CLEAR_FLAG:",
+    "HANDOUT:",
 )
 # 指令关键词（去冒号）：用于容错识别——模型有时漏写冒号或用空格（如「SET_FLAG hint_x」），
 # 也常用全角括号【】。识别到即当指令处理（剔除/执行），避免整条指令泄漏进旁白。
@@ -2340,6 +2344,47 @@ async def _process_commands(
         session_service.set_flag(db, session_id, flag, False)
         db.refresh(game_session)
         yield _make_chunk("system", f"剧情状态解除：{flag}")
+
+    # 手书发放：[HANDOUT: id=xxx] → 把模组手书的原文落库为 system 事件并广播（handout 是
+    # 给玩家看的实体文书，正常进聊天流，前端按 metadata.kind 渲染成信笺卡片）。
+    # 幂等：同 id 只发放一次（重复发放静默跳过）；未知 id 静默跳过（只记日志，不出卡片）。
+    for match in HANDOUT_RE.finditer(kp_text):
+        inner = match.group(1).strip()
+        hid = (_parse_tag_kv(inner).get("id") or inner).strip()
+        handout = next(
+            (
+                h for h in (getattr(module, "handouts", None) or [])
+                if isinstance(h, dict) and str(h.get("id") or "").strip() == hid
+            ),
+            None,
+        )
+        if handout is None:
+            logger.warning("HANDOUT 指令引用了未知手书 id（跳过）：%r", hid)
+            continue
+        db.refresh(game_session)
+        if world_memory.handout_issued(game_session.world_state or {}, hid):
+            continue  # 已发放过：幂等，不再落库/广播
+        title = str(handout.get("title") or "").strip()
+        meta = {
+            "kind": "handout",
+            "handout_id": hid,
+            "title": title,
+            "handout_kind": str(handout.get("kind") or "").strip(),
+        }
+        ev = session_service.add_event(
+            db, session_id, "system", str(handout.get("content") or ""),
+            actor_name="系统", metadata=meta,
+        )
+        yield _make_chunk("system", ev.content, metadata=meta, event_id=ev.id)
+        # 世界记忆：记入 handouts_issued（幂等真源）+ 线索台账（status=known，kind=handout），
+        # 已发放的手书经台账自然进入后续 KP 上下文、并从「可发放清单」里消失。
+        present = [player_char.id] + [t.id for t in (teammates or [])]
+        _apply_world_memory(
+            db, game_session,
+            lambda ws, _hid=hid, _title=title, _seq=ev.sequence_num: (
+                world_memory.record_handout_issue(ws, _hid, _title, present, _seq)
+            ),
+        )
 
     # 走位：把 [MOVE: actor, to] 解析成场景内坐标并落库（地图随 refreshTick 重新拉取反映）
     for match in MOVE_RE.finditer(kp_text):
