@@ -15,11 +15,11 @@ interface Clue { id: string; name?: string; description?: string; location?: str
 interface SceneData extends Record<string, unknown> { name: string; npcs: string[]; clues: string[]; orphan?: boolean }
 
 const NODE_W = 210
-const ACCENT = '#8b2500'
+const ACCENT = '#d4a24e'
 const DANGER_META: Record<string, { label: string; color: string }> = {
   calm: { label: '平静', color: 'var(--color-text-secondary)' },
-  uneasy: { label: '不安', color: '#b8860b' },
-  dangerous: { label: '危险', color: '#c2410c' },
+  uneasy: { label: '不安', color: '#cfa93f' },
+  dangerous: { label: '危险', color: '#d1703c' },
   deadly: { label: '致命', color: 'var(--color-danger)' },
 }
 const sceneName = (s: Scene) => s.name || s.title || s.id || '(未命名)'
@@ -36,12 +36,12 @@ function SceneNode({ data, selected }: { data: SceneData; selected?: boolean }) 
         width: NODE_W,
         background: data.orphan ? 'var(--color-bg-tertiary)' : 'var(--color-bg-card)',
         border: `${selected ? 2 : 1}px solid ${borderColor}`,
-        boxShadow: selected ? `0 0 0 3px rgba(139,37,0,0.25)` : '0 1px 2px rgba(0,0,0,0.1)',
+        boxShadow: selected ? `0 0 0 3px rgba(212,162,78,0.3)` : '0 1px 2px rgba(0,0,0,0.1)',
       }}
     >
       <Handle type="target" position={Position.Top} style={hStyle} />
       <Handle type="source" position={Position.Bottom} style={hStyle} />
-      <div className="px-2 py-1 font-semibold rounded-t-md truncate" style={{ background: data.orphan ? 'transparent' : 'rgba(139,37,0,0.08)', color: 'var(--color-text-accent)' }}>{data.name}</div>
+      <div className="px-2 py-1 font-semibold rounded-t-md truncate" style={{ background: data.orphan ? 'transparent' : 'rgba(212,162,78,0.1)', color: 'var(--color-text-accent)' }}>{data.name}</div>
       <div className="px-2 py-1 space-y-0.5">
         {data.npcs.length > 0 && <div><span style={{ color: 'var(--color-text-secondary)' }}>NPC：</span>{data.npcs.join('、')}</div>}
         {data.clues.length > 0 && <div style={{ color: 'var(--color-danger)' }} className="flex items-start gap-1"><GiPadlock className="mt-0.5 flex-shrink-0" /><span><span style={{ opacity: 0.7 }}>线索：</span>{data.clues.join('、')}</span></div>}

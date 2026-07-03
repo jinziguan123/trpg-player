@@ -501,7 +501,7 @@ export function GamePage() {
                     {(open) => (
                       <button
                         onClick={(e) => { e.stopPropagation(); open() }}
-                        className="text-xs px-1.5 py-0.5 rounded hover:bg-[var(--color-danger)] hover:text-white transition-colors"
+                        className="text-xs px-1.5 py-0.5 rounded hover:bg-[var(--color-danger-deep)] hover:text-white transition-colors"
                         style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}
                       >
                         删除

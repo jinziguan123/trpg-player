@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react'
+import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo, type CSSProperties } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -40,8 +40,15 @@ const HANDOUT_KIND_LABELS: Record<string, string> = {
   diary: '日记',
   note: '便条',
 }
-// 信笺正文用衬线体（配合泛黄纸质感），中文回退宋体
-const HANDOUT_SERIF = 'Georgia, "Songti SC", "SimSun", serif'
+// 信笺正文用衬线体（配合泛黄纸质感），本地打包 Noto Serif SC，中文回退宋体
+const HANDOUT_SERIF = '"Noto Serif SC", Georgia, "Songti SC", "SimSun", serif'
+
+// NPC 气泡按角色名派生一个稳定色相（写入 --npc-hue），同一 NPC 颜色一致、不同 NPC 微有区分
+function npcHue(name?: string): number {
+  let h = 0
+  for (const ch of String(name || '')) h = (h * 31 + ch.charCodeAt(0)) % 360
+  return h
+}
 
 function stripCommandTags(text: string): string {
   return text
@@ -80,8 +87,8 @@ function fmtTime(ts?: number): string {
 /** 检定结果按成败取强调色。兼容引擎英文枚举与 SAN 检定的中文。 */
 function diceAccent(outcome: string): string {
   const s = String(outcome || '')
-  if (s.includes('critical') || s.includes('大成功')) return '#d4af37'        // 大成功：金黄
-  if (s.includes('fumble') || s.includes('大失败')) return '#1a1a1a'          // 大失败：黑
+  if (s.includes('critical') || s.includes('大成功')) return 'var(--color-dice-gold)'    // 大成功：金黄
+  if (s.includes('fumble') || s.includes('大失败')) return 'var(--color-dice-fumble)'    // 大失败：刺目血色（暗底上黑色不可见）
   if (s.includes('success') || s === '成功') return 'var(--color-success)'    // 其余成功：绿
   if (s.includes('fail') || s.includes('失败')) return 'var(--color-danger)'  // 普通失败：红
   return 'var(--color-text-secondary)'
@@ -660,7 +667,7 @@ export function GameSessionPage() {
           // 历史检索悬浮窗：遮罩 + 居中浮层，点遮罩 / Esc / X 关闭；不占据聊天区布局。
           <div
             className="fixed inset-0 z-50 flex items-start justify-center"
-            style={{ paddingTop: '12vh', background: 'rgba(0,0,0,0.35)' }}
+            style={{ paddingTop: '12vh', background: 'rgba(0,0,0,0.6)' }}
             onClick={() => setShowSearch(false)}
           >
             <div
@@ -742,7 +749,7 @@ export function GameSessionPage() {
                       style={{
                         borderColor: loc.current ? 'var(--color-accent)' : 'var(--color-border)',
                         background: loc.current ? 'var(--color-accent)' : 'transparent',
-                        color: loc.current ? '#fff' : 'var(--color-text-primary)',
+                        color: loc.current ? 'var(--color-on-accent)' : 'var(--color-text-primary)',
                         opacity: streaming && !loc.current ? 0.5 : 1,
                         cursor: loc.current || streaming ? 'default' : 'pointer',
                       }}
@@ -797,7 +804,7 @@ export function GameSessionPage() {
                           style={{
                             borderColor: i === floorIdx ? 'var(--color-accent)' : 'var(--color-border)',
                             background: i === floorIdx ? 'var(--color-accent)' : 'transparent',
-                            color: i === floorIdx ? '#fff' : 'var(--color-text-secondary)',
+                            color: i === floorIdx ? 'var(--color-on-accent)' : 'var(--color-text-secondary)',
                           }}>{f.name || `第 ${i + 1} 层`}</button>
                       ))}
                     </div>
@@ -830,7 +837,7 @@ export function GameSessionPage() {
                   style={{
                     borderColor: on ? 'var(--color-accent)' : 'var(--color-border)',
                     background: on ? 'var(--color-accent)' : 'transparent',
-                    color: on ? '#fff' : 'var(--color-text-secondary)',
+                    color: on ? 'var(--color-on-accent)' : 'var(--color-text-secondary)',
                   }}>{g}</button>
               )
             })}
@@ -866,7 +873,7 @@ export function GameSessionPage() {
                   />
                   <div className="flex gap-2 mt-1 justify-end">
                     <button onClick={() => { setEditingId(null); setEditText('') }} className="btn-secondary text-xs !px-2 !py-0.5">取消</button>
-                    <button onClick={() => saveEdit(msg.id!)} className="text-xs px-3 py-0.5 rounded font-semibold cursor-pointer" style={{ background: 'var(--color-text-accent)', color: '#f0e6d3' }}>保存</button>
+                    <button onClick={() => saveEdit(msg.id!)} className="text-xs px-3 py-0.5 rounded font-semibold cursor-pointer" style={{ background: 'var(--color-text-accent)', color: 'var(--color-on-accent)' }}>保存</button>
                   </div>
                 </div>
               )
@@ -922,8 +929,8 @@ export function GameSessionPage() {
               const diceText = msg.content.replace(/^🎲\s*/, '')
               return (
                 <div key={msg.id} className="chat-msg py-1">
-                  <div className="rounded-md px-3 py-2 text-sm flex items-start gap-2"
-                    style={{ background: 'var(--color-bg-tertiary)', borderLeft: `3px solid ${accent}`, width: 'fit-content', maxWidth: '100%' }}>
+                  <div className="dice-card rounded-md px-3 py-2 text-sm flex items-start gap-2"
+                    style={{ borderLeft: `3px solid ${accent}`, width: 'fit-content', maxWidth: '100%' }}>
                     <GiRollingDices style={{ color: accent, fontSize: '1.1rem', flexShrink: 0, marginTop: '0.1rem' }} />
                     <span className="whitespace-pre-wrap">{diceText}</span>
                     {fmtTime(msg.ts) && <span className="self-end" style={{ fontSize: '0.6rem', opacity: 0.5, flexShrink: 0 }}>{fmtTime(msg.ts)}</span>}
@@ -1030,7 +1037,7 @@ export function GameSessionPage() {
                   </div>
                 ) : !isPlayer && msg.type === 'dialogue' ? (
                   <div>
-                    <span className="chat-bubble-npc"><InlineMd text={msg.content} /></span>
+                    <span className="chat-bubble-npc" style={{ '--npc-hue': npcHue(msg.actor_name) } as CSSProperties}><InlineMd text={msg.content} /></span>
                   </div>
                 ) : msg.type === 'action' ? (
                   <div className={isPlayer ? 'chat-player' : ''}>
@@ -1113,7 +1120,7 @@ export function GameSessionPage() {
                 className="text-xs px-3 py-1 rounded font-semibold transition-colors cursor-pointer"
                 style={{
                   background: 'var(--color-text-accent)',
-                  color: '#f0e6d3',
+                  color: 'var(--color-on-accent)',
                   opacity: (turnState && myCharId && turnState.confirmed_ids.includes(myCharId)) ? 0.5 : 1,
                 }}
                 title="所有真人都点「推进」后，本回合发言才整批交给 KP"

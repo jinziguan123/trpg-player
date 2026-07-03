@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource/noto-serif-sc": "^5.2.9",
+    "@fontsource/zcool-xiaowei": "^5.2.8",
     "@radix-ui/react-dialog": "^1.1.17",
     "@radix-ui/react-popover": "^1.1.17",
     "@radix-ui/react-select": "^2.3.1",

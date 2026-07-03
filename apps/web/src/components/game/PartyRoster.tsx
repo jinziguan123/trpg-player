@@ -27,7 +27,7 @@ export function PartyRoster({ participants, selectedId, onSelect }: Props) {
             style={{
               borderColor: highlight ? 'var(--color-accent)' : 'var(--color-border)',
               background: active ? 'var(--color-accent)' : 'transparent',
-              color: active ? '#fff' : p.is_mine ? 'var(--color-text-accent)' : 'var(--color-text-secondary)',
+              color: active ? 'var(--color-on-accent)' : p.is_mine ? 'var(--color-text-accent)' : 'var(--color-text-secondary)',
               opacity: empty ? 0.6 : 1,
             }}
             title={empty ? '空席 · 等待真人加入' : p.role === 'ai' ? 'AI 队友 — 点击查看角色卡' : p.is_mine ? '你 — 点击查看角色卡' : '真人玩家 — 点击查看角色卡'}

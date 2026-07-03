@@ -44,7 +44,7 @@ export function RadarChart({ labels, values, maxValue = 100, size = 200 }: Radar
         return <line key={i} x1={cx} y1={cy} x2={p.x} y2={p.y} stroke="var(--color-border)" strokeWidth="0.5" opacity={0.4} />
       })}
 
-      <path d={dataPath} fill="rgba(139, 37, 0, 0.15)" stroke="var(--color-accent)" strokeWidth="1.5" />
+      <path d={dataPath} fill="rgba(212, 162, 78, 0.16)" stroke="var(--color-accent)" strokeWidth="1.5" />
 
       {dataPoints.map((p, i) => (
         <circle key={i} cx={p.x} cy={p.y} r="2.5" fill="var(--color-accent)" />

@@ -3,7 +3,7 @@ import { deriveAssets } from './useCocData'
 const inputCls = 'w-full px-2 py-1 rounded text-sm'
 const inputStyle = { background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }
 const labelStyle = { color: 'var(--color-text-secondary)' }
-const delBtn = 'text-xs px-2 py-1 rounded hover:bg-[var(--color-danger)] hover:text-white transition-colors'
+const delBtn = 'text-xs px-2 py-1 rounded hover:bg-[var(--color-danger-deep)] hover:text-white transition-colors'
 const delStyle = { color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }
 
 export interface Relation { name: string; relation: string }

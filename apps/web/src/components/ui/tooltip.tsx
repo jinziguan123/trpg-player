@@ -22,7 +22,7 @@ const TooltipContent = React.forwardRef<
       style={{
         background: 'var(--color-text-primary)',
         color: 'var(--color-bg-primary)',
-        fontFamily: 'var(--font-body)',
+        fontFamily: 'var(--font-ui)',
       }}
       {...props}
     />

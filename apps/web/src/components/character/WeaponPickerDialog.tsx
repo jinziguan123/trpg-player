@@ -26,7 +26,7 @@ export function WeaponPickerDialog({
   const chip = (active: boolean) => ({
     borderColor: active ? 'var(--color-success)' : 'var(--color-border)',
     background: active ? 'var(--color-success)' : 'var(--color-bg-tertiary)',
-    color: active ? '#fff' : 'var(--color-text-primary)',
+    color: active ? 'var(--color-on-accent)' : 'var(--color-text-primary)',
   })
 
   return (
@@ -59,7 +59,7 @@ export function WeaponPickerDialog({
             <button
               key={w.name + i}
               onClick={() => { onPick(w); onOpenChange(false) }}
-              className="w-full text-left px-2 py-1.5 rounded text-sm hover:bg-[var(--color-accent)] hover:text-white transition-colors"
+              className="w-full text-left px-2 py-1.5 rounded text-sm hover:bg-[var(--color-accent)] hover:text-[var(--color-on-accent)] transition-colors"
               style={{ background: 'var(--color-bg-tertiary)' }}
             >
               <div className="flex justify-between gap-2">

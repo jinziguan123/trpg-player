@@ -65,7 +65,7 @@ export function WeaponsEditor({
                 </label>
                 <button
                   onClick={() => onChange(weapons.filter((_, j) => j !== i))}
-                  className="text-xs px-2 py-1 rounded hover:bg-[var(--color-danger)] hover:text-white transition-colors"
+                  className="text-xs px-2 py-1 rounded hover:bg-[var(--color-danger-deep)] hover:text-white transition-colors"
                   style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}
                 >删除</button>
               </div>

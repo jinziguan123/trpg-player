@@ -123,7 +123,7 @@ export function AssetsPage() {
           onDrop={(e) => { e.preventDefault(); setDragOver(false); pickFile(e.dataTransfer.files[0]) }}
           onClick={() => fileRef.current?.click()}
           className="border-2 border-dashed rounded-md p-5 mb-3 text-center cursor-pointer transition-colors"
-          style={{ borderColor: dragOver ? 'var(--color-accent)' : 'var(--color-border)', background: dragOver ? 'rgba(139,37,0,0.04)' : 'rgba(255,255,255,0.2)' }}
+          style={{ borderColor: dragOver ? 'var(--color-accent)' : 'var(--color-border)', background: dragOver ? 'rgba(212,162,78,0.07)' : 'rgba(255,255,255,0.03)' }}
         >
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { pickFile(e.target.files?.[0]); e.target.value = '' }} />
           {file ? (
@@ -203,7 +203,7 @@ export function AssetsPage() {
         <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))' }}>
           {shown.map((a) => (
             <div key={a.id} className="card !p-2 relative">
-              <button onClick={() => openDetail(a)} title="查看/编辑详情" className="rounded mb-1 flex items-center justify-center w-full cursor-pointer" style={{ height: 80, background: 'repeating-conic-gradient(#0001 0% 25%, transparent 0% 50%) 50%/16px 16px, var(--color-bg-tertiary)' }}>
+              <button onClick={() => openDetail(a)} title="查看/编辑详情" className="rounded mb-1 flex items-center justify-center w-full cursor-pointer" style={{ height: 80, background: 'repeating-conic-gradient(#ffffff0f 0% 25%, transparent 0% 50%) 50%/16px 16px, var(--color-bg-tertiary)' }}>
                 <img src={mediaUrl(a.image_url)} alt={a.name} style={{ maxWidth: '90%', maxHeight: 72, imageRendering: 'pixelated' }} />
               </button>
               <div className="flex items-center justify-between gap-1">
@@ -232,7 +232,7 @@ export function AssetsPage() {
               <h3 className="card-title !mb-0 flex items-center gap-1"><Pencil size={14} /> 编辑素材</h3>
               <button onClick={() => setDetail(null)} style={{ color: 'var(--color-text-secondary)' }}><X size={16} /></button>
             </div>
-            <div className="rounded mb-3 flex items-center justify-center" style={{ height: 140, background: 'repeating-conic-gradient(#0001 0% 25%, transparent 0% 50%) 50%/20px 20px, var(--color-bg-tertiary)' }}>
+            <div className="rounded mb-3 flex items-center justify-center" style={{ height: 140, background: 'repeating-conic-gradient(#ffffff0f 0% 25%, transparent 0% 50%) 50%/20px 20px, var(--color-bg-tertiary)' }}>
               <img src={mediaUrl(detail.image_url)} alt={detail.name} style={{ maxWidth: '90%', maxHeight: 128, imageRendering: 'pixelated' }} />
             </div>
             <div className="space-y-2 text-sm">

@@ -112,12 +112,12 @@ export function SettingsPage() {
               border: 'none',
               borderRadius: '3px',
               fontSize: '0.875rem',
-              fontFamily: 'var(--font-body)',
+              fontFamily: 'var(--font-ui)',
               cursor: 'pointer',
               transition: 'all 0.15s',
               background:
                 activeTab === tab.key
-                  ? 'rgba(139, 37, 0, 0.08)'
+                  ? 'rgba(212, 162, 78, 0.12)'
                   : 'transparent',
               color:
                 activeTab === tab.key

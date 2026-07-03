@@ -138,8 +138,8 @@ function BasicInfoTab({ character }: { character: CharacterData }) {
             <span
               className="text-xs px-2 py-0.5 rounded"
               style={{
-                background: STATUS_DANGER.has(character.status) ? 'var(--color-danger)' : 'var(--color-bg-tertiary)',
-                color: STATUS_DANGER.has(character.status) ? '#fff' : 'var(--color-text-secondary)',
+                background: STATUS_DANGER.has(character.status) ? 'var(--color-danger-deep)' : 'var(--color-bg-tertiary)',
+                color: STATUS_DANGER.has(character.status) ? 'var(--color-on-danger)' : 'var(--color-text-secondary)',
               }}
             >
               {STATUS_LABEL[character.status] || character.status}

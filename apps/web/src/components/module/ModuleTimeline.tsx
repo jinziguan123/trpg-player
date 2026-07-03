@@ -12,7 +12,7 @@ const sceneName = (s: Scene) => s.name || s.title || s.id || '(未命名)'
 
 function summarizeScene(st: SceneState): string {
   const parts: string[] = []
-  if (st.danger) parts.push(`危险度→${DANGER_LABEL[st.danger] || st.danger}`)
+  if (st.danger) parts.push(`危险度变为「${DANGER_LABEL[st.danger] || st.danger}」`)
   if (st.atmosphere) parts.push('氛围变化')
   if (st.description) parts.push('描述变化')
   return parts.join('、') || '状态变化'
@@ -122,8 +122,8 @@ export function ModuleTimeline({ scenes, npcs, triggers }: { scenes: Scene[]; np
 
       {/* 一致性提示：标志名是否前后呼应 */}
       {(danglingVariants.length > 0 || danglingTriggers.length > 0) && (
-        <div className="card text-xs" style={{ borderColor: '#b8860b' }}>
-          <div className="flex items-center gap-1 font-semibold mb-1" style={{ color: '#b8860b' }}>
+        <div className="card text-xs" style={{ borderColor: 'var(--color-dice-gold)' }}>
+          <div className="flex items-center gap-1 font-semibold mb-1" style={{ color: 'var(--color-dice-gold)' }}>
             <AlertTriangle size={13} /> 标志一致性提示
           </div>
           {danglingVariants.length > 0 && (
