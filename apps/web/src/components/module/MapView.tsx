@@ -124,8 +124,10 @@ function shade(dark: number, warm: number, extra?: string) {
   return <div style={{ position: 'absolute', inset: 0, background: layers.join(','), pointerEvents: 'none' }} />
 }
 
-/** 把一张瓦片地图以「透视倾斜地面 + 直立 billboard」的 2.5D 渲染（CSS 3D，浏览器做透视）。滚轮缩放。 */
-export function MapView({ map, entities, assets }: { map: TileMap; entities?: MapEntity[]; assets?: AssetLite[] }) {
+/** 把一张瓦片地图以「透视倾斜地面 + 直立 billboard」的 2.5D 渲染（CSS 3D，浏览器做透视）。滚轮缩放。
+ *  onIntent 给定时（游戏内）地图变成快捷操作面板：点物体/NPC/出口/地板 → 生成一句行动
+ *  意图文本交给调用方（预填输入框，不自动发送——玩家保有最终否决权）。模组预览不传则纯展示。 */
+export function MapView({ map, entities, assets, onIntent }: { map: TileMap; entities?: MapEntity[]; assets?: AssetLite[]; onIntent?: (text: string) => void }) {
   const W = map.w, H = map.h
   const planeW = W * TILE, planeH = H * TILE
   const at = (x: number, y: number) => (map.tiles[y] && map.tiles[y][x]) || ' '
@@ -189,13 +191,32 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
+  // 拖拽平移与点击意图共存：mousedown 后累计位移超过阈值即视为拖拽，click 一律忽略。
+  const movedRef = useRef(false)
   const onMouseDown = (e: React.MouseEvent) => {
     const start = { mx: e.clientX, my: e.clientY, px: pan.x, py: pan.y }
+    movedRef.current = false
     setDragging(true)
-    const move = (ev: MouseEvent) => setPan({ x: start.px + (ev.clientX - start.mx), y: start.py + (ev.clientY - start.my) })
+    const move = (ev: MouseEvent) => {
+      if (Math.hypot(ev.clientX - start.mx, ev.clientY - start.my) > 4) movedRef.current = true
+      setPan({ x: start.px + (ev.clientX - start.mx), y: start.py + (ev.clientY - start.my) })
+    }
     const up = () => { setDragging(false); window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
+  }
+  const fireIntent = (text: string) => {
+    if (onIntent && !movedRef.current) onIntent(text)
+  }
+
+  // 点空地板 → 「走到房间某侧」：按格坐标相对地图中心给出中文方位（屏幕上北下南）
+  const directionOf = (x: number, y: number): string => {
+    const nx = (x - (W - 1) / 2) / Math.max(W / 2, 1)
+    const ny = (y - (H - 1) / 2) / Math.max(H / 2, 1)
+    if (Math.abs(nx) < 0.25 && Math.abs(ny) < 0.25) return '中央'
+    const ew = nx > 0.25 ? '东' : nx < -0.25 ? '西' : ''
+    const ns = ny > 0.25 ? '南' : ny < -0.25 ? '北' : ''
+    return `${ns}${ew}侧`
   }
 
   // 地面瓦片（含墙格的地面底，墙体另画直立板）
@@ -211,12 +232,16 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
       const lt = lightAt(x, y)
       const doorGlow = c === '+' ? `radial-gradient(circle, rgba(${CANDLE},0.22) 0%, transparent 62%)` : undefined
       const bg = TILE_BG[c] || TILE_BG['.']
+      const walkable = onIntent && c !== '#'
       floors.push(
-        <div key={`f${x},${y}`} style={{
-          position: 'absolute', left: x * TILE, top: y * TILE, width: TILE, height: TILE,
-          background: sprite ? `center/100% 100% no-repeat url("${sprite}")` : bg[(x + y) % 2],
-          imageRendering: 'pixelated',
-        }}>
+        <div key={`f${x},${y}`}
+          onClick={walkable ? () => fireIntent(`我走到房间${directionOf(x, y)}。`) : undefined}
+          style={{
+            position: 'absolute', left: x * TILE, top: y * TILE, width: TILE, height: TILE,
+            background: sprite ? `center/100% 100% no-repeat url("${sprite}")` : bg[(x + y) % 2],
+            imageRendering: 'pixelated',
+            cursor: walkable ? 'pointer' : undefined,
+          }}>
           {!sprite && c === '+' && <div style={{ position: 'absolute', inset: '20% 28%', background: 'linear-gradient(#7a5427,#5c3d1c)', borderRadius: 2, boxShadow: `0 0 6px rgba(${CANDLE},0.35)` }} />}
           {!sprite && c === ':' && <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(rgba(232,220,192,0.10) 1px, transparent 1.5px)', backgroundSize: '9px 9px' }} />}
           {!sprite && c === '~' && <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(180deg, rgba(143,163,176,0.10) 0px, rgba(143,163,176,0.10) 1px, transparent 1px, transparent 7px)' }} />}
@@ -327,13 +352,15 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
     }}>{text}</div>
   ) : null
 
-  const spriteEl = (label: string, sprite: string, idx = 0) => (
-    <div title={label} style={{ width: TILE, height: TILE, imageRendering: 'pixelated', pointerEvents: 'auto', filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.5))', background: `center bottom/contain no-repeat url("${sprite}")`, position: 'relative' }}>
+  const spriteEl = (label: string, sprite: string, idx = 0, intent?: string) => (
+    <div title={label}
+      onClick={intent ? () => fireIntent(intent) : undefined}
+      style={{ width: TILE, height: TILE, imageRendering: 'pixelated', pointerEvents: 'auto', cursor: intent ? 'pointer' : undefined, filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.5))', background: `center bottom/contain no-repeat url("${sprite}")`, position: 'relative' }}>
       {tokLabel(label, idx)}
     </div>
   )
   const stem = <div style={{ width: 2, height: 7, background: 'rgba(0,0,0,0.45)' }} />
-  const charTok = (x: number, y: number, label: string, ring: string, key: string, kind?: string, assetId?: string, glow?: boolean) => {
+  const charTok = (x: number, y: number, label: string, ring: string, key: string, kind?: string, assetId?: string, glow?: boolean, intent?: string) => {
     // 撞脸兜底：素材重复即回退首字+色环；色环底色掺一点名字私有色相辅助区分
     const sprite = dupSprite(kind, assetId) ? undefined : spriteFor(kind, assetId)
     const initial = (label || '?').trim().charAt(0) || '?'
@@ -341,8 +368,10 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
     stand.push({
       y, key, el: (
         <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2} dx={dx}>
-          {sprite ? spriteEl(label, sprite, idx) : (
-            <div title={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto', position: 'relative' }}>
+          {sprite ? spriteEl(label, sprite, idx, intent) : (
+            <div title={label}
+              onClick={intent ? () => fireIntent(intent) : undefined}
+              style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto', cursor: intent ? 'pointer' : undefined, position: 'relative' }}>
               {glow && <div style={{ position: 'absolute', left: '50%', top: 1, width: 26, height: 26, marginLeft: -13, borderRadius: '50%', boxShadow: `0 0 10px 5px rgba(${CANDLE},0.5)`, animation: 'mapTokenPulse 2.6s ease-in-out infinite', pointerEvents: 'none' }} />}
               <div style={{ width: 26, height: 26, borderRadius: '50%', border: `2px solid ${ring}`, background: `linear-gradient(rgba(10,12,17,0.88), rgba(10,12,17,0.88)), hsl(${nameHue(label)},40%,42%)`, color: PARCH, fontSize: 11, fontWeight: 700, lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.6)', position: 'relative' }}>{initial}</div>
               {stem}
@@ -353,14 +382,16 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
       ),
     })
   }
-  const iconTok = (x: number, y: number, label: string, color: string, Icon: IconT, key: string, kind?: string, assetId?: string) => {
+  const iconTok = (x: number, y: number, label: string, color: string, Icon: IconT, key: string, kind?: string, assetId?: string, intent?: string) => {
     const sprite = spriteFor(kind, assetId)
     const { dx, idx } = fanAt(x, y)
     stand.push({
       y, key, el: (
         <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2} dx={dx}>
-          {sprite ? spriteEl(label, sprite, idx) : (
-            <div title={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto', position: 'relative' }}>
+          {sprite ? spriteEl(label, sprite, idx, intent) : (
+            <div title={label}
+              onClick={intent ? () => fireIntent(intent) : undefined}
+              style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto', cursor: intent ? 'pointer' : undefined, position: 'relative' }}>
               <div style={{ width: 24, height: 24, borderRadius: '50%', background: 'rgba(10,12,17,0.9)', border: `1.5px solid ${color}`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.6)' }}>
                 <Icon size={13} color={color} />
               </div>
@@ -372,20 +403,23 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
       ),
     })
   }
+  // 点击意图（onIntent 给定时）：物体→调查、NPC→走近、出口→走向；玩家/队友不生成意图
+  const it = (text: string) => (onIntent ? text : undefined)
   for (const o of map.objects || []) {
     const isItem = o.kind === 'item'
     const color = isItem ? '#c9973b' : o.kind === 'feature' ? '#8fa3b0' : '#8a7a5c'
-    iconTok(o.x, o.y, o.name, color, objIcon(o.name, o.kind), `o${o.x},${o.y},${o.name}`, o.kind || 'furniture', o.asset_id)
+    iconTok(o.x, o.y, o.name, color, objIcon(o.name, o.kind), `o${o.x},${o.y},${o.name}`, o.kind || 'furniture', o.asset_id, it(`我调查【${o.name}】。`))
   }
-  for (const e of map.entrances || []) iconTok(e.x, e.y, e.name, '#d4a24e', DoorOpen, `e${e.x},${e.y},${e.name}`, 'door', e.asset_id)
+  for (const e of map.entrances || []) iconTok(e.x, e.y, e.name, '#d4a24e', DoorOpen, `e${e.x},${e.y},${e.name}`, 'door', e.asset_id, it(`我走向「${e.name}」。`))
   for (const n of map.npc_pos || []) n.hostile
-    ? charTok(n.x, n.y, n.name, '#a13a42', `n${n.x},${n.y},${n.name}`, 'enemy', n.asset_id)
-    : charTok(n.x, n.y, n.name, '#6e7f8d', `n${n.x},${n.y},${n.name}`, 'npc', n.asset_id)
+    ? charTok(n.x, n.y, n.name, '#a13a42', `n${n.x},${n.y},${n.name}`, 'enemy', n.asset_id, false, it(`我走近${n.name}。`))
+    : charTok(n.x, n.y, n.name, '#6e7f8d', `n${n.x},${n.y},${n.name}`, 'npc', n.asset_id, false, it(`我走近${n.name}。`))
   for (const en of entities || []) {
-    if (en.kind === 'item') { iconTok(en.x, en.y, en.name, '#c9973b', Box, `en${en.x},${en.y},${en.name}`, en.kind, en.asset_id); continue }
+    if (en.kind === 'item') { iconTok(en.x, en.y, en.name, '#c9973b', Box, `en${en.x},${en.y},${en.name}`, en.kind, en.asset_id, it(`我调查【${en.name}】。`)); continue }
     const ring = { player: '#d4a24e', ally: '#8fa3b0', npc: '#6e7f8d', enemy: '#a13a42' }[en.kind]
     const glow = anyActive ? !!en.active : en.kind === 'player'
-    charTok(en.x, en.y, en.name, ring, `en${en.x},${en.y},${en.name}`, en.kind, en.asset_id, glow)
+    const intent = en.kind === 'npc' || en.kind === 'enemy' ? it(`我走近${en.name}。`) : undefined
+    charTok(en.x, en.y, en.name, ring, `en${en.x},${en.y},${en.name}`, en.kind, en.asset_id, glow, intent)
   }
   stand.sort((a, b) => a.y - b.y)
 

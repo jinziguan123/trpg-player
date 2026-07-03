@@ -903,7 +903,15 @@ export function GameSessionPage() {
                       ))}
                     </div>
                   )}
-                  <MapView map={cur.map} entities={cur.entities} assets={mapAssets} />
+                  <MapView map={cur.map} entities={cur.entities} assets={mapAssets}
+                    onIntent={(text) => {
+                      // 点地图元素 → 预填行动到输入框（不自动发送，玩家改完再发）
+                      setInput(text)
+                      inputRef.current?.focus()
+                    }} />
+                  <p className="text-[11px] mt-1" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>
+                    点地图上的物件/人物/出口/地面，可快速填入对应行动。
+                  </p>
                 </div>
               ) : (
                 <p className="text-xs text-center py-3" style={{ color: 'var(--color-text-secondary)' }}>当前场景暂无地图——可在模组「地图」视图里生成。</p>
