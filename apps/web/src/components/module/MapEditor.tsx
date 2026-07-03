@@ -10,16 +10,16 @@ const TERRAIN_KINDS = new Set(['floor', 'wall', 'water', 'rubble'])
 const CELL = 26
 // 地形画笔（glyph + 标签 + 占位色）
 const TERRAIN = [
-  { g: '.', label: '地板', color: '#cdb487' },
-  { g: '#', label: '墙', color: '#7d6c52' },
-  { g: '+', label: '门', color: '#b5824a' },
-  { g: '~', label: '水', color: '#5f86a6' },
-  { g: ':', label: '碎石', color: '#bfa97f' },
+  { g: '.', label: '地板', color: '#3e3524' },
+  { g: '#', label: '墙', color: '#4a4230' },
+  { g: '+', label: '门', color: '#8a5a2f' },
+  { g: '~', label: '水', color: '#20363f' },
+  { g: ':', label: '碎石', color: '#342c1c' },
   { g: ' ', label: '空', color: 'transparent' },
 ]
 const TERRAIN_COLOR: Record<string, string> = Object.fromEntries(TERRAIN.map((t) => [t.g, t.color]))
 // 放置层 token 的种类底色（未知自定义类别用兜底色）
-const KIND_COLOR: Record<string, string> = { furniture: '#7a6248', item: '#b8860b', npc: '#3b6ea5', enemy: '#a33', feature: '#6a5', door: '#2d7d46' }
+const KIND_COLOR: Record<string, string> = { furniture: '#8a7a5c', item: '#c9973b', npc: '#6e7f8d', enemy: '#a13a42', feature: '#8fa3b0', door: '#d4a24e' }
 
 type Tok = { name: string; x: number; y: number; kind?: string; asset_id?: string; to?: string; hostile?: boolean }
 const glyphKind = (g: string): string => ({ '#': 'wall', '.': 'floor', '+': 'door', '~': 'water', ':': 'rubble' }[g] || '')
@@ -209,15 +209,15 @@ export function MapEditor({ initial, assets, onSave, onCancel, onAIGenerate, onI
                 onMouseEnter={() => { if (painting && tool !== 'obj') paintTerrain(x, y) }}
                 style={{
                   position: 'absolute', left: x * CELL, top: y * CELL, width: CELL, height: CELL, cursor: 'pointer',
-                  background: sprite ? `center/100% 100% no-repeat url("${sprite}")` : (TERRAIN_COLOR[g] ?? '#cdb487'),
-                  boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.08)', imageRendering: 'pixelated',
+                  background: sprite ? `center/100% 100% no-repeat url("${sprite}")` : (TERRAIN_COLOR[g] ?? '#3e3524'),
+                  boxShadow: 'inset 0 0 0 1px rgba(232,220,192,0.06)', imageRendering: 'pixelated',
                 }} />
             )
           }))}
           {objects.map((o, i) => (
             <div key={i} title={`${o.name}（点移除）`}
               onMouseDown={(e) => { e.stopPropagation(); setObjects((arr) => arr.filter((_, j) => j !== i)) }}
-              style={{ position: 'absolute', left: o.x * CELL + 3, top: o.y * CELL + 3, width: CELL - 6, height: CELL - 6, borderRadius: '50%', cursor: 'pointer', background: byId[o.asset_id || ''] ? `center/contain no-repeat url("${byId[o.asset_id!]}")` : (KIND_COLOR[o.kind || 'furniture'] || '#7a6248'), boxShadow: '0 0 0 1px #0006' }} />
+              style={{ position: 'absolute', left: o.x * CELL + 3, top: o.y * CELL + 3, width: CELL - 6, height: CELL - 6, borderRadius: '50%', cursor: 'pointer', background: byId[o.asset_id || ''] ? `center/contain no-repeat url("${byId[o.asset_id!]}")` : (KIND_COLOR[o.kind || 'furniture'] || '#7a6248'), boxShadow: '0 0 0 1px rgba(232,220,192,0.35)' }} />
           ))}
         </div>
       </div>

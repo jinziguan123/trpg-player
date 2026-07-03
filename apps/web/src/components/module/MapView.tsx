@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { User, Box, DoorOpen, Armchair, Eye, Crosshair, ZoomIn, ZoomOut } from 'lucide-react'
+import { Box, DoorOpen, Armchair, Eye, ZoomIn, ZoomOut } from 'lucide-react'
 import type { ComponentType } from 'react'
 
 export interface TileMap {
@@ -13,8 +13,9 @@ export interface TileMap {
   notes?: string
 }
 
-/** 运行时叠加的实体（玩家/NPC/敌人/物品当前位置）；不传则只渲染地图自带的物体/NPC/出口。 */
-export interface MapEntity { name: string; x: number; y: number; kind: 'player' | 'ally' | 'npc' | 'enemy' | 'item'; asset_id?: string }
+/** 运行时叠加的实体（玩家/NPC/敌人/物品当前位置）；不传则只渲染地图自带的物体/NPC/出口。
+ *  active: 当前行动者（呼吸光圈）；不传时默认玩家 token 发烛光。 */
+export interface MapEntity { name: string; x: number; y: number; kind: 'player' | 'ally' | 'npc' | 'enemy' | 'item'; asset_id?: string; active?: boolean }
 
 /** 素材库条目（精简）：地图按「类型默认素材 / 显式 asset_id」引用其 image_url 渲染。 */
 export interface AssetLite { id: string; kind: string; image_url: string; name?: string }
@@ -28,9 +29,17 @@ const PERSP = 1300        // 透视强度（越小近大远小越夸张）
 const WALL_H = 34         // 墙体直立高度
 const TOKEN_H = 34        // token 直立高度
 
-// 占位色块调色板（与暖色主题协调，近似截图的暖色地面）。换真实 CC0 瓦片图时替换为贴图。
-const FLOOR: Record<string, string> = {
-  '.': '#cdb487', '+': '#cdb487', '~': '#5f86a6', ':': '#bfa97f', '#': '#b8a079',
+// ── 深夜暖光调色板：烛光下的羊皮纸探索图 ──────────────────────────────
+// 基底压暗（贴近 #0c0e13），烛光琥珀 #d4a24e 做光源与强调，羊皮纸 #e8dcc0 做文字。
+const CANDLE = '212,162,78'      // 烛光琥珀 rgb
+const PARCH = '#e8dcc0'          // 羊皮纸暖白
+// 地面色块（无素材时）：[主色, 交错色] 轻微棋盘变化替代格线
+const TILE_BG: Record<string, [string, string]> = {
+  '.': ['#3e3524', '#39301f'],   // 地板：暗羊皮纸褐
+  '+': ['#3e3524', '#39301f'],   // 门格地面同地板，门板另画
+  '~': ['#20363f', '#1c313a'],   // 水面：深青
+  ':': ['#342c1c', '#2f2818'],   // 碎石：更暗的土褐
+  '#': ['#332c1c', '#332c1c'],   // 墙格地面（基本被墙板盖住）
 }
 
 type IconT = ComponentType<{ size?: number; color?: string }>
@@ -53,6 +62,16 @@ function Billboard({ x, y, h, z = 1, children }: { x: number; y: number; h: numb
   )
 }
 
+/** 光照/迷雾叠加层：warm=烛光暖染，dark=离光源远处压暗；extra 放门的琥珀微光等附加层。 */
+function shade(dark: number, warm: number, extra?: string) {
+  const layers: string[] = []
+  if (extra) layers.push(extra)
+  if (warm > 0.01) layers.push(`linear-gradient(rgba(${CANDLE},${warm.toFixed(3)}), rgba(${CANDLE},${warm.toFixed(3)}))`)
+  if (dark > 0.01) layers.push(`linear-gradient(rgba(5,7,12,${dark.toFixed(3)}), rgba(5,7,12,${dark.toFixed(3)}))`)
+  if (!layers.length) return null
+  return <div style={{ position: 'absolute', inset: 0, background: layers.join(','), pointerEvents: 'none' }} />
+}
+
 /** 把一张瓦片地图以「透视倾斜地面 + 直立 billboard」的 2.5D 渲染（CSS 3D，浏览器做透视）。滚轮缩放。 */
 export function MapView({ map, entities, assets }: { map: TileMap; entities?: MapEntity[]; assets?: AssetLite[] }) {
   const W = map.w, H = map.h
@@ -68,6 +87,28 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
   }
   const spriteFor = (kind?: string, assetId?: string) =>
     (assetId && byId[assetId]) || (kind ? byKind[kind] : undefined)
+
+  // ── 光源与迷雾 ─────────────────────────────────────────────
+  // 玩家/队友是移动烛光；出入口是微弱琥珀光。没有瓦片级「已见过」数据，
+  // 迷雾按「离最近光源的距离」压暗（有玩家在场才启用，模组预览不受影响）。
+  const lights: { x: number; y: number; r: number; warm: number }[] = []
+  for (const en of entities || []) {
+    if (en.kind === 'player') lights.push({ x: en.x, y: en.y, r: 4.5, warm: 0.15 })
+    else if (en.kind === 'ally') lights.push({ x: en.x, y: en.y, r: 3.5, warm: 0.10 })
+  }
+  const fog = lights.length > 0
+  for (const e of map.entrances || []) lights.push({ x: e.x, y: e.y, r: 1.6, warm: 0.10 })
+
+  const lightAt = (x: number, y: number) => {
+    let bright = 0, warm = 0
+    for (const L of lights) {
+      const d = Math.hypot(x - L.x, y - L.y)
+      bright = Math.max(bright, 1 - d / (L.r * 2.2))
+      warm = Math.max(warm, L.warm * (1 - Math.min(1, d / L.r)))
+    }
+    const dark = fog ? Math.min(0.82, Math.max(0, (1 - bright) * 0.9 - 0.08)) : 0
+    return { dark, warm }
+  }
 
   // 固定视口 + 内部缩放/平移：滚轮缩放地图本身（容器不变大），可拖拽平移。
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -115,19 +156,39 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
       const groundKind = c === '#' ? 'floor' : GLYPH_KIND[c]
       const ov = c !== '#' ? map.tile_assets?.[`${x},${y}`] : undefined
       const sprite = (ov && byId[ov]) || spriteFor(groundKind)
+      const lt = lightAt(x, y)
+      const doorGlow = c === '+' ? `radial-gradient(circle, rgba(${CANDLE},0.22) 0%, transparent 62%)` : undefined
+      const bg = TILE_BG[c] || TILE_BG['.']
       floors.push(
         <div key={`f${x},${y}`} style={{
           position: 'absolute', left: x * TILE, top: y * TILE, width: TILE, height: TILE,
-          background: sprite ? `center/100% 100% no-repeat url("${sprite}")` : (FLOOR[c] || FLOOR['.']),
-          boxShadow: sprite ? undefined : 'inset 0 0 0 1px rgba(0,0,0,0.07)',
+          background: sprite ? `center/100% 100% no-repeat url("${sprite}")` : bg[(x + y) % 2],
           imageRendering: 'pixelated',
         }}>
-          {!sprite && c === '+' && <div style={{ position: 'absolute', inset: '20% 28%', background: '#8a5a2f', borderRadius: 2 }} />}
-          {!sprite && c === ':' && <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(rgba(67,56,42,0.5) 1px, transparent 1.5px)', backgroundSize: '9px 9px' }} />}
+          {!sprite && c === '+' && <div style={{ position: 'absolute', inset: '20% 28%', background: 'linear-gradient(#7a5427,#5c3d1c)', borderRadius: 2, boxShadow: `0 0 6px rgba(${CANDLE},0.35)` }} />}
+          {!sprite && c === ':' && <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(rgba(232,220,192,0.10) 1px, transparent 1.5px)', backgroundSize: '9px 9px' }} />}
+          {!sprite && c === '~' && <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(180deg, rgba(143,163,176,0.10) 0px, rgba(143,163,176,0.10) 1px, transparent 1px, transparent 7px)' }} />}
+          {shade(lt.dark, lt.warm, doorGlow)}
         </div>,
       )
     }
   }
+
+  // 烛光光晕：玩家/队友位置的平滑径向暖光（平铺在地面层之上、直立元素之下）
+  const glows = lights.filter((L) => L.r > 2).map((L, i) => (
+    <div key={`glow${i}`} style={{
+      position: 'absolute',
+      left: (L.x + 0.5) * TILE - L.r * TILE, top: (L.y + 0.5) * TILE - L.r * TILE,
+      width: L.r * 2 * TILE, height: L.r * 2 * TILE, borderRadius: '50%',
+      background: `radial-gradient(circle, rgba(${CANDLE},0.18) 0%, rgba(${CANDLE},0.07) 45%, transparent 70%)`,
+      pointerEvents: 'none',
+    }} />
+  ))
+
+  // 墙顶面几何：直立墙高 WALL_H 的顶端，在倾斜地面坐标里等价于「上移 cos、抬 Z sin」
+  const tiltRad = TILT * Math.PI / 180
+  const topDy = WALL_H * Math.cos(tiltRad)
+  const topDz = WALL_H * Math.sin(tiltRad)
 
   // 直立元素：墙板 + token，自上而下排序（远先画、近压上）
   const stand: { y: number; key: string; el: React.ReactNode }[] = []
@@ -136,31 +197,70 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
       if (at(x, y) !== '#') continue
       const wov = map.tile_assets?.[`${x},${y}`]
       const ws = (wov && byId[wov]) || spriteFor('wall')
+      const lt = lightAt(x, y)
       // 水平中线以下（靠近镜头）的墙半透明：近处的墙会挡住内部，远处（上半）的墙不挡、保持不透明
       const isNear = y * 2 >= H
       stand.push({ y, key: `w${x},${y}`, el: (
-        <Billboard x={x} y={y} h={WALL_H}>
-          <div style={{ width: TILE, height: WALL_H, imageRendering: 'pixelated', opacity: isNear ? 0.4 : 1,
-            background: ws ? `center/100% 100% no-repeat url("${ws}")` : 'linear-gradient(#7d6c52,#5b4d3a)',
-            boxShadow: ws ? undefined : 'inset 0 2px 0 #8e7c60, 0 2px 3px rgba(0,0,0,0.35)' }} />
-        </Billboard>
+        <Fragment>
+          <Billboard x={x} y={y} h={WALL_H}>
+            <div style={{ width: TILE, height: WALL_H, imageRendering: 'pixelated', opacity: isNear ? 0.4 : 1, position: 'relative',
+              background: ws ? `center/100% 100% no-repeat url("${ws}")` : 'linear-gradient(#524a35 0%, #453d2b 55%, #322b1c 100%)',
+              boxShadow: ws ? undefined : `inset 0 1px 0 rgba(${CANDLE},0.22), inset 0 -1px 0 rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.45)` }}>
+              {shade(lt.dark, lt.warm * 0.6)}
+            </div>
+          </Billboard>
+          {/* 顶面：伪厚度——色块墙给一片贴地的「墙顶」，接在直立面顶边上 */}
+          {!ws && (
+            <div style={{
+              position: 'absolute', left: x * TILE, top: y * TILE, width: TILE, height: TILE / 2,
+              transform: `translate3d(0, ${-topDy}px, ${topDz}px)`,
+              background: '#4a4230',
+              boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.25), inset 0 1px 0 rgba(232,220,192,0.12)',
+              opacity: isNear ? 0.4 : 1, pointerEvents: 'none',
+            }}>
+              {shade(lt.dark, lt.warm * 0.6)}
+            </div>
+          )}
+        </Fragment>
       ) })
     }
   }
-  // token：有素材则用素材精灵（直立），否则回退图标圆片。
-  const tok = (x: number, y: number, label: string, color: string, Icon: IconT, key: string, kind?: string, assetId?: string) => {
+
+  // ── token ──────────────────────────────────────────────────
+  // 有素材 → 素材精灵；人物（玩家/队友/NPC/敌人）→ 色环+名字首字；物件/出口 → 暗盘+图标。
+  const anyActive = (entities || []).some((e) => e.active)
+  const spriteEl = (label: string, sprite: string) => (
+    <div title={label} style={{ width: TILE, height: TILE, imageRendering: 'pixelated', pointerEvents: 'auto', filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.5))', background: `center bottom/contain no-repeat url("${sprite}")` }} />
+  )
+  const stem = <div style={{ width: 2, height: 7, background: 'rgba(0,0,0,0.45)' }} />
+  const charTok = (x: number, y: number, label: string, ring: string, key: string, kind?: string, assetId?: string, glow?: boolean) => {
+    const sprite = spriteFor(kind, assetId)
+    const initial = (label || '?').trim().charAt(0) || '?'
+    stand.push({
+      y, key, el: (
+        <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2}>
+          {sprite ? spriteEl(label, sprite) : (
+            <div title={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto', position: 'relative' }}>
+              {glow && <div style={{ position: 'absolute', left: '50%', top: 1, width: 26, height: 26, marginLeft: -13, borderRadius: '50%', boxShadow: `0 0 10px 5px rgba(${CANDLE},0.5)`, animation: 'mapTokenPulse 2.6s ease-in-out infinite', pointerEvents: 'none' }} />}
+              <div style={{ width: 26, height: 26, borderRadius: '50%', border: `2px solid ${ring}`, background: 'rgba(10,12,17,0.92)', color: PARCH, fontSize: 11, fontWeight: 700, lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.6)', position: 'relative' }}>{initial}</div>
+              {stem}
+            </div>
+          )}
+        </Billboard>
+      ),
+    })
+  }
+  const iconTok = (x: number, y: number, label: string, color: string, Icon: IconT, key: string, kind?: string, assetId?: string) => {
     const sprite = spriteFor(kind, assetId)
     stand.push({
       y, key, el: (
         <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2}>
-          {sprite ? (
-            <div title={label} style={{ width: TILE, height: TILE, imageRendering: 'pixelated', pointerEvents: 'auto', filter: 'drop-shadow(0 2px 2px rgba(0,0,0,0.5))', background: `center bottom/contain no-repeat url("${sprite}")` }} />
-          ) : (
+          {sprite ? spriteEl(label, sprite) : (
             <div title={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto' }}>
-              <div style={{ width: 24, height: 24, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 3px rgba(0,0,0,0.5)' }}>
-                <Icon size={14} color="#fff" />
+              <div style={{ width: 24, height: 24, borderRadius: '50%', background: 'rgba(10,12,17,0.9)', border: `1.5px solid ${color}`, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.6)' }}>
+                <Icon size={13} color={color} />
               </div>
-              <div style={{ width: 2, height: 7, background: 'rgba(0,0,0,0.35)' }} />
+              {stem}
             </div>
           )}
         </Billboard>
@@ -169,15 +269,17 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
   }
   for (const o of map.objects || []) {
     const isItem = o.kind === 'item'
-    tok(o.x, o.y, o.name, isItem ? '#b8860b' : '#7a6248', isItem ? Box : o.kind === 'feature' ? Eye : Armchair, `o${o.x},${o.y},${o.name}`, o.kind || 'furniture', o.asset_id)
+    iconTok(o.x, o.y, o.name, isItem ? '#c9973b' : o.kind === 'feature' ? '#8fa3b0' : '#8a7a5c', isItem ? Box : o.kind === 'feature' ? Eye : Armchair, `o${o.x},${o.y},${o.name}`, o.kind || 'furniture', o.asset_id)
   }
-  for (const e of map.entrances || []) tok(e.x, e.y, e.name, '#2d7d46', DoorOpen, `e${e.x},${e.y},${e.name}`, 'door', e.asset_id)
+  for (const e of map.entrances || []) iconTok(e.x, e.y, e.name, '#d4a24e', DoorOpen, `e${e.x},${e.y},${e.name}`, 'door', e.asset_id)
   for (const n of map.npc_pos || []) n.hostile
-    ? tok(n.x, n.y, n.name, 'var(--color-danger)', Crosshair, `n${n.x},${n.y},${n.name}`, 'enemy', n.asset_id)
-    : tok(n.x, n.y, n.name, '#3b6ea5', User, `n${n.x},${n.y},${n.name}`, 'npc', n.asset_id)
+    ? charTok(n.x, n.y, n.name, '#a13a42', `n${n.x},${n.y},${n.name}`, 'enemy', n.asset_id)
+    : charTok(n.x, n.y, n.name, '#6e7f8d', `n${n.x},${n.y},${n.name}`, 'npc', n.asset_id)
   for (const en of entities || []) {
-    const m = { player: ['var(--color-accent)', Crosshair], ally: ['#2d7d46', User], npc: ['#3b6ea5', User], enemy: ['var(--color-danger)', Crosshair], item: ['#b8860b', Box] }[en.kind] as [string, IconT]
-    tok(en.x, en.y, en.name, m[0], m[1], `en${en.x},${en.y},${en.name}`, en.kind, en.asset_id)
+    if (en.kind === 'item') { iconTok(en.x, en.y, en.name, '#c9973b', Box, `en${en.x},${en.y},${en.name}`, en.kind, en.asset_id); continue }
+    const ring = { player: '#d4a24e', ally: '#8fa3b0', npc: '#6e7f8d', enemy: '#a13a42' }[en.kind]
+    const glow = anyActive ? !!en.active : en.kind === 'player'
+    charTok(en.x, en.y, en.name, ring, `en${en.x},${en.y},${en.name}`, en.kind, en.asset_id, glow)
   }
   stand.sort((a, b) => a.y - b.y)
 
@@ -193,8 +295,13 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
         position: 'relative', width: '100%', height: VIEWPORT_H, overflow: 'hidden',
         cursor: dragging ? 'grabbing' : 'grab', userSelect: 'none', touchAction: 'none',
         borderRadius: 6,
+        // 地图自带深夜基底：不依赖页面主题，烛光/暗角在任何外壳下都成立
+        background: 'radial-gradient(ellipse at 50% 42%, #14161d 0%, #0c0e13 70%)',
+        boxShadow: 'inset 0 0 0 1px rgba(212,162,78,0.14)',
       }}
     >
+      {/* 呼吸光圈动画：纯 CSS 合成器动画，无 JS 重绘循环 */}
+      <style>{'@keyframes mapTokenPulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:.9;transform:scale(1.12)}}'}</style>
       <button onMouseDown={(e) => e.stopPropagation()} onClick={() => setZoom((z) => Math.max(0.2, z * 0.89))} title="缩小" style={zoomBtn(8)}><ZoomOut size={14} /></button>
       <button onMouseDown={(e) => e.stopPropagation()} onClick={() => setZoom((z) => Math.min(4, z * 1.12))} title="放大" style={zoomBtn(40)}><ZoomIn size={14} /></button>
       {/* 内容层：固定视口内做 平移+缩放，容器尺寸不随缩放变化 */}
@@ -210,10 +317,13 @@ export function MapView({ map, entities, assets }: { map: TileMap; entities?: Ma
             transformStyle: 'preserve-3d', transform: `rotateX(${TILT}deg)`,
           }}>
             {floors}
+            {glows}
             {stand.map((s) => <Fragment key={s.key}>{s.el}</Fragment>)}
           </div>
         </div>
       </div>
+      {/* 暗角：烛光探索图的边缘渐暗 */}
+      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 3, background: 'radial-gradient(ellipse at 50% 45%, transparent 52%, rgba(4,6,10,0.55) 100%)' }} />
     </div>
   )
 }
