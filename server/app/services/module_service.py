@@ -76,6 +76,16 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       "location": "scene_1",
       "trigger_condition": "如何发现这个线索"
     }}
+  ],
+  "handouts": [
+    {{
+      "id": "handout_1",
+      "title": "手书标题，如 玛丽的遗书、阿卡姆广告报头版",
+      "kind": "类型，仅限四选一：letter（信件/遗书/电报）/news（报纸/剪报/公告）/diary（日记/手记/笔记本）/note（便条/名片/收据/铭文等其他文书）",
+      "content": "手书正文，**必须逐字保留模组原文**（含排版换行），绝对不要改写、缩写或润色",
+      "location": "scene_1",
+      "trigger_condition": "玩家如何拿到这份手书（如 搜查书房抽屉、验尸后从口袋发现）"
+    }}
   ]
 }}
 
@@ -104,6 +114,10 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       反之 states.when 引用的标志，应有某个 trigger 负责置上。没有任何随剧情变化的内容时，triggers 留空数组 []。
 11. 每个 NPC 给出 attributes（CoC 九维 STR/CON/SIZ/DEX/APP/INT/POW/EDU/LUCK，0-90 整数，按身份合理估计）
     与 background（生平来历）：attributes 供战斗/属性对抗与派生值使用；background 写来历渊源，与 secrets 区分。
+12. handouts 只收模组原文**给出了完整正文**的文书（信件/报纸/日记/便条等「递给玩家看的实体道具」）：
+    content 逐字照抄原文，一个字都不许改；原文只是提到某文书而没给正文的，不收。
+    与 clues 的关系：手书本身可同时是线索——照常在 clues 里登记该线索，handouts 里存其原文正文，两者 id 各自独立。
+    模组没有此类文书时 handouts 留空数组 []。
 
 模组文本：
 {content}"""
@@ -168,6 +182,7 @@ def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
         npcs=data.get("npcs", []),
         clues=data.get("clues", []),
         triggers=data.get("triggers", []),
+        handouts=data.get("handouts", []),
     )
     db.add(module)
     db.commit()
@@ -199,6 +214,8 @@ def update_module(db: Session, module_id: str, data: dict) -> Module | None:
         module.clues = data["clues"]
     if "triggers" in data and data["triggers"] is not None:
         module.triggers = data["triggers"]
+    if "handouts" in data and data["handouts"] is not None:
+        module.handouts = data["handouts"]
     db.commit()
     db.refresh(module)
     return module

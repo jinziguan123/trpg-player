@@ -10,7 +10,7 @@ import { PartyRoster } from '../components/game/PartyRoster'
 import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { useMapAssets } from '../components/module/useMapAssets'
-import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker } from 'react-icons/gi'
+import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers } from 'react-icons/gi'
 import { Copy, Bot, Map as MapIcon, ChevronUp, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 
@@ -19,13 +19,29 @@ interface SceneMapPayload { scene_id: string | null; scene_name: string | null; 
 interface KnownLocation { id: string; name: string; current: boolean; visited: boolean }
 interface SearchHit { id: string; sequence_num: number; event_type: string; actor_name: string; content: string }
 
-const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE|SAY|GROUP|MOVE)[^\]]*\]|\[\/SAY\]/g
+const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE|SAY|GROUP|MOVE|HANDOUT)[^\]]*\]|\[\/SAY\]/g
 const OOC_RE = /（[^（）]*）|\([^()]*\)/g
 
 // KP 偶尔会在叙述里夹带 HTML 标签（如 <b>…</b>）。叙述用 ReactMarkdown 渲染但未开 rehype-raw
 // （刻意不渲染 LLM 产出的原始 HTML，防 XSS），故这些标签会原样显示。这里把常见格式化标签剥掉，
 // 保留标签内的正文（需要强调时 KP 应改用 markdown，如 **加粗**）。
 const HTML_TAG_RE = /<\/?(?:b|i|u|s|em|strong|br|p|span|div|h[1-6]|ul|ol|li|code|pre|blockquote|hr|a)\b[^>]*>/gi
+
+// 手书（Handout）卡片：按 metadata.handout_kind 选矢量图标与中文标签（缺省 GiScrollUnfurled/文书）
+const HANDOUT_ICONS: Record<string, typeof GiScrollUnfurled> = {
+  letter: GiEnvelope,
+  news: GiNewspaper,
+  diary: GiNotebook,
+  note: GiPapers,
+}
+const HANDOUT_KIND_LABELS: Record<string, string> = {
+  letter: '信件',
+  news: '报纸',
+  diary: '日记',
+  note: '便条',
+}
+// 信笺正文用衬线体（配合泛黄纸质感），中文回退宋体
+const HANDOUT_SERIF = 'Georgia, "Songti SC", "SimSun", serif'
 
 function stripCommandTags(text: string): string {
   return text
@@ -916,6 +932,37 @@ export function GameSessionPage() {
               )
             }
             if (msg.type === 'system') {
+              // 手书卡（Handout）：KP 发放的信件/报纸/日记/便条原文，渲染成信笺样式卡片
+              if (msg.metadata?.kind === 'handout') {
+                const hk = String(msg.metadata?.handout_kind || '')
+                const title = String(msg.metadata?.title || '手书')
+                const KindIcon = HANDOUT_ICONS[hk] || GiScrollUnfurled
+                const kindLabel = HANDOUT_KIND_LABELS[hk] || '文书'
+                return (
+                  <div key={msg.id} className="chat-msg py-2 flex justify-center">
+                    <div className="rounded-sm px-5 py-4 max-w-2xl w-full"
+                      style={{
+                        background: 'linear-gradient(180deg, color-mix(in srgb, var(--color-bg-tertiary) 84%, #b08d57), var(--color-bg-tertiary))',
+                        border: '1px solid color-mix(in srgb, var(--color-border) 50%, #b08d57)',
+                        boxShadow: 'inset 0 0 0 4px color-mix(in srgb, transparent 88%, #b08d57)',
+                      }}>
+                      <div className="flex items-center gap-2 pb-2 mb-3"
+                        style={{ borderBottom: '1px dashed color-mix(in srgb, var(--color-border) 45%, #b08d57)', color: 'var(--color-text-accent)' }}>
+                        <KindIcon style={{ fontSize: '1.2rem', flexShrink: 0 }} />
+                        <span className="font-semibold" style={{ fontFamily: HANDOUT_SERIF }}>{title}</span>
+                        <span className="text-xs ml-auto flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }}>{kindLabel}</span>
+                      </div>
+                      <div className="text-sm whitespace-pre-wrap leading-relaxed"
+                        style={{ color: 'var(--color-text-primary)', fontFamily: HANDOUT_SERIF }}>
+                        {msg.content}
+                      </div>
+                      {fmtTime(msg.ts) && (
+                        <div className="text-right mt-2" style={{ fontSize: '0.6rem', opacity: 0.5, color: 'var(--color-text-secondary)' }}>{fmtTime(msg.ts)}</div>
+                      )}
+                    </div>
+                  </div>
+                )
+              }
               // 背景导语卡：开场前展示模组类型/年代/难度等公开元信息 + 一句话前提，给玩家定位
               if (msg.metadata?.kind === 'module_intro') {
                 const title = String(msg.metadata?.title || '模组')

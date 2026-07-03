@@ -10,6 +10,7 @@ from app.models.session import GameSession
 from app.ai.prompts.kp_system import (
     KP_SYSTEM_PROMPT,
     KP_OPENING_PROMPT,
+    HANDOUT_INSTRUCTION,
     MODULE_EXCERPT_SECTION,
     MODULE_LOOKUP_INSTRUCTION,
     MOVE_INSTRUCTION,
@@ -364,6 +365,35 @@ def _format_party_member(char: Character) -> str:
     return line
 
 
+# 手书类型 → 中文标签（未知类型原样透传）
+_HANDOUT_KIND_LABEL = {"letter": "信件", "news": "报纸", "diary": "日记", "note": "便条"}
+
+
+def _format_handout_list(module: Module, session: GameSession) -> str:
+    """尚未发放的手书清单行（id｜类型｜标题｜发放条件；**正文绝不进清单**——发放时才展开）。
+
+    已发放的（world_state.handouts_issued）滤掉——它们经线索台账自然呈现；
+    全部发完或模组无手书时返回空串（调用方不注入小节）。
+    """
+    issued = set((session.world_state or {}).get("handouts_issued") or [])
+    lines: list[str] = []
+    for h in (getattr(module, "handouts", None) or []):
+        if not isinstance(h, dict):
+            continue
+        hid = str(h.get("id") or "").strip()
+        if not hid or hid in issued:
+            continue
+        kind = str(h.get("kind") or "").strip()
+        parts = [
+            hid,
+            _HANDOUT_KIND_LABEL.get(kind, kind or "文书"),
+            str(h.get("title") or "").strip() or "（无题）",
+            str(h.get("trigger_condition") or "").strip() or "（KP 视剧情裁量）",
+        ]
+        lines.append("- " + "｜".join(parts))
+    return "\n".join(lines)
+
+
 def _format_module_excerpts(excerpts: list[dict]) -> str:
     """把检索到的原文片段渲染成摘录小节正文：逐块截断 + 编号平铺。"""
     lines: list[str] = []
@@ -476,6 +506,17 @@ def build_kp_context(
     # 队伍可能分头（有队友）时，广告 [GROUP] 分组标记，便于分头行动分栏展示。
     if not is_opening and teammates:
         system_content += GROUP_INSTRUCTION
+
+    # 手书（Handouts）：仅当模组尚有未发放的手书、且非开场时，广告 [HANDOUT] 发放能力，
+    # 附「id｜类型｜标题｜发放条件」清单（正文不进上下文——发放时才由系统展开成卡片）。
+    # 已发放的经线索台账自然呈现；无手书的旧模组不注入本小节（行为不变）。
+    if not is_opening:
+        try:
+            handout_list = _format_handout_list(module, session)
+            if handout_list:
+                system_content += HANDOUT_INSTRUCTION.format(handout_list=handout_list)
+        except Exception:
+            logger.exception("手书清单注入 KP 上下文失败（忽略）")
 
     # 世界记忆注入（fail-open：格式化异常绝不阻塞出牌，退回无记忆行为）——
     # 线索台账：玩家已 known/partial 的线索清单 + 「已列出的不要重复安排发现桥段、

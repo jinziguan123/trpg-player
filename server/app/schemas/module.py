@@ -22,6 +22,8 @@ class ModuleRead(BaseModel):
     npcs: list
     clues: list
     triggers: list = []
+    # 手书（信件/报纸/日记/便条等原文文书），跑团中经 [HANDOUT] 指令发放
+    handouts: list = []
     # 原文 RAG 索引状态：""=未建 / indexing / ready / failed
     rag_status: str = ""
     created_at: datetime
@@ -41,6 +43,7 @@ class ModuleWrite(BaseModel):
     npcs: list = []
     clues: list = []
     triggers: list = []
+    handouts: list = []
 
 
 class ModuleUploadResponse(BaseModel):
