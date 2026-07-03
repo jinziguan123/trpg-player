@@ -1,4 +1,5 @@
 import { useEffect, useImperativeHandle, useRef, useState, forwardRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { specToNotation, type DiceSpec } from './diceNotation'
 
 export type { DiceSpec } from './diceNotation'
@@ -160,23 +161,26 @@ export const DiceRoller = forwardRef<DiceRollerHandle, Record<string, never>>(fu
     }
   }, [])
 
-  return (
-    // 覆盖层始终布局占位（container 需非零尺寸供 dice-box 建场景），仅用 opacity/visibility 显隐；
-    // 不用 display:none，否则 WebGL 画布测量到 0×0。
+  // 覆盖层 portal 到 body：用 position:fixed 铺满**整个视口**（含侧边栏、角色卡），
+  // 而非只盖住挂载处的聊天列——否则黑幕只压暗聊天区、左右菜单不受影响，很突兀。
+  // 始终布局占位（container 需非零尺寸供 dice-box 建场景），仅用 opacity/visibility 显隐；
+  // 不用 display:none，否则 WebGL 画布测量到 0×0。
+  return createPortal(
     <div
       aria-hidden="true"
       style={{
-        position: 'absolute',
+        position: 'fixed',
         inset: 0,
-        zIndex: 40,
+        zIndex: 9999,
         pointerEvents: 'none',
-        background: 'radial-gradient(ellipse at center, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.55) 100%)',
-        transition: 'opacity 200ms ease',
+        background: 'radial-gradient(ellipse at center, rgba(0,0,0,0.42) 0%, rgba(0,0,0,0.72) 100%)',
+        transition: 'opacity 220ms ease',
         opacity: active ? 1 : 0,
         visibility: active ? 'visible' : 'hidden',
       }}
     >
       <div id={containerIdRef.current} ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
-    </div>
+    </div>,
+    document.body,
   )
 })

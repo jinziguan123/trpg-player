@@ -30,25 +30,31 @@ function unitsToNotationValue(units: number): number {
   return units === 0 ? 10 : units
 }
 
-// 把契约里的骰子规格映射为 dice-box 预定结果 notation（NdM@v1,v2,...）。
-// check → 十位 d100（可多颗，奖励/惩罚骰）+ 个位 d10；pool → 各面数骰子落在各自 value。
+// 把契约里的骰子规格映射为 dice-box 预定结果 notation。
+// **关键**：dice-box-threejs 的 parseNotation 按**第一个 `@`** 切分——`@` 之前是全部骰子、
+// 之后是所有预定值（逗号分隔，按骰子出现顺序消费）。因此复合骰必须是
+// 「所有骰子段用 + 连接 + 单个 @ + 全部值」：如 `1d100+1d10@40,2`、`2d6+1d8@4,5,3`。
+// 早先误写成 `1d100@40+1d10@2`（多个 @）会让解析在第一个 @ 处截断、只剩一颗骰子。
+// check → 十位 d100（奖励/惩罚骰可多颗）+ 个位 d10；pool → 各面数骰子落在各自 value。
 export function specToNotation(spec: DiceSpec): string {
   if (spec.kind === 'check') {
     const tens = spec.tens && spec.tens.length > 0 ? spec.tens : [spec.tens_kept]
-    const tensSeg = `${tens.length}d100@${tens.map(tensToNotationValue).join(',')}`
-    const unitSeg = `1d10@${unitsToNotationValue(spec.units)}`
-    return `${tensSeg}+${unitSeg}`
+    const dicePart = `${tens.length}d100+1d10`
+    const values = [...tens.map(tensToNotationValue), unitsToNotationValue(spec.units)]
+    return `${dicePart}@${values.join(',')}`
   }
-  // pool：按面数分组，同面数的骰子合成一个 NdM@... 段。
+  // pool：按面数分组成骰子段（用 + 连接），所有值汇成末尾单个 @ 列表（顺序与骰子段一致）。
   const bySides = new Map<number, number[]>()
   for (const d of spec.dice) {
     const arr = bySides.get(d.sides) || []
     arr.push(d.value)
     bySides.set(d.sides, arr)
   }
-  const segs: string[] = []
-  for (const [sides, values] of bySides) {
-    segs.push(`${values.length}d${sides}@${values.join(',')}`)
+  const diceParts: string[] = []
+  const values: number[] = []
+  for (const [sides, vals] of bySides) {
+    diceParts.push(`${vals.length}d${sides}`)
+    values.push(...vals)
   }
-  return segs.join('+')
+  return `${diceParts.join('+')}@${values.join(',')}`
 }
