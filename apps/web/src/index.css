@@ -377,7 +377,9 @@ body {
 }
 
 .chat-msg--dice .chat-content {
-  font-family: var(--font-mono);
+  /* 骰子结果主要是中文（「普通成功」等），等宽字栈无中文字形会回落到系统默认字体、
+     与衬线主题不一致；改用主题正文衬线，纯数字段落单独走等宽（.dice-num）。 */
+  font-family: var(--font-body);
   color: var(--color-dice-gold);
   font-weight: 600;
   padding: 0.5rem 0.75rem;
@@ -392,7 +394,12 @@ body {
   background: linear-gradient(180deg,
     color-mix(in srgb, var(--color-bg-tertiary) 86%, #b08d57),
     var(--color-bg-tertiary));
+  font-family: var(--font-body);
+}
+/* 骰子卡内的纯数字（骰值/目标值）保留等宽，读数更整齐 */
+.dice-num {
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 .chat-msg--system .chat-content {
