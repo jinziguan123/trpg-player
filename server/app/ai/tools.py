@@ -77,7 +77,15 @@ REGISTRY: tuple[ToolSpec, ...] = (
             },
             "char": {
                 "type": "string",
-                "description": "对谁投：缺省=主角；也可填队友名（队友行动需检定）或 NPC 名（用其数值卡）",
+                "description": (
+                    "对谁投：缺省=主角；也可填队友名（队友行动需检定）或 NPC 名（用其数值卡）。"
+                    "公共/被动感知（一声响、可触发灵感的线索——在场人人都可能注意到）填「在场」，"
+                    "则在场每个玩家角色各自检定。"
+                ),
+            },
+            "chars": {
+                "type": "string",
+                "description": "群检名单（多人用 / 分隔），或「在场」＝在场全体；用于公共/被动感知",
             },
             "visibility": {
                 "type": "string",

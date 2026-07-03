@@ -366,6 +366,49 @@ def _resolve_san_targets(
     return out or party
 
 
+def _present_party(
+    game_session: GameSession,
+    player_char: Character,
+    teammates: list[Character] | None,
+) -> list[Character]:
+    """在场玩家角色 = 与主角同处一个场景的 player+teammates（公共/被动群检的默认目标）。
+
+    未追踪位置（单场景游戏常见）→ 全队都在场。分头时只取与主角同场景的一组，
+    避免让别处场景的角色也对这里的声响/线索检定。
+    """
+    party = [player_char] + list(teammates or [])
+    locs = session_service.get_party_locations(game_session)
+    if not locs:
+        return party
+    ref = locs.get(player_char.id) or game_session.current_scene_id
+    present = [
+        c for c in party
+        if (locs.get(c.id) or game_session.current_scene_id) == ref
+    ]
+    return present or party
+
+
+def _resolve_dice_group_targets(
+    char_ref: str,
+    group_ref: str,
+    game_session: GameSession,
+    player_char: Character,
+    teammates: list[Character] | None,
+) -> list[Character]:
+    """群检目标：char=在场/全体 或 chars=在场 → 在场全体；chars=名单 → 具名成员。"""
+    ref = (group_ref or char_ref or "").strip()
+    if not ref or ref in _ALL_TOKENS or ref.lower() in _ALL_TOKENS:
+        return _present_party(game_session, player_char, teammates)
+    party = [player_char] + list(teammates or [])
+    names = [n.strip() for n in re.split(r"[,，、/]", ref) if n.strip()]
+    out: list[Character] = []
+    for n in names:
+        for c in party:
+            if c.name and (c.name == n or n in c.name or c.name in n) and c not in out:
+                out.append(c)
+    return out or _present_party(game_session, player_char, teammates)
+
+
 async def _resolve_opposed(
     db, session_id, kv, engine, module, player_char, teammates, dice_descriptions,
 ):
@@ -2552,6 +2595,28 @@ async def _exec_dice_check(
     source = (kv.get("source") or "").strip()
     bonus, penalty = _parse_bonus_penalty(kv)
 
+    # 群检：公共/被动感知事件（一声响、一个可触发灵感的线索——在场人人都可能注意到），
+    # char=在场/全体 或 chars=<名单> → 在场每个玩家角色各自检定。被动性质天然自动掷，
+    # 不逐人挂「待玩家投骰」（否则每有环境声响就要每个真人各点一次投骰，极其累赘）。
+    group_ref = (kv.get("chars") or "").strip()
+    if char_ref in _ALL_TOKENS or group_ref:
+        targets = _resolve_dice_group_targets(
+            char_ref, group_ref, game_session, player_char, teammates,
+        )
+        for c in targets:
+            cdata = {
+                "base_attributes": c.base_attributes,
+                "skills": c.skills,
+                "system_data": c.system_data,
+            }
+            rc, rd = await _auto_roll_check(
+                db, session_id, game_session, module, cdata, c.name, False,
+                skill_name, difficulty, blind, source, bonus, penalty,
+            )
+            chunks += rc
+            descs += rd
+        return chunks, descs, False
+
     char_data, disp_name, is_npc, char_id = _resolve_check_actor(
         char_ref, skill_name, player_char, teammates, module,
     )
@@ -2580,15 +2645,30 @@ async def _exec_dice_check(
         ))
         return chunks, descs, True  # 等玩家 /roll，本轮不掷、不续写
 
+    rc, rd = await _auto_roll_check(
+        db, session_id, game_session, module, char_data, disp_name, is_npc,
+        skill_name, difficulty, blind, source, bonus, penalty,
+    )
+    return chunks + rc, descs + rd, False
+
+
+async def _auto_roll_check(
+    db: Session, session_id: str, game_session: GameSession, module: Module,
+    char_data: dict, disp_name: str, is_npc: bool,
+    skill_name: str, difficulty: str, blind: bool, source: str,
+    bonus: int, penalty: int,
+) -> tuple[list[str], list[str]]:
+    """系统自动掷一次检定并落库（不挂 pending）。单人自动路径与群检各成员共用。
+
+    返回 (chunks, 回灌 KP 的结果描述)。暗投不落 dice 明细（会反推成败）。
+    """
+    chunks: list[str] = []
+    descs: list[str] = []
     engine = get_engine(module.rule_system)
     result = engine.resolve_check(char_data, skill_name, difficulty, bonus=bonus, penalty=penalty)
     tier_cn = TIER_LABEL.get(result.tier, result.tier)
 
     if blind:
-        # 暗投（玩家/队友）/暗骰（NPC）：聊天只显示"做了一次隐藏检定"，成败仅回灌 KP。
-        # 暗投/暗骰刻意不带 dice 明细：check 的 result/tens_kept/units 会暴露确切骰值，
-        # 结合可知的技能值即可反推成败，与「成败仅 KP 可见」冲突，故不落（前端本就不为
-        # blind 播动画）。奖惩 net 不影响此取舍。
         kind_word = "暗骰" if is_npc else "暗投"
         dice_content = f"{disp_name} 进行了一次{kind_word}·{skill_name}（结果仅 KP 可见）"
         dice_meta = {"skill": skill_name, "actor": disp_name, "blind": True}
@@ -2638,7 +2718,7 @@ async def _exec_dice_check(
                     f"被 {disp_name} 用{skill_name}{verdict}",
                 ),
             )
-    return chunks, descs, False
+    return chunks, descs
 
 
 async def _exec_scene_change(

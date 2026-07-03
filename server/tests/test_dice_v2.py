@@ -284,3 +284,46 @@ def test_opposed_check(db_factory, monkeypatch):
     assert d["metadata"]["opposed"] is True
     assert d["metadata"]["winner"] in ("主角", "守墓人", "平局")
     assert "对抗骰" in d["content"]
+
+
+def test_group_check_all_present_auto_roll(db_factory, monkeypatch):
+    """char=在场：公共/被动感知 → 在场每个玩家角色各自自动掷（不挂 pending）。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    chunks = _run(
+        db, module, hero, teammates, session,
+        "一声闷响从墙内传来。\n[DICE_CHECK: skill=聆听, char=在场]", monkeypatch,
+    )
+    dice = _dice(chunks)
+    actors = sorted(d["metadata"]["actor"] for d in dice)
+    assert actors == ["主角", "阿尔法"]                 # 在场两人都掷了
+    assert _of_type(chunks, "check_request") == []      # 群检不挂 pending
+
+
+def test_group_check_named_list(db_factory, monkeypatch):
+    """chars=名单：仅名单内成员各自检定。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    chunks = _run(
+        db, module, hero, teammates, session,
+        "[DICE_CHECK: skill=侦查, chars=主角]", monkeypatch,
+    )
+    dice = _dice(chunks)
+    assert [d["metadata"]["actor"] for d in dice] == ["主角"]
+
+
+def test_group_check_scene_filtered(db_factory, monkeypatch):
+    """char=在场 只覆盖与主角同场景者：分头在别处的队友不参与本地声响检定。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    # 主角在 hall，队友阿尔法分头去了 study
+    session.current_scene_id = "hall"
+    session.world_state = {"party_locations": {hero.id: "hall", teammates[0].id: "study"}}
+    db.add(session)
+    db.commit()
+    chunks = _run(
+        db, module, hero, teammates, session,
+        "[DICE_CHECK: skill=聆听, char=在场]", monkeypatch,
+    )
+    actors = [d["metadata"]["actor"] for d in _dice(chunks)]
+    assert actors == ["主角"]        # 只有同场景的主角检定，别处的阿尔法不掷
