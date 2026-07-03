@@ -934,7 +934,7 @@ export function GameSessionPage() {
             })}
           </div>
         )}
-        <div ref={scrollRef} className="flex-1 overflow-auto pb-4 chat-scroll">
+        <div ref={scrollRef} className="flex-1 overflow-auto pb-4 chat-scroll game-info">
           {loadingOlder && (
             <div className="text-center py-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
               加载更早的记录...
@@ -1318,7 +1318,7 @@ export function GameSessionPage() {
 
       {showPanel && panelChar && (
         <aside
-          className="w-64 flex-shrink-0 border-l overflow-y-auto"
+          className="w-64 flex-shrink-0 border-l overflow-y-auto game-info"
           style={{ borderColor: 'var(--color-border)', background: 'var(--color-bg-card)' }}
         >
           <div

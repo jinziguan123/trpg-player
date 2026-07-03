@@ -1,10 +1,14 @@
 /* 本地打包字体（离线桌面应用，禁 CDN）：
-   Noto Serif SC —— 标题 / KP 叙事 / 手书正文衬线
-   ZCOOL XiaoWei —— 大标题点缀 */
+   Noto Serif SC —— 系统 UI「羊皮卷」衬线 / 标题 / KP 叙事
+   ZCOOL XiaoWei —— 大标题点缀
+   LXGW WenKai Screen —— 「游戏内信息」圆润柔和楷体（聊天消息正文 + 角色卡）
+     · 用官方 webfont 的 GB（简体）屏幕优化变体，单一 400 字重；
+       unicode-range 分包，浏览器仅按需下载命中的子集，运行时开销很小。 */
 @import '@fontsource/noto-serif-sc/400.css';
 @import '@fontsource/noto-serif-sc/600.css';
 @import '@fontsource/noto-serif-sc/700.css';
 @import '@fontsource/zcool-xiaowei/400.css';
+@import 'lxgw-wenkai-screen-webfont/lxgwwenkaigbscreen.css';
 @import "tailwindcss";
 
 /* ===== Design Tokens：克苏鲁暗夜主题（唯一主题，无浅色切换） ===== */
@@ -53,10 +57,14 @@
     radial-gradient(ellipse 130% 90% at 50% 115%, rgba(4, 5, 8, 0.85) 0%, transparent 55%),
     linear-gradient(180deg, #0e1118 0%, #0c0e13 55%, #0a0c10 100%);
 
-  /* 字体：衬线读故事，无衬线操界面，等宽读数值 */
+  /* 字体（按区域拆分）：
+     · --font-ui  系统 UI「羊皮卷」衬线：首页/列表/侧边栏/按钮/表单/游戏外壳等一切非游戏内信息
+     · --font-body KP 叙事等旧衬线正文（与 UI 同源 Noto Serif SC）
+     · --font-game「游戏内信息」圆润楷体：聊天消息正文 + 角色卡（温润手写感，比板正衬线更柔和）
+     · --font-title 大标题点缀；--font-mono 数值/等宽 */
   --font-body: 'Noto Serif SC', 'Songti SC', 'SimSun', serif;
-  --font-ui: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
-             'Microsoft YaHei', 'Segoe UI', sans-serif;
+  --font-ui: 'Noto Serif SC', 'Songti SC', 'STSong', 'SimSun', serif;
+  --font-game: 'LXGW WenKai Screen', 'Noto Serif SC', 'Kaiti SC', 'KaiTi', serif;
   --font-title: 'ZCOOL XiaoWei', 'Noto Serif SC', 'Songti SC', serif;
   --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
 
@@ -107,7 +115,8 @@
     radial-gradient(ellipse at 80% 50%, #ebe0ca 0%, transparent 70%),
     linear-gradient(180deg, #f0e6d3 0%, #e5d8c0 50%, #ddd0b5 100%);
 
-  /* 羊皮纸主题整套 UI 皆衬线（还原旧版观感） */
+  /* 羊皮纸主题整套 UI 皆衬线（还原旧版观感）。
+     --font-game 在 :root 已定义并被本主题继承，游戏内信息同样走圆润楷体（配泛黄纸质更协调）。 */
   --font-ui: 'Noto Serif SC', 'Songti SC', 'STSong', serif;
 
   color-scheme: light;
@@ -353,6 +362,18 @@ body {
   padding: 0.4rem;
 }
 
+/* ===== 游戏内信息字体作用域 =====
+   「游戏内信息」= 游戏页的聊天消息 + 右侧角色卡。给容器统一挂 --font-game（圆润楷体），
+   容器内除数值/等宽（.font-mono / --font-mono）与结构标题（--font-title）外的中文正文都变柔和。
+   系统 UI（外壳/侧边栏/按钮/其余页面）不挂此类，仍走 --font-ui 衬线「羊皮卷」。 */
+.game-info {
+  font-family: var(--font-game);
+}
+/* Tailwind 的 .font-mono 工具类在游戏信息容器内仍要走等宽（角色卡数值/骰值） */
+.game-info .font-mono {
+  font-family: var(--font-mono);
+}
+
 /* ===== Chat ===== */
 
 .chat-scroll {
@@ -367,7 +388,7 @@ body {
 /* KP 叙事：像在读一本旧书——衬线、舒缓行距、烛光侧线。
    中文斜体是伪斜、可读性差，故不用 italic，靠字体与排版区分。 */
 .chat-msg--narration .chat-content {
-  font-family: var(--font-body);
+  font-family: var(--font-game);   /* 游戏内信息：KP 旁白走圆润楷体 */
   font-size: 0.95rem;
   line-height: 1.95;
   color: var(--color-text-primary);
@@ -508,7 +529,7 @@ body {
   display: inline-block;
   max-width: 75%;
   padding: 0.5rem 0.85rem;
-  font-family: var(--font-body);
+  font-family: var(--font-game);   /* 游戏内信息：玩家台词走圆润楷体 */
   background: var(--color-player-bg);
   border: 1px solid rgba(212, 162, 78, 0.28);
   border-radius: 4px 4px 0 4px;
@@ -521,7 +542,7 @@ body {
   display: inline-block;
   max-width: 80%;
   padding: 0.5rem 0.85rem;
-  font-family: var(--font-body);
+  font-family: var(--font-game);   /* 游戏内信息：NPC 台词走圆润楷体 */
   background: var(--npc-bubble-bg);
   border: 1px solid var(--npc-bubble-border);
   border-radius: 4px 4px 4px 0;
@@ -534,6 +555,7 @@ body {
   display: inline-block;
   max-width: 80%;
   padding: 0.4rem 0.8rem;
+  font-family: var(--font-game);   /* 游戏内信息：行动/协助描述走圆润楷体 */
   background: rgba(212, 162, 78, 0.05);
   border: 1px dashed var(--color-border-strong);
   border-radius: 4px;
@@ -743,13 +765,16 @@ select.input option {
   100% { opacity: 0; }
 }
 
-/* 路由切换整页淡入（150ms，克制） */
+/* 路由切换转场：新页淡入 + 轻微上移与缩放（推入/翻页的顺滑感）。
+   ≤300ms、ease-out，仅用 opacity/transform 合成属性；prefers-reduced-motion 下由文件末尾统一禁用。
+   AppShell 的 <main key={pathname}> 每次切页重挂载即触发本入场（纯 CSS，无路由动画库）。 */
 .route-fade {
-  animation: routeFade 0.15s ease-out both;
+  animation: routeFade 0.28s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  will-change: opacity, transform;
 }
 @keyframes routeFade {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from { opacity: 0; transform: translateY(10px) scale(0.992); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 /* ===== 通用微交互 ===== */
