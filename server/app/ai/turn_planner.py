@@ -475,8 +475,11 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
             "仍是紧贴情境的自然语言叙事，不得另起标题分段或项目符号列表汇报状态。\n"
             "safety.do_not_reveal 的内容不能通过任何暗示性总结泄露。\n"
             "direction 是导演笔记（内部指引，严禁向玩家复述原文）：pacing 是本轮节奏"
-            "（tighten=收紧推进/release=放松换气/hold=保持）；spotlight 列出的角色本轮要"
-            "自然地给到戏份或点名；nudge 是解卡手段，只能让线索更显眼或让 NPC 主动接触，"
+            "（tighten=收紧推进/release=放松换气/hold=保持）；spotlight 列出的角色本轮要给戏份，"
+            "**但只能通过环境（让某物朝他显现/异动）、NPC 主动看他说他、或把机会摆到他面前来给**——"
+            "**绝对不许替 spotlight 里的玩家角色描写任何动作、姿态、心理或台词**（那是替玩家行动，"
+            "凌驾于给戏份之上的最高禁令）；本轮只有实际发出行动的玩家角色才可被叙述其尝试过程，"
+            "其他玩家角色一律不替其行动。nudge 是解卡手段，只能让线索更显眼或让 NPC 主动接触，"
             "绝不能替玩家决定或直接宣布检定成功；foreshadow 是可择机埋设/回收的悬念。\n"
             + json.dumps(content, ensure_ascii=False, indent=2)
             + check_block
