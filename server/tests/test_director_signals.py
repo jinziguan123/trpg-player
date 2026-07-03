@@ -125,6 +125,46 @@ class TestSignalsRender:
 # ── 接线：direction 进 planner 渲染 / team_guidance 进队友上下文 ──
 
 
+class TestDirectionCoercion:
+    """direction 是软字段，模型常写错格式——归一保证不拖垮整份 TurnPlan。"""
+
+    def test_pacing整句归一为枚举(self):
+        assert DirectionPolicy(pacing="温和推进，给予信心").pacing == "tighten"
+        assert DirectionPolicy(pacing="放缓节奏换口气").pacing == "release"
+        assert DirectionPolicy(pacing="随便写的没关键词").pacing == "hold"
+
+    def test_pacing合法值保持(self):
+        assert DirectionPolicy(pacing="release").pacing == "release"
+
+    def test_spotlight字符串归一为列表(self):
+        assert DirectionPolicy(spotlight="伊芙琳·哈特（提问者）获得焦点。").spotlight == [
+            "伊芙琳·哈特（提问者）获得焦点。"
+        ]
+        assert DirectionPolicy(spotlight="伊芙琳").spotlight == ["伊芙琳"]
+
+    def test_spotlight列表去空保持(self):
+        assert DirectionPolicy(spotlight=["伊芙琳", " ", "亨利"]).spotlight == ["伊芙琳", "亨利"]
+
+    def test_nudge列表归一为字符串(self):
+        assert DirectionPolicy(nudge=["让烛火摇曳", "NPC 走近"]).nudge == "让烛火摇曳；NPC 走近"
+
+    def test_坏direction不拖垮整份plan(self):
+        # 复现线上报错：pacing 是整句、spotlight 是字符串 → 归一后 TurnPlan 仍应校验通过
+        plan = TurnPlan.model_validate({
+            "requires_check": True,
+            "check": {"skill": "侦查"},
+            "safety": {"do_not_reveal": ["管家的秘密"]},
+            "direction": {
+                "pacing": "温和推进，给予信心，让玩家下一步决策。",
+                "spotlight": "伊芙琳·哈特（提问者）获得焦点。",
+            },
+        })
+        assert plan.requires_check and plan.check.skill == "侦查"
+        assert plan.safety.do_not_reveal == ["管家的秘密"]  # 核心内容没被连累丢弃
+        assert plan.direction.pacing == "tighten"
+        assert plan.direction.spotlight == ["伊芙琳·哈特（提问者）获得焦点。"]
+
+
 class TestWiring:
     def test_plan_message含导演笔记(self):
         plan = TurnPlan(direction=DirectionPolicy(pacing="tighten", spotlight=["艾玛"]))

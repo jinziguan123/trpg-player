@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.ai import director_signals
 from app.ai.context import _active_flags, _resolve_state
@@ -59,12 +59,53 @@ class SafetyPolicy(BaseModel):
 
 
 class DirectionPolicy(BaseModel):
-    """导演层：本轮的节奏经营意图。只影响「怎么讲」，不改变世界状态。"""
+    """导演层：本轮的节奏经营意图。只影响「怎么讲」，不改变世界状态。
+
+    ``direction`` 是软字段，模型常不严格照 schema（pacing 写成整句、spotlight 写成字符串）。
+    这里做宽容归一——绝不能因为这个次要字段格式不对，就让整份 TurnPlan（含 clue_policy/
+    safety/检定裁定等核心内容）校验失败被整体丢弃。识别不了的一律退到中性默认。
+    """
 
     pacing: Literal["hold", "tighten", "release"] = "hold"
     spotlight: list[str] = Field(default_factory=list)  # 本轮应主动给戏份的角色名
     nudge: str = ""  # 卡关时的推进手段（让线索更显眼/NPC 主动接触），不得直接判定检定成功
     foreshadow: str = ""  # 建议埋设或回收的悬念，一句话
+
+    @field_validator("pacing", mode="before")
+    @classmethod
+    def _coerce_pacing(cls, v):
+        if not isinstance(v, str):
+            return "hold"
+        s = v.strip()
+        if s in ("hold", "tighten", "release"):
+            return s
+        # 模型常写中文/整句：按关键词粗映射，识别不了就中性 hold
+        if any(w in s for w in ("收紧", "推进", "加快", "加速", "升温", "紧凑", "紧张")):
+            return "tighten"
+        if any(w in s for w in ("放松", "放缓", "换气", "舒缓", "降温", "缓和")):
+            return "release"
+        return "hold"
+
+    @field_validator("spotlight", mode="before")
+    @classmethod
+    def _coerce_spotlight(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            s = v.strip()
+            return [s] if s else []
+        if isinstance(v, (list, tuple)):
+            return [str(x).strip() for x in v if str(x).strip()]
+        return []
+
+    @field_validator("nudge", "foreshadow", mode="before")
+    @classmethod
+    def _coerce_text(cls, v):
+        if v is None:
+            return ""
+        if isinstance(v, (list, tuple)):
+            return "；".join(str(x).strip() for x in v if str(x).strip())
+        return str(v)
 
 
 class TurnPlan(BaseModel):
@@ -214,7 +255,10 @@ def build_turn_plan_messages(
             "content": (
                 "你是 TRPG 的 KP 回合规划器。你的任务不是写叙事，而是先判断本轮裁定："
                 "玩家意图、是否需要检定、可揭示线索、NPC 反应、场景变化、安全边界，"
-                "以及导演层的节奏经营（direction：pacing/spotlight/nudge/foreshadow）。"
+                "以及导演层的节奏经营 direction。direction 的字段格式必须严格遵守："
+                "pacing 只能是 \"hold\"/\"tighten\"/\"release\" 三者之一（不是句子）；"
+                "spotlight 是角色名的**数组**（如 [\"伊芙琳\"]，无则 []）；"
+                "nudge、foreshadow 是字符串（无则 \"\"）。"
                 "只输出一个 JSON object，不要输出 Markdown。"
             ),
         },
