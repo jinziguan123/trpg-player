@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from app.ai import director_signals
 from app.ai.context import _active_flags, _resolve_state
@@ -108,6 +108,15 @@ class DirectionPolicy(BaseModel):
         return str(v)
 
 
+# 各嵌套子模型字段：LLM 常把它们写成一句话（safety→「安全，无即时威胁」、check→「不需要」），
+# 形状错误只应让该字段退到默认，绝不能连累整份计划被丢弃回退旧流程。
+_SUBMODEL_FIELDS = ("check", "clue_policy", "npc_policy", "scene_policy", "safety", "direction")
+_LIST_FIELDS = ("narration_brief",)
+_TURN_KINDS = frozenset(
+    ("investigate", "social", "move", "combat", "knowledge", "roleplay", "mixed")
+)
+
+
 class TurnPlan(BaseModel):
     turn_kind: TurnKind = "mixed"
     player_intent: str = ""
@@ -119,6 +128,31 @@ class TurnPlan(BaseModel):
     narration_brief: list[str] = Field(default_factory=list)
     safety: SafetyPolicy = Field(default_factory=SafetyPolicy)
     direction: DirectionPolicy = Field(default_factory=DirectionPolicy)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _tolerate_wrong_shapes(cls, data):
+        """把 LLM 写错形状的字段就地归一，保住整份计划不因次要字段格式错误被整体丢弃。
+
+        - 嵌套子模型字段给了非 dict（一句话/标量）→ 换成 {}，走该子模型默认
+          （子模型自身的 field_validator，如 direction 的 pacing/spotlight 归一，仍会生效）；
+        - 列表字段给了字符串 → 包一层，其它非 list → 空列表；
+        - turn_kind 给了枚举外的值 → 退到 mixed。
+        识别不了的一律退默认，绝不抛错。"""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for name in _SUBMODEL_FIELDS:
+            # 放行 dict（来自 JSON）与子模型实例（来自直接构造）；只拦截标量/字符串/列表等错误形状
+            if name in data and not isinstance(data[name], (dict, BaseModel)):
+                data[name] = {}
+        for name in _LIST_FIELDS:
+            if name in data and not isinstance(data[name], list):
+                v = data[name]
+                data[name] = [str(v).strip()] if isinstance(v, str) and v.strip() else []
+        if data.get("turn_kind") not in _TURN_KINDS:
+            data.pop("turn_kind", None)  # 交回默认 "mixed"
+        return data
 
 
 def _visible_scene_ids(session: GameSession) -> set[str]:

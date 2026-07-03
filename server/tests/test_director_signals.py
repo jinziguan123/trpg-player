@@ -165,6 +165,51 @@ class TestDirectionCoercion:
         assert plan.direction.spotlight == ["伊芙琳·哈特（提问者）获得焦点。"]
 
 
+class TestTurnPlanShapeTolerance:
+    """LLM 把嵌套字段写成一句话/标量时，只该退默认，不该整份计划被丢弃。"""
+
+    def test_safety写成句子不拖垮计划(self):
+        # 复现线上报错：safety='安全，无即时威胁。'
+        plan = TurnPlan.model_validate({
+            "requires_check": True,
+            "check": {"skill": "聆听"},
+            "safety": "安全，无即时威胁。",
+        })
+        assert plan.requires_check and plan.check.skill == "聆听"
+        assert plan.safety.do_not_reveal == []  # 退默认
+        assert plan.safety.do_not_control_players is True
+
+    def test_safety写成safe(self):
+        assert TurnPlan.model_validate({"safety": "safe"}).safety.do_not_reveal == []
+
+    def test_各嵌套字段写成标量都归默认(self):
+        plan = TurnPlan.model_validate({
+            "check": "不需要检定",
+            "clue_policy": "无线索",
+            "npc_policy": "无人回应",
+            "scene_policy": "不换场景",
+        })
+        assert plan.check.skill == "" and plan.clue_policy.reveal_level == "none"
+        assert plan.npc_policy.speakers == [] and plan.scene_policy.scene_change is None
+
+    def test_narration_brief写成字符串归一为列表(self):
+        assert TurnPlan.model_validate(
+            {"narration_brief": "描写敲击声"}
+        ).narration_brief == ["描写敲击声"]
+
+    def test_turn_kind非法值退mixed(self):
+        assert TurnPlan.model_validate({"turn_kind": "探案"}).turn_kind == "mixed"
+
+    def test_合法计划完全不受影响(self):
+        plan = TurnPlan.model_validate({
+            "turn_kind": "investigate",
+            "safety": {"do_not_reveal": ["暗格"]},
+            "narration_brief": ["描写过程"],
+        })
+        assert plan.turn_kind == "investigate"
+        assert plan.safety.do_not_reveal == ["暗格"]
+
+
 class TestWiring:
     def test_plan_message含导演笔记(self):
         plan = TurnPlan(direction=DirectionPolicy(pacing="tighten", spotlight=["艾玛"]))

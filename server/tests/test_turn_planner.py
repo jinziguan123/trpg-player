@@ -274,8 +274,17 @@ async def test_run_turn_planner_tolerates_dirty_json():
 
 @pytest.mark.asyncio
 async def test_run_turn_planner_fails_open_on_unparseable():
-    """空/纯文本/无大括号 → 无法解析；schema 不符 → 校验失败。两者都回退为 None，不阻塞。"""
+    """空/纯文本/无大括号 → 无法解析 JSON → 回退 None，不阻塞跑团。"""
     for junk in ["", "抱歉，我无法生成计划", "no braces here"]:
         assert await turn_planner.run_turn_planner(_RawLLM(junk), []) is None
-    # 合法 JSON 但 turn_kind 不在枚举内 → schema 校验失败 → None
-    assert await turn_planner.run_turn_planner(_RawLLM('{"turn_kind":"invalid_kind"}'), []) is None
+
+
+@pytest.mark.asyncio
+async def test_run_turn_planner_tolerates_bad_field_shapes():
+    """合法 JSON 但个别字段形状/枚举写错 → 归一而非丢弃整份计划（否则次要字段拖垮核心裁定）。"""
+    plan = await turn_planner.run_turn_planner(
+        _RawLLM('{"turn_kind":"invalid_kind","safety":"安全，无威胁"}'), [],
+    )
+    assert plan is not None
+    assert plan.turn_kind == "mixed"  # 非法枚举退默认
+    assert plan.safety.do_not_reveal == []  # 句子形状的 safety 退默认
