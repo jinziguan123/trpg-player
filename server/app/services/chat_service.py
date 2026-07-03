@@ -82,6 +82,8 @@ CLEAR_FLAG_RE = re.compile(r"\[CLEAR_FLAG[:：\s]\s*(?:flag=)?\s*([^\]]+?)\s*\]"
 HANDOUT_RE = re.compile(r"\[HANDOUT[:：\s]\s*([^\]]+?)\s*\]")
 # 走位：KP 在叙述里就地标记角色移动到某锚点（物体/出口/NPC/其他角色/坐标）。内联剔除、不打断叙述。
 MOVE_RE = re.compile(r"\[MOVE:([^\]]*)\]")
+# 叙事锚定：KP 叙述里出现的显著空间元素落图（内联标记，与 MOVE 同样就地剔除、不打断行文）
+MAP_MARK_RE = re.compile(r"\[MAP_MARK:([^\]]*)\]")
 # 分头行动：KP 在每个分组/场景内容前标 [GROUP: scene=<场景标签>]，后续内容归该组，前端据此分栏。内联剔除。
 GROUP_RE = re.compile(r"\[GROUP:([^\]]*)\]")
 
@@ -792,6 +794,8 @@ async def _filter_narration_stream(
                     bracket_buf = ""
                     in_bracket = False
                     if inner_s.startswith("MOVE:") or inner_s.startswith("MOVE "):
+                        continue
+                    if inner_s.startswith("MAP_MARK:") or inner_s.startswith("MAP_MARK "):
                         continue
                     if inner_s.startswith("GROUP:") or inner_s.startswith("GROUP "):
                         kv = _parse_tag_kv(inner_s.split(":", 1)[-1] if ":" in inner_s else inner_s[len("GROUP"):])
@@ -2908,6 +2912,18 @@ def _exec_move(db: Session, game_session: GameSession, actor: str, target: str) 
             logger.exception("走位更新失败: actor=%s to=%s", actor, target)
 
 
+def _exec_map_mark(db: Session, game_session: GameSession, kv: dict) -> None:
+    """执行一次叙事锚定（[MAP_MARK] 落图）；失败只记日志，不阻塞。"""
+    name = (kv.get("name") or "").strip()
+    near = (kv.get("near") or kv.get("to") or "").strip()
+    kind = (kv.get("kind") or "").strip()
+    if name:
+        try:
+            map_service.apply_map_mark(db, game_session, name, near, kind)
+        except Exception:
+            logger.exception("叙事锚定落图失败: name=%s near=%s", name, near)
+
+
 async def _exec_npc_act(
     db: Session, session_id: str, game_session: GameSession, module: Module,
     llm, player_char: Character, npc_id: str, trigger: str,
@@ -3023,14 +3039,14 @@ def _tool_call_from_text(step_text: str) -> ToolCall | None:
     """loop 兜底：模型没走工具、而是把指令写成了文本（手写 prompt 的旧习惯）——
     把第一条终止型指令解析成等价的合成 ToolCall，交给同一执行器处理。
 
-    只认注册表里的终止型指令（MOVE 另行内联执行；GROUP/SAY 是文本标注不算动作）。
+    只认注册表里的终止型指令（MOVE/MAP_MARK 另行内联执行；GROUP/SAY 是文本标注不算动作）。
     参数解析与旧正则同款宽容：键值对优先，单参数指令允许裸值。
     """
     text = (step_text or "").replace("【", "[").replace("】", "]")
     for m in _TEXT_TAG_RE.finditer(text):
         tag, inner = m.group(1), (m.group(2) or "").strip()
         name = kp_tools.TAG_TO_TOOL.get(tag)
-        if name is None or name == "move":
+        if name is None or name in ("move", "map_mark"):
             continue
         kv = _parse_tag_kv(inner)
         if not kv and inner:
@@ -3185,6 +3201,9 @@ def _build_kp_tool_executor(
                     (kv.get("to") or kv.get("target") or "").strip(),
                 )
                 return kp_tools.ToolOutcome("ok")
+            if name == "map_mark":
+                _exec_map_mark(db, game_session, kv)
+                return kp_tools.ToolOutcome("ok")
             if name == "handout":
                 hid = kv.get("id", "").strip()
                 if not hid:
@@ -3257,10 +3276,17 @@ async def _run_kp_agent_loop(
         _merge_step_result(result, step)
 
         step_text = (step[1] or "").replace("【", "[").replace("】", "]")
-        # [MOVE] 内联标记：文本形式照旧生效（过滤器只内联剔除、不终止流）
+        # [MOVE]/[MAP_MARK] 内联标记：文本形式照旧生效（过滤器只内联剔除、不终止流）
         for match in MOVE_RE.finditer(step_text):
             outcome = await execute_tool(ToolCall(
                 id=f"move_{uuid.uuid4().hex[:8]}", name="move",
+                arguments=_parse_tag_kv(match.group(1)),
+            ))
+            for chunk in outcome.chunks:
+                yield chunk
+        for match in MAP_MARK_RE.finditer(step_text):
+            outcome = await execute_tool(ToolCall(
+                id=f"mark_{uuid.uuid4().hex[:8]}", name="map_mark",
                 arguments=_parse_tag_kv(match.group(1)),
             ))
             for chunk in outcome.chunks:
@@ -3487,6 +3513,10 @@ async def _process_commands(
             (kv.get("actor") or kv.get("char") or "").strip(),
             (kv.get("to") or kv.get("target") or "").strip(),
         )
+
+    # 叙事锚定：叙述里点到的显著空间元素落图（地图跟着剧情生长）
+    for match in MAP_MARK_RE.finditer(kp_text):
+        _exec_map_mark(db, game_session, _parse_tag_kv(match.group(1)))
 
     for match in NPC_ACT_RE.finditer(kp_text):
         npc_chunks, _resp = await _exec_npc_act(

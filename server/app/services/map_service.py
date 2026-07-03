@@ -355,6 +355,45 @@ def _resolved_scene_map(db: Session, session: GameSession, scene_id: str | None 
     return scene, (floors[0]["map"] if floors else None)
 
 
+_MARK_KINDS = ("feature", "item", "furniture")
+
+
+def apply_map_mark(db: Session, session: GameSession, name: str, near: str, kind: str = "feature") -> None:
+    """处理 KP 的 [MAP_MARK: name, near, kind]：叙事中出现的显著空间元素落图。
+
+    存 world_state.map_marks[scene_id]（会话态叠加层，不改模组数据），near 复用走位的
+    锚点解析（已有物体/出口/NPC/角色名或坐标）→ 贴最近空地板。幂等：同名 mark 更新坐标
+    而非重复添加。near 解析不了则不落——错位的标记比没有标记更误导。
+    """
+    name = (name or "").strip()
+    kind = (kind or "feature").strip().lower()
+    if kind not in _MARK_KINDS:
+        kind = "feature"
+    scene, m = _resolved_scene_map(db, session)
+    if not (name and scene and m):
+        return
+    scene_id = scene.get("id")
+    ws = session.world_state or {}
+    tracked = dict((ws.get("positions") or {}).get(scene_id) or {})
+    anchor = _resolve_anchor(m, near, tracked)
+    if anchor is None:
+        return
+    x, y = _nearest_floor(m, anchor[0], anchor[1], set())
+    marks = {k: [dict(mk) for mk in v] for k, v in (ws.get("map_marks") or {}).items()}
+    lst = marks.get(scene_id) or []
+    for mk in lst:
+        if mk.get("name") == name:
+            mk.update({"x": x, "y": y, "kind": kind})
+            break
+    else:
+        lst.append({"name": name, "x": x, "y": y, "kind": kind})
+    marks[scene_id] = lst
+    ws2 = dict(ws)
+    ws2["map_marks"] = marks
+    session.world_state = ws2
+    db.commit()
+
+
 def apply_move(db: Session, session: GameSession, actor: str, target: str) -> None:
     """处理 KP 的 [MOVE: actor, to]：把锚点解析成坐标、贴最近空地板，落库到 world_state.positions。"""
     actor = (actor or "").strip()
@@ -430,6 +469,15 @@ def current_scene_map(db: Session, session: GameSession, char_id: str | None = N
     if not scene:
         return {"scene_id": None, "scene_name": None, "floors": []}
     scene_id = scene.get("id")
+    # 叙事锚定（[MAP_MARK]）：会话态标记并入首层 objects（与 [MOVE] 同样按首层地图处理）；
+    # 与模组自带物体同名的标记跳过，避免重影。
+    marks = ((session.world_state or {}).get("map_marks") or {}).get(scene_id) or []
+    if marks and floors:
+        m0 = floors[0]["map"]
+        existing = {o.get("name") for o in (m0.get("objects") or [])}
+        extra = [dict(mk) for mk in marks if mk.get("name") and mk.get("name") not in existing]
+        if extra:
+            floors[0] = {**floors[0], "map": {**m0, "objects": list(m0.get("objects") or []) + extra}}
     entry_idx = next((i for i, f in enumerate(floors) if (f["map"].get("entrances"))), 0)
     out_floors = []
     for i, f in enumerate(floors):

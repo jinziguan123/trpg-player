@@ -251,6 +251,21 @@ REGISTRY: tuple[ToolSpec, ...] = (
         kind="state",
     ),
     ToolSpec(
+        name="map_mark",
+        tag="MAP_MARK",
+        description=(
+            "叙事锚定：叙述让玩家注意到一个地图上没有的显著空间元素（半掩的门/裂缝/血迹/尸体/"
+            "值得调查的物件）时调用，把它落到地图上。只标玩家已注意到的显著元素，每轮至多一两个，"
+            "宁缺毋滥；同名标记不会重复添加。"
+        ),
+        parameters=_params({
+            "name": {"type": "string", "description": "元素的简短名称"},
+            "near": {"type": "string", "description": "参照物：地图上已存在的名字（物体/出口/NPC/角色），或坐标 x,y"},
+            "kind": {"type": "string", "description": "feature（默认，环境特征）| item（可拾取物）| furniture（家具）"},
+        }, ["name"]),
+        kind="state",
+    ),
+    ToolSpec(
         name="handout",
         tag="HANDOUT",
         description=(

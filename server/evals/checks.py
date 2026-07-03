@@ -30,6 +30,7 @@ KNOWN_COMMANDS = {spec.tag for spec in _TOOL_REGISTRY} | {"GROUP", "SAY", "/SAY"
 # 允许裸值（如 [SET_FLAG hint_x]、[SCENE_CHANGE: 图书馆]），照搬会误报。
 REQUIRED_ARGS = {
     "DICE_CHECK": ("skill",),
+    "MAP_MARK": ("name",),
     "NPC_ACT": ("npc_id",),
     "RULE_LOOKUP": ("query",),
     "MODULE_LOOKUP": ("query",),

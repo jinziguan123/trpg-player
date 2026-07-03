@@ -14,6 +14,7 @@ from app.ai.prompts.kp_system import (
     MODULE_EXCERPT_SECTION,
     MODULE_LOOKUP_INSTRUCTION,
     MOVE_INSTRUCTION,
+    MAP_MARK_INSTRUCTION,
     GROUP_INSTRUCTION,
     RULE_EXCERPT_SECTION,
     RULE_LOOKUP_INSTRUCTION,
@@ -598,9 +599,10 @@ def build_kp_context(
     if not is_opening and _has_plot_state(module):
         system_content += PLOT_FLAG_INSTRUCTION
 
-    # 仅当前场景有地图时，广告 [MOVE] 走位能力（让地图反映玩家/NPC 实际位置）。
+    # 仅当前场景有地图时，广告 [MOVE] 走位与 [MAP_MARK] 叙事锚定（地图跟着剧情生长）。
     if current_scene and current_scene.get("map"):
         system_content += MOVE_INSTRUCTION
+        system_content += MAP_MARK_INSTRUCTION
 
     # 队伍可能分头（有队友）时，广告 [GROUP] 分组标记，便于分头行动分栏展示。
     if not is_opening and teammates:
