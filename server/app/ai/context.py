@@ -508,13 +508,23 @@ def build_kp_context(
         roster = "\n".join(_format_party_member(m) for m in party)
         # 本轮实际发出行动/发言的玩家角色——多人局最易犯的错是「替没行动的玩家也编一套动作」，
         # 明确告知 KP「谁行动了」是杜绝这个的关键（评估从真实会话发现的 no_player_control bug）。
-        actors = _acting_player_names(events, [m.name for m in party])
+        party_names = [m.name for m in party]
+        actors = _acting_player_names(events, party_names)
         actors_line = ""
         if actors:
+            silent = [nm for nm in party_names if nm not in actors]
+            silent_clause = (
+                "本轮**未行动、绝对不可为其落任何笔墨**的是：**" + "、".join(silent) + "**"
+                "——不许写他/他们摸/敲/看/走/蹲/凑近/说/想（哪怕只是「" + silent[0]
+                + "也侧耳听了听」「" + silent[0] + "调整了下帽檐」这种一笔带过也算替玩家行动）。"
+                if silent else
+                "名册中**其余玩家角色本轮并未行动**，绝对不许替他们摸/敲/看/走/说/想。"
+            )
             actors_line = (
-                "\n3. **本轮行动者是 " + "、".join(actors) + "**——只可叙述这些角色的尝试过程；"
-                "名册中**其余玩家角色本轮并未行动**，绝对不许替他们摸/敲/看/走/说/想（哪怕只是"
-                "「某某也凑近看了看」也是替玩家行动）。给冷场角色戏份只能靠环境朝他异动、或 NPC "
+                "\n3. **本轮行动者只有 " + "、".join(actors) + "**——只可叙述这些角色**已声明动作**的当下过程"
+                "（把那一个声明动作演细，不替他们补上声明外的新动作）；"
+                + silent_clause
+                + "给这些沉默角色戏份只能靠环境朝他异动、或 NPC "
                 "主动注意他、对他说话，绝不靠替他行动来「给存在感」。\n"
             )
         player_info = (

@@ -1155,8 +1155,8 @@
     "player_intent": "",
     "requires_check": true,
     "check": {
-      "skill": "侦查",
-      "difficulty": "regular",
+      "skill": "聆听",
+      "difficulty": "normal",
       "visibility": "open",
       "reason": "",
       "bonus": 0,
