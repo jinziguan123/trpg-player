@@ -85,6 +85,27 @@ def _format_json_compact(data) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
+def _acting_player_names(events: list, party_names: list[str]) -> list[str]:
+    """本轮（末尾连续一段）实际发出行动/发言的玩家角色名，保持首次出现顺序。
+
+    从末尾往前取 action/dialogue，遇到 narration/dice/system（上一轮 KP 的回应/系统事件）即停；
+    ooc（场外）跳过不计也不中断。用于多人局告知 KP「本轮谁行动了」，杜绝替未行动玩家编动作。
+    """
+    party = set(party_names)
+    names: list[str] = []
+    for ev in reversed(events or []):
+        et = getattr(ev, "event_type", None) or getattr(ev, "type", None)
+        if et in ("action", "dialogue"):
+            nm = (getattr(ev, "actor_name", "") or getattr(ev, "speaker", "") or "").strip()
+            if nm in party and nm not in names:
+                names.append(nm)
+        elif et in ("narration", "dice", "system"):
+            break
+        # ooc / 其它：跳过，不计入也不中断
+    names.reverse()
+    return names
+
+
 def _find_npc_def(module: Module, npc_id: str) -> dict | None:
     for npc in (module.npcs or []):
         if npc.get("id") == npc_id:
@@ -485,17 +506,28 @@ def build_kp_context(
         # 多人同桌：全部玩家角色一视同仁地平铺成队伍名册，无主角特权。
         party = [player_char] + teammates
         roster = "\n".join(_format_party_member(m) for m in party)
+        # 本轮实际发出行动/发言的玩家角色——多人局最易犯的错是「替没行动的玩家也编一套动作」，
+        # 明确告知 KP「谁行动了」是杜绝这个的关键（评估从真实会话发现的 no_player_control bug）。
+        actors = _acting_player_names(events, [m.name for m in party])
+        actors_line = ""
+        if actors:
+            actors_line = (
+                "\n3. **本轮行动者是 " + "、".join(actors) + "**——只可叙述这些角色的尝试过程；"
+                "名册中**其余玩家角色本轮并未行动**，绝对不许替他们摸/敲/看/走/说/想（哪怕只是"
+                "「某某也凑近看了看」也是替玩家行动）。给冷场角色戏份只能靠环境朝他异动、或 NPC "
+                "主动注意他、对他说话，绝不靠替他行动来「给存在感」。\n"
+            )
         player_info = (
             f"本场是多人同桌，共 {len(party)} 名玩家角色，**地位完全平等**（由真人或各自的 AI 扮演）。"
             "他们各自说话和行动，发言作为独立消息出现（形如「[名字] …」）。队伍名册：\n"
             + roster
             + "\n\n**多人叙事铁律（违反即严重错误）**：\n"
-            "1. **平等对待所有玩家角色**——开场白和叙事绝不要只围绕某一个人（没有"
-            "「主角」一说，名册第一位只是房主、并不更重要），要让每位角色都有存在感、各自登场；"
-            "点名、给戏份要照顾到所有人。\n"
+            "1. **平等对待所有玩家角色**——没有「主角」一说（名册第一位只是房主、并不更重要）；"
+            "戏份要**跨回合**照顾到所有人，但**本轮只叙述实际行动者**（见第 3 条），不靠替人行动来均衡。\n"
             "2. **绝不替任何玩家角色行动或说话**——不写他们的台词、不描述他们的主动行动/姿态/"
-            "心理活动、不替他们做决定。他们做什么、说什么全部由他们自己产出，不归你管。\n"
-            "你只负责：描述环境与场景、扮演模组 NPC、裁定检定、对全队已做出的行动给出世界的回应。"
+            "心理活动、不替他们做决定。他们做什么、说什么全部由他们自己产出，不归你管。"
+            + actors_line
+            + "你只负责：描述环境与场景、扮演模组 NPC、裁定检定、对全队已做出的行动给出世界的回应。"
         )
     else:
         # 单人单角色：直接给完整角色卡（只有一名玩家角色，无平等性问题）。
