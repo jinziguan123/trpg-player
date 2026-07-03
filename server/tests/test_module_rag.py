@@ -248,7 +248,8 @@ def test_kp_context_with_excerpts_injects_section_with_warning(db_factory):
     module, char, session = _seed_session(db)
     events = session_service.get_session_events(db, session.id)
 
-    long_text = "原文" * 300  # 600 字 → 应被截断到 400 字
+    # 超过单块上限 → 应被截断到 MODULE_EXCERPT_MAX_CHARS 字（不写死字数，随常量走）
+    long_text = "原" * (ctx.MODULE_EXCERPT_MAX_CHARS + 200)
     system = ctx.build_kp_context(
         session, module, char, events,
         module_excerpts=[{"text": long_text}, {"text": "短摘录"}],

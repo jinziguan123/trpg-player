@@ -28,14 +28,22 @@ from app.services import world_memory
 
 logger = logging.getLogger(__name__)
 
-CONTEXT_TOKEN_BUDGET = 24000
-RESERVE_FOR_OUTPUT = 4096
-MAX_SYSTEM_TOKENS = 6000
-MAX_SUMMARY_TOKENS = 1500
+# 上下文总预算（输入 + 输出，按 _estimate_tokens 粗估）。现代模型上下文窗口普遍 ≥64K
+# （DeepSeek 64K、Claude 200K），早先 24000 是保守值；提高到 40000 让长会话保留更多事件史，
+# 仍对 64K 窗口留足 tokenizer 估算误差的安全余量。
+CONTEXT_TOKEN_BUDGET = 40000
+# 输出预留：KP 叙事（尤其分头/多 NPC/tool-loop 多步）可能较长，给足避免被截断。
+RESERVE_FOR_OUTPUT = 6000
+# 系统提示上限。此处装的不只是静态裁定手册，还有模组数据 + RAG 原文摘录（可达 ~2700 token）
+# + 线索台账 + NPC 记忆 + 幕后动态 + handout 清单（P1-P3 陆续加入）。6000 已装不下这些叠加、
+# 会截掉真实内容 → 提升到 12000，让系统提示完整呈现，直接改善 KP 裁定质量。
+MAX_SYSTEM_TOKENS = 12000
+MAX_SUMMARY_TOKENS = 2000
 MIN_RECENT_EVENTS = 10
 MAX_RECENT_EVENTS = 60
-# 被动注入的模组原文摘录：单块截断 400 字（摘录段计入 MAX_SYSTEM_TOKENS 预算）
-MODULE_EXCERPT_MAX_CHARS = 400
+# 被动注入的模组原文摘录：单块截断（摘录段计入 MAX_SYSTEM_TOKENS 预算）。系统预算放宽后
+# 可给更完整的原文片段，从 400 提到 600 字。
+MODULE_EXCERPT_MAX_CHARS = 600
 # 「幕后动态」小节最多注入最近几条幕后事件（visibility=["kp"]，仅 KP 可见）
 MAX_BACKSTAGE_IN_CONTEXT = 5
 
