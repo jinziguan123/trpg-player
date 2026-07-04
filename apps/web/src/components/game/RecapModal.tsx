@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { GiScrollUnfurled } from 'react-icons/gi'
 import { X } from 'lucide-react'
 import { api } from '../../api/client'
+import { Modal } from '../ui/modal'
 
 interface Recap {
   title: string
@@ -74,16 +75,8 @@ export function RecapModal({ sessionId, onClose }: { sessionId: string; onClose:
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center"
-      style={{ paddingTop: '8vh', background: 'rgba(0,0,0,0.6)' }}
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-2xl max-h-[80vh] overflow-y-auto rounded-lg border p-5 mx-4"
-        style={{ background: 'var(--color-bg-card)', borderColor: 'var(--color-border)' }}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal onClose={onClose} widthClass="max-w-2xl" padded>
+      <div className="overflow-y-auto" style={{ maxHeight: '76vh' }}>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-semibold flex items-center gap-2" style={{ color: 'var(--color-text-accent)' }}>
             <GiScrollUnfurled /> 战报 / 章节小结
@@ -132,6 +125,6 @@ export function RecapModal({ sessionId, onClose }: { sessionId: string; onClose:
           </div>
         )}
       </div>
-    </div>
+    </Modal>
   )
 }

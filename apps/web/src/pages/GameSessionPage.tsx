@@ -13,10 +13,11 @@ import { ContextUsageBadge } from '../components/game/ContextUsageBadge'
 import { RecapModal } from '../components/game/RecapModal'
 import { GrowthModal } from '../components/game/GrowthModal'
 import { InvestigationBoard } from '../components/game/InvestigationBoard'
+import { Modal } from '../components/ui/modal'
 import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
 import { useMapAssets } from '../components/module/useMapAssets'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade } from 'react-icons/gi'
-import { Copy, Bot, Map as MapIcon, ChevronUp, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
+import { Copy, Bot, Map as MapIcon, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 
 interface SceneFloor { name: string; map: TileMap; entities: MapEntity[] }
@@ -744,11 +745,11 @@ export function GameSessionPage() {
             >
               <GiScrollUnfurled size={13} /> 战报
             </button>
-            {myCharId && (
+            {myCharId && currentSession.status === 'ended' && (
               <button
                 onClick={() => setShowGrowth(true)}
                 className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
-                title="成长结算：本局成功用过的技能做成长检定"
+                title="成长结算：本局成功用过的技能做成长检定（模组结束后可用）"
               >
                 <GiUpgrade size={13} /> 成长
               </button>
@@ -782,17 +783,9 @@ export function GameSessionPage() {
           <GrowthModal sessionId={currentSession.id} characterId={myCharId} onClose={() => setShowGrowth(false)} />
         )}
         {showSearch && (
-          // 历史检索悬浮窗：遮罩 + 居中浮层，点遮罩 / Esc / X 关闭；不占据聊天区布局。
-          <div
-            className="fixed inset-0 z-50 flex items-start justify-center"
-            style={{ paddingTop: '12vh', background: 'rgba(0,0,0,0.6)' }}
-            onClick={() => setShowSearch(false)}
-          >
-            <div
-              className="w-full max-w-xl mx-4 rounded-lg overflow-hidden shadow-2xl"
-              style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}
-              onClick={(e) => e.stopPropagation()}
-            >
+          // 历史检索悬浮窗（portal 到 body，遮罩盖全屏含侧栏、居中于聊天区、Esc 关闭）
+          <Modal onClose={() => { setShowSearch(false); setSearchQ(''); setSearchResults([]) }} widthClass="max-w-xl" align="top">
+            <div>
               <div className="flex items-center gap-2 px-3 py-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
                 <Search size={16} style={{ color: 'var(--color-text-secondary)' }} />
                 <input
@@ -834,7 +827,7 @@ export function GameSessionPage() {
                 ))}
               </div>
             </div>
-          </div>
+          </Modal>
         )}
         {currentSession.participants && currentSession.participants.length > 1 && (
           <div className="pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
@@ -846,15 +839,15 @@ export function GameSessionPage() {
           </div>
         )}
         {showBigMap && (
-          <div className="pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
-            <div className="rounded-md p-3" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
+          <Modal onClose={() => { setConfirmTravel(null); setShowBigMap(false) }} widthClass="max-w-4xl" padded>
+            <div>
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-text-accent)' }}>
-                  <GiTreasureMap size={13} /> 大地图 · 前往已知地点
+                <span className="text-sm font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-text-accent)' }}>
+                  <GiTreasureMap size={14} /> 大地图 · 前往已知地点
                 </span>
-                <button onClick={() => { setConfirmTravel(null); setShowBigMap(false) }} title="收起大地图" style={{ color: 'var(--color-text-secondary)' }}><ChevronUp size={14} /></button>
+                <button onClick={() => { setConfirmTravel(null); setShowBigMap(false) }} title="关闭（Esc）" style={{ color: 'var(--color-text-secondary)' }}><X size={16} /></button>
               </div>
-              <InvestigationBoard locations={locations} disabled={streaming} onPick={setConfirmTravel} />
+              <InvestigationBoard locations={locations} disabled={streaming} onPick={setConfirmTravel} height="clamp(320px, 58vh, 560px)" />
               {confirmTravel ? (
                 <div className="mt-2 rounded-md px-3 py-2 text-xs flex items-center gap-3 flex-wrap"
                   style={{ background: 'var(--color-bg-secondary)', border: '1px solid var(--color-accent)' }}>
@@ -877,18 +870,18 @@ export function GameSessionPage() {
                 </p>
               )}
             </div>
-          </div>
+          </Modal>
         )}
         {showMap && (() => {
           const floors = sceneMap?.floors || []
           const cur = floors[Math.min(floorIdx, floors.length - 1)] || null
           return (
-            <div className="pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
+            <Modal onClose={() => setShowMap(false)} widthClass="max-w-4xl" padded>
               {cur ? (
-                <div className="rounded-md p-2 overflow-auto" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-text-accent)' }}><MapIcon size={12} />{sceneMap?.scene_name || '当前场景'}</span>
-                    <button onClick={() => setShowMap(false)} title="收起地图" style={{ color: 'var(--color-text-secondary)' }}><ChevronUp size={14} /></button>
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-text-accent)' }}><MapIcon size={14} />{sceneMap?.scene_name || '当前场景'}</span>
+                    <button onClick={() => setShowMap(false)} title="关闭（Esc）" style={{ color: 'var(--color-text-secondary)' }}><X size={16} /></button>
                   </div>
                   {floors.length > 1 && (
                     <div className="flex flex-wrap gap-1 mb-2">
@@ -904,9 +897,11 @@ export function GameSessionPage() {
                     </div>
                   )}
                   <MapView map={cur.map} entities={cur.entities} assets={mapAssets}
+                    height="clamp(360px, 62vh, 600px)"
                     onIntent={(text) => {
-                      // 点地图元素 → 预填行动到输入框（不自动发送，玩家改完再发）
+                      // 点地图元素 → 预填行动到输入框（不自动发送，玩家改完再发）；点完关掉地图看叙事
                       setInput(text)
+                      setShowMap(false)
                       inputRef.current?.focus()
                     }} />
                   <p className="text-[11px] mt-1" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>
@@ -914,9 +909,9 @@ export function GameSessionPage() {
                   </p>
                 </div>
               ) : (
-                <p className="text-xs text-center py-3" style={{ color: 'var(--color-text-secondary)' }}>当前场景暂无地图——可在模组「地图」视图里生成。</p>
+                <p className="text-sm text-center py-6" style={{ color: 'var(--color-text-secondary)' }}>当前场景暂无地图——可在模组「地图」视图里生成。</p>
               )}
-            </div>
+            </Modal>
           )
         })()}
         {!liveConnected && (

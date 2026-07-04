@@ -127,7 +127,7 @@ function shade(dark: number, warm: number, extra?: string) {
 /** 把一张瓦片地图以「透视倾斜地面 + 直立 billboard」的 2.5D 渲染（CSS 3D，浏览器做透视）。滚轮缩放。
  *  onIntent 给定时（游戏内）地图变成快捷操作面板：点物体/NPC/出口/地板 → 生成一句行动
  *  意图文本交给调用方（预填输入框，不自动发送——玩家保有最终否决权）。模组预览不传则纯展示。 */
-export function MapView({ map, entities, assets, onIntent }: { map: TileMap; entities?: MapEntity[]; assets?: AssetLite[]; onIntent?: (text: string) => void }) {
+export function MapView({ map, entities, assets, onIntent, height = VIEWPORT_H }: { map: TileMap; entities?: MapEntity[]; assets?: AssetLite[]; onIntent?: (text: string) => void; height?: number | string }) {
   const W = map.w, H = map.h
   const planeW = W * TILE, planeH = H * TILE
   const at = (x: number, y: number) => (map.tiles[y] && map.tiles[y][x]) || ' '
@@ -446,7 +446,7 @@ export function MapView({ map, entities, assets, onIntent }: { map: TileMap; ent
       ref={viewportRef}
       onMouseDown={onMouseDown}
       style={{
-        position: 'relative', width: '100%', height: VIEWPORT_H, overflow: 'hidden',
+        position: 'relative', width: '100%', height, overflow: 'hidden',
         cursor: dragging ? 'grabbing' : 'grab', userSelect: 'none', touchAction: 'none',
         borderRadius: 6,
         // 地图自带深夜基底：不依赖页面主题，烛光/暗角在任何外壳下都成立

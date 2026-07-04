@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { GiUpgrade } from 'react-icons/gi'
 import { X } from 'lucide-react'
 import { api } from '../../api/client'
+import { Modal } from '../ui/modal'
 
 interface EligibleSkill { skill: string; value: number }
 interface GrowthResult {
@@ -51,16 +52,8 @@ export function GrowthModal({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center"
-      style={{ paddingTop: '10vh', background: 'rgba(0,0,0,0.6)' }}
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-lg max-h-[78vh] overflow-y-auto rounded-lg border p-5 mx-4"
-        style={{ background: 'var(--color-bg-card)', borderColor: 'var(--color-border)' }}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal onClose={onClose} widthClass="max-w-lg" padded>
+      <div className="overflow-y-auto" style={{ maxHeight: '74vh' }}>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-semibold flex items-center gap-2" style={{ color: 'var(--color-text-accent)' }}>
             <GiUpgrade /> 成长结算
@@ -115,6 +108,6 @@ export function GrowthModal({
           </ul>
         )}
       </div>
-    </div>
+    </Modal>
   )
 }

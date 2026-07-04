@@ -198,10 +198,11 @@ function build(locations: BoardLocation[], disabled: boolean, onPick: (loc: Boar
   return { nodes, edges }
 }
 
-export function InvestigationBoard({ locations, disabled, onPick }: {
+export function InvestigationBoard({ locations, disabled, onPick, height = 340 }: {
   locations: BoardLocation[]
   disabled: boolean
   onPick: (loc: BoardLocation) => void
+  height?: number | string
 }) {
   const { nodes, edges } = useMemo(() => build(locations, disabled, onPick), [locations, disabled, onPick])
   if (locations.length === 0) {
@@ -209,7 +210,7 @@ export function InvestigationBoard({ locations, disabled, onPick }: {
   }
   return (
     <div style={{
-      height: 340, borderRadius: 6, overflow: 'hidden',
+      height, borderRadius: 6, overflow: 'hidden',
       // 暗色软木板/皮革桌面：斜纹肌理 + 中央暖光晕，边缘压暗
       background: [
         'radial-gradient(ellipse at 50% 38%, rgba(212,162,78,0.07) 0%, transparent 58%)',
