@@ -238,34 +238,6 @@ REGISTRY: tuple[ToolSpec, ...] = (
         kind="state",
     ),
     ToolSpec(
-        name="move",
-        tag="MOVE",
-        description=(
-            "场景内走位标记：某角色在场景内明显移动（走近某物/某出口/某 NPC）时调用，地图随之更新。"
-            "只反映已发生的移动，不替玩家决定去向；无明显移动不必调用。"
-        ),
-        parameters=_params({
-            "actor": {"type": "string", "description": "移动的角色名"},
-            "to": {"type": "string", "description": "目标：地图上已存在的名字（物体/出口/NPC/角色），或坐标 x,y"},
-        }, ["actor", "to"]),
-        kind="state",
-    ),
-    ToolSpec(
-        name="map_mark",
-        tag="MAP_MARK",
-        description=(
-            "叙事锚定：叙述让玩家注意到一个地图上没有的显著空间元素（半掩的门/裂缝/血迹/尸体/"
-            "值得调查的物件）时调用，把它落到地图上。只标玩家已注意到的显著元素，每轮至多一两个，"
-            "宁缺毋滥；同名标记不会重复添加。"
-        ),
-        parameters=_params({
-            "name": {"type": "string", "description": "元素的简短名称"},
-            "near": {"type": "string", "description": "参照物：地图上已存在的名字（物体/出口/NPC/角色），或坐标 x,y"},
-            "kind": {"type": "string", "description": "feature（默认，环境特征）| item（可拾取物）| furniture（家具）"},
-        }, ["name"]),
-        kind="state",
-    ),
-    ToolSpec(
         name="handout",
         tag="HANDOUT",
         description=(
@@ -327,9 +299,9 @@ def tool_mode_message() -> dict:
             "【工具调用模式】本会话已启用标准工具调用：上文提到的方括号指令"
             "（[DICE_CHECK]、[OPPOSED_CHECK]、[SAN_CHECK]、[HP_CHANGE]、[NPC_ACT]、"
             "[SCENE_CHANGE]、[RULE_LOOKUP]、[MODULE_LOOKUP]、[SET_FLAG]、[CLEAR_FLAG]、"
-            "[MOVE]、[HANDOUT]）一律改为调用对应的同名工具（dice_check、opposed_check、"
+            "[HANDOUT]）一律改为调用对应的同名工具（dice_check、opposed_check、"
             "san_check、hp_change、npc_act、scene_change、rule_lookup、module_lookup、"
-            "set_flag、clear_flag、move、handout），不要把这些指令写成文本。"
+            "set_flag、clear_flag、handout），不要把这些指令写成文本。"
             "各指令的使用时机与行为约束（何时检定、何时暗投、不预测结果、不泄密等）完全不变。"
             "工具执行结果会回注给你，你据此继续叙述。发起检定（dice_check/opposed_check）后"
             "请立即结束本段输出，等待结果回注。例外：[SAY: who=…]…[/SAY] 与 "

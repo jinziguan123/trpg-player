@@ -14,18 +14,15 @@ import { RecapModal } from '../components/game/RecapModal'
 import { GrowthModal } from '../components/game/GrowthModal'
 import { InvestigationBoard } from '../components/game/InvestigationBoard'
 import { Modal } from '../components/ui/modal'
-import { MapView, type TileMap, type MapEntity } from '../components/module/MapView'
-import { useMapAssets } from '../components/module/useMapAssets'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade } from 'react-icons/gi'
-import { Copy, Bot, Map as MapIcon, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
+import { Copy, Bot, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 
-interface SceneFloor { name: string; map: TileMap; entities: MapEntity[] }
-interface SceneMapPayload { scene_id: string | null; scene_name: string | null; floors: SceneFloor[] }
 interface KnownLocation { id: string; name: string; current: boolean; visited: boolean; connections?: string[]; party?: string[] }
 interface SearchHit { id: string; sequence_num: number; event_type: string; actor_name: string; content: string }
 
-const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE|SAY|GROUP|MOVE|HANDOUT)[^\]]*\]|\[\/SAY\]/g
+// [MOVE]/[MAP_MARK] 地图功能已下线，但旧事件文本里可能残留标签 → 保留在剔除名单里
+const CMD_TAG_RE = /\[(DICE_CHECK|NPC_ACT|SCENE_CHANGE|SAY|GROUP|MOVE|MAP_MARK|HANDOUT)[^\]]*\]|\[\/SAY\]/g
 const OOC_RE = /（[^（）]*）|\([^()]*\)/g
 
 // KP 偶尔会在叙述里夹带 HTML 标签（如 <b>…</b>）。叙述用 ReactMarkdown 渲染但未开 rehype-raw
@@ -136,7 +133,6 @@ export function GameSessionPage() {
   const [panelCharId, setPanelCharId] = useState<string | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
   const [showPanel, setShowPanel] = useState(true)
-  const [showMap, setShowMap] = useState(false)
   const [showBigMap, setShowBigMap] = useState(false)         // 大地图（已知地点前往）
   const [showRecap, setShowRecap] = useState(false)           // 战报 / 章节小结弹窗
   const [showGrowth, setShowGrowth] = useState(false)         // 成长结算弹窗
@@ -144,9 +140,6 @@ export function GameSessionPage() {
   const [confirmTravel, setConfirmTravel] = useState<KnownLocation | null>(null)  // 前往二次确认
   const [splitView, setSplitView] = useState(true)            // 分头行动分栏（检测到多组时生效）
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set())  // 被收起的分组
-  const [sceneMap, setSceneMap] = useState<SceneMapPayload | null>(null)
-  const [floorIdx, setFloorIdx] = useState(0)                 // 多层建筑：当前查看的楼层
-  const mapAssets = useMapAssets()
 
   const primaryId = currentSession?.player_character_id ?? null
   // 多人：我在本房间认领的角色（无则回退到主角，兼容单人）
@@ -454,17 +447,6 @@ export function GameSessionPage() {
     }
   }, [shownCharId, refreshTick])
 
-  // 场景地图：展开时拉取「我」所在场景的地图+实体位置；场景切换/生成结束(refreshTick)后刷新。
-  // 带 char_id → 分头行动时地图跟随我自己所在的场景，而非会话级单一场景。
-  useEffect(() => {
-    if (!showMap || !sessionId) return
-    const q = myCharId ? `?char_id=${myCharId}` : ''
-    api.get<SceneMapPayload>(`/sessions/${sessionId}/scene-map${q}`).then(setSceneMap).catch(() => setSceneMap(null))
-  }, [showMap, sessionId, myCharId, currentSession?.current_scene_id, refreshTick])
-
-  // 切换到新场景时，楼层回到第一层（入口层）
-  useEffect(() => { setFloorIdx(0) }, [sceneMap?.scene_id])
-
   // 大地图（已知地点）：展开时拉取，前往后/生成结束刷新
   useEffect(() => {
     if (!showBigMap || !sessionId) return
@@ -771,12 +753,6 @@ export function GameSessionPage() {
             >
               <GiTreasureMap size={13} /> {showBigMap ? '收起大地图' : '大地图'}
             </button>
-            <button
-              onClick={() => setShowMap(!showMap)}
-              className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
-            >
-              <MapIcon size={12} /> {showMap ? '收起地图' : '地图'}
-            </button>
             {!(showPanel && panelChar) && (
               <button
                 onClick={() => setShowPanel(true)}
@@ -882,48 +858,6 @@ export function GameSessionPage() {
             </div>
           </Modal>
         )}
-        {showMap && (() => {
-          const floors = sceneMap?.floors || []
-          const cur = floors[Math.min(floorIdx, floors.length - 1)] || null
-          return (
-            <Modal onClose={() => setShowMap(false)} widthClass="max-w-4xl" padded>
-              {cur ? (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-text-accent)' }}><MapIcon size={14} />{sceneMap?.scene_name || '当前场景'}</span>
-                    <button onClick={() => setShowMap(false)} title="关闭（Esc）" style={{ color: 'var(--color-text-secondary)' }}><X size={16} /></button>
-                  </div>
-                  {floors.length > 1 && (
-                    <div className="flex flex-wrap gap-1 mb-2">
-                      {floors.map((f, i) => (
-                        <button key={i} onClick={() => setFloorIdx(i)}
-                          className="text-xs px-2 py-0.5 rounded border"
-                          style={{
-                            borderColor: i === floorIdx ? 'var(--color-accent)' : 'var(--color-border)',
-                            background: i === floorIdx ? 'var(--color-accent)' : 'transparent',
-                            color: i === floorIdx ? 'var(--color-on-accent)' : 'var(--color-text-secondary)',
-                          }}>{f.name || `第 ${i + 1} 层`}</button>
-                      ))}
-                    </div>
-                  )}
-                  <MapView map={cur.map} entities={cur.entities} assets={mapAssets}
-                    height="clamp(360px, 62vh, 600px)"
-                    onIntent={(text) => {
-                      // 点地图元素 → 预填行动到输入框（不自动发送，玩家改完再发）；点完关掉地图看叙事
-                      setInput(text)
-                      setShowMap(false)
-                      inputRef.current?.focus()
-                    }} />
-                  <p className="text-[11px] mt-1" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>
-                    点地图上的物件/人物/出口/地面，可快速填入对应行动。
-                  </p>
-                </div>
-              ) : (
-                <p className="text-sm text-center py-6" style={{ color: 'var(--color-text-secondary)' }}>当前场景暂无地图——可在模组「地图」视图里生成。</p>
-              )}
-            </Modal>
-          )
-        })()}
         {!liveConnected && (
           <div className="text-center text-xs py-1 mb-1 rounded" style={{ color: 'var(--color-text-secondary)', background: 'var(--color-bg-tertiary)' }}>
             与房间连接中断，正在重连…

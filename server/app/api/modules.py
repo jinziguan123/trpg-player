@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
@@ -7,34 +6,9 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, get_db
 from app.schemas.module import ModuleRead, ModuleUploadResponse, ModuleWrite
-from app.services import map_service, module_rag_service, module_service
+from app.services import module_rag_service, module_service
 
 logger = logging.getLogger(__name__)
-
-# 后台地图生成任务：持引用防 GC；in-flight 去重，避免同一模组并发全量生成。
-_map_gen_tasks: set = set()
-_map_gen_inflight: set[str] = set()
-
-
-def _kick_background_map_gen(module_id: str) -> None:
-    """上传解析成功后，非阻塞地在后台为模组生成全部场景地图（不阻塞上传响应）。"""
-    if not module_id or module_id in _map_gen_inflight:
-        return
-    _map_gen_inflight.add(module_id)
-
-    async def _run():
-        db = SessionLocal()
-        try:
-            await map_service.generate_maps_for_module(db, module_id)
-        except Exception:
-            logger.exception("后台生成模组地图失败：module=%s", module_id)
-        finally:
-            db.close()
-            _map_gen_inflight.discard(module_id)
-
-    task = asyncio.create_task(_run())
-    _map_gen_tasks.add(task)
-    task.add_done_callback(_map_gen_tasks.discard)
 
 
 def _rag_index_bg(module_id: str) -> None:
@@ -62,9 +36,6 @@ def _kick_rag_index(background, db: Session, module) -> None:
     db.commit()
     background.add_task(_rag_index_bg, module.id)
 
-
-class VariantMapRequest(BaseModel):
-    hint: str = ""
 
 router = APIRouter(prefix="/api/modules", tags=["modules"])
 
@@ -237,9 +208,10 @@ async def upload_module(
         raise HTTPException(400, "请至少上传一个文件")
 
     _IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
-    # 模型是否支持看图——支持时才从 PDF 抽内嵌图（地图/插图）一并喂给视觉解析
+    # 模型是否支持看图——支持时才从 PDF 抽内嵌图（插图/手稿）一并喂给视觉解析
     try:
-        vision = map_service.get_llm().supports_vision()
+        from app.ai.llm_factory import get_llm
+        vision = get_llm().supports_vision()
     except Exception:
         vision = False
 
@@ -284,9 +256,7 @@ async def upload_module(
 
     module = module_service.create_module(db, parsed, raw_content=raw_text)
 
-    # 解析成功后在后台自动生成全部场景地图（非阻塞：上传立即返回，地图稍后陆续就绪）
-    _kick_background_map_gen(module.id)
-    # 解析成功后在后台自动建原文 RAG 索引（同样非阻塞；失败只落 rag_status，不影响模组可用）
+    # 解析成功后在后台自动建原文 RAG 索引（非阻塞；失败只落 rag_status，不影响模组可用）
     _kick_rag_index(background, db, module)
 
     return ModuleUploadResponse(
@@ -358,54 +328,6 @@ def rebuild_module_rag(
     return module
 
 
-@router.post("/{module_id}/maps", response_model=ModuleRead)
-async def generate_maps(module_id: str, force: bool = False, db: Session = Depends(get_db)):
-    """为模组各场景生成像素地图（已有的默认跳过，force=true 全部重生成）。逐场景调用 AI，可能较慢。"""
-    module = await map_service.generate_maps_for_module(db, module_id, force=force)
-    if not module:
-        raise HTTPException(404, "模组不存在")
-    return module
-
-
-@router.post("/{module_id}/scenes/{scene_id}/variant-map")
-async def variant_map(module_id: str, scene_id: str, body: VariantMapRequest, db: Session = Depends(get_db)):
-    """据某场景的基础地图 + 一句变化说明，AI 生成变体地图（不落库，前端载入编辑器后再保存到对应 state）。"""
-    module = module_service.get_module(db, module_id)
-    if not module:
-        raise HTTPException(404, "模组不存在")
-    scene = next((s for s in (module.scenes or []) if s.get("id") == scene_id), None)
-    if not scene:
-        raise HTTPException(404, "场景不存在")
-    base = scene.get("map")
-    if not base:
-        raise HTTPException(400, "该场景还没有基础地图，请先生成或手绘基础地图")
-    return await map_service.generate_variant_map(base, body.hint)
-
-
-@router.post("/{module_id}/scenes/{scene_id}/map-from-image")
-async def map_from_image(module_id: str, scene_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """多模态：上传地图图片（或含地图图片的 PDF），由视觉 LLM 转成本项目的瓦片地图（不落库，前端载入编辑器后再保存）。"""
-    module = module_service.get_module(db, module_id)
-    if not module:
-        raise HTTPException(404, "模组不存在")
-    scene = next((s for s in (module.scenes or []) if s.get("id") == scene_id), None)
-    if not scene:
-        raise HTTPException(404, "场景不存在")
-    ct = file.content_type or ""
-    fn = (file.filename or "").lower()
-    data = await file.read()
-    if ct == "application/pdf" or fn.endswith(".pdf"):
-        # PDF：抽出体积最大的内嵌图（通常就是地图）来转换
-        imgs = _extract_pdf_images(data, max_images=1)
-        if not imgs:
-            raise HTTPException(400, "PDF 中未找到可用的地图图片")
-        data, ct = imgs[0]
-    elif not ct.startswith("image/"):
-        raise HTTPException(400, "请上传图片，或含地图图片的 PDF")
-    try:
-        return await map_service.generate_map_from_image(data, ct, scene)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
 
 
 @router.delete("/{module_id}")

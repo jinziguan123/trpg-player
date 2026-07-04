@@ -1,11 +1,11 @@
-"""按角色位置 / 已知地点 / 地图跟随场景 的单元测试（分头行动 + 大地图前往）。"""
+"""按角色位置 / 已知地点 的单元测试（分头行动 + 大地图前往）。"""
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Character, GameSession, Module  # noqa: F401
-from app.services import map_service, session_service
+from app.services import session_service
 
 
 @pytest.fixture
@@ -17,15 +17,10 @@ def db_factory(tmp_path):
     return sessionmaker(bind=engine)
 
 
-_MAP_C = {
-    "w": 5, "h": 3,
-    "tiles": ["#####", "+...#", "#####"],
-    "objects": [], "entrances": [{"name": "门", "x": 0, "y": 1}], "npc_pos": [],
-}
 _SCENES = [
     {"id": "a", "title": "门厅", "connections": ["b", "c"]},
     {"id": "b", "title": "图书馆", "connections": ["a"]},
-    {"id": "c", "title": "档案馆", "connections": ["a", "d"], "map": _MAP_C},
+    {"id": "c", "title": "档案馆", "connections": ["a", "d"]},
     {"id": "d", "title": "隐秘地窖", "connections": ["c"]},  # 起初不与已访问相连 → 不可见
 ]
 
@@ -203,14 +198,3 @@ def test_set_char_location_moves_player(db_factory):
     assert "c" in (session.world_state or {}).get("visited_scenes")
 
 
-def test_scene_map_follows_char_and_filters_party(db_factory):
-    db = db_factory()
-    sid, pc_id, ally_id, _ = _seed(db)
-    # 玩家移到 c（有地图），队友留在 a → c 的地图上只应有玩家、没有队友
-    session_service.set_char_location(db, sid, pc_id, "c")
-    session = db.get(GameSession, sid)
-    out = map_service.current_scene_map(db, session, char_id=pc_id)
-    assert out["scene_id"] == "c"
-    names = {e["name"] for f in out["floors"] for e in f["entities"]}
-    assert "莫妮卡" in names
-    assert "亨利" not in names    # 队友在别处，不出现在我的地图上

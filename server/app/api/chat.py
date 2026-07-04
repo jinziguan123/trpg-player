@@ -13,7 +13,7 @@ from app.schemas.event import (
     RollRequest,
     TravelRequest,
 )
-from app.services import map_service, session_service
+from app.services import session_service
 from app.services.chat_service import (
     _make_chunk,
     event_to_chunk,
@@ -340,18 +340,6 @@ def search_history(session_id: str, q: str = "", db: Session = Depends(get_db)):
             for e in rows
         ]
     }
-
-
-@router.get("/{session_id}/scene-map")
-def scene_map(session_id: str, char_id: str | None = None, db: Session = Depends(get_db)):
-    """某角色所在场景的（按剧情 flags 解析后的）像素地图 + 实体位置，供游戏内地图面板渲染。
-
-    char_id 给定时（前端传当前用户角色）地图跟随该角色所在场景——分头行动时各看各的。
-    """
-    game_session = db.get(GameSession, session_id)
-    if not game_session:
-        raise HTTPException(404, "会话不存在")
-    return map_service.current_scene_map(db, game_session, char_id=char_id)
 
 
 @router.get("/{session_id}/locations")

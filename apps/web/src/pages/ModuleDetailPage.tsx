@@ -1,20 +1,18 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
-import { api, getApiBase, getPlayerToken } from '../api/client'
+import { api } from '../api/client'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiReturnArrow, GiScrollUnfurled, GiPadlock } from 'react-icons/gi'
-import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch, Map as MapIcon, Loader2 } from 'lucide-react'
+import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch } from 'lucide-react'
 import { ModuleGraph } from '../components/module/ModuleGraph'
 import { ModuleTimeline } from '../components/module/ModuleTimeline'
-import { MapView, type TileMap } from '../components/module/MapView'
-import { MapEditor } from '../components/module/MapEditor'
-import { useMapAssets } from '../components/module/useMapAssets'
 import { MODULE_DIFFICULTIES } from '../lib/module'
 
-interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string; map?: TileMap }
+// 场景瓦片地图已下线；旧模组数据里的 scenes[].map / states[].map 字段容忍存在（保存时原样透传，不读取）
+interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string }
 interface NpcState { when?: string[]; personality?: string; initial_location?: string; alive?: boolean }
-interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[]; states?: SceneState[]; map?: TileMap }
+interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[]; states?: SceneState[] }
 interface NPC { id: string; name?: string; description?: string; personality?: string; background?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number>; attributes?: Record<string, number>; states?: NpcState[] }
 interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string }
 interface Trigger { id: string; when?: string; set_flags?: string[]; clear_flags?: string[]; description?: string }
@@ -67,9 +65,7 @@ export function ModuleDetailPage() {
   const isNew = !id
   const [data, setData] = useState<ModuleData>(BLANK)
   const [edit, setEdit] = useState(isNew)
-  const [view, setView] = useState<'detail' | 'graph' | 'timeline' | 'map'>('detail')
-  const [mapSceneId, setMapSceneId] = useState('')
-  const [genMaps, setGenMaps] = useState(false)
+  const [view, setView] = useState<'detail' | 'graph' | 'timeline'>('detail')
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
 
@@ -129,58 +125,6 @@ export function ModuleDetailPage() {
     } finally { setSaving(false) }
   }
 
-  const generateMaps = async (force: boolean) => {
-    if (isNew || !id) return
-    setGenMaps(true)
-    try {
-      const m = await api.post<ModuleData>(`/modules/${id}/maps${force ? '?force=true' : ''}`)
-      setData({ ...BLANK, ...m, world_setting: { ...BLANK.world_setting, ...(m.world_setting || {}) } })
-      toast.success('地图已生成')
-    } catch (e) {
-      toast.error(`地图生成失败：${e instanceof Error ? e.message : '未知错误'}`)
-    } finally { setGenMaps(false) }
-  }
-
-  // variantIdx<0 写基础 scene.map；否则写 scene.states[variantIdx].map（flag 触发的变体地图）
-  const saveSceneMap = async (sceneId: string, map: TileMap, variantIdx = -1) => {
-    if (isNew || !id) return
-    const scenes = data.scenes.map((s) => {
-      if (s.id !== sceneId) return s
-      if (variantIdx < 0) return { ...s, map }
-      const states = (s.states || []).map((st, i) => (i === variantIdx ? { ...st, map } : st))
-      return { ...s, states }
-    })
-    setData((d) => ({ ...d, scenes }))
-    try {
-      await api.put(`/modules/${id}`, {
-        title: data.title, rule_system: data.rule_system, description: data.description,
-        world_setting: data.world_setting, scenes, npcs: data.npcs, clues: data.clues, triggers: data.triggers,
-      })
-      toast.success('地图已保存')
-    } catch (e) {
-      toast.error(`保存失败：${e instanceof Error ? e.message : '未知错误'}`)
-    }
-  }
-
-  const genVariantMap = async (sceneId: string, hint: string): Promise<TileMap | null> => {
-    if (!id) return null
-    try { return await api.post<TileMap>(`/modules/${id}/scenes/${sceneId}/variant-map`, { hint }) }
-    catch (e) { toast.error(`变体生成失败：${e instanceof Error ? e.message : '未知错误'}`); return null }
-  }
-
-  // 多模态：据上传的模组地图图片生成瓦片地图（需视觉 LLM）
-  const genMapFromImage = async (sceneId: string, file: File): Promise<TileMap | null> => {
-    if (!id) return null
-    try {
-      const form = new FormData(); form.append('file', file)
-      const res = await fetch(`${getApiBase()}/modules/${id}/scenes/${sceneId}/map-from-image`, {
-        method: 'POST', headers: { 'X-Player-Token': getPlayerToken() }, body: form,
-      })
-      if (!res.ok) throw new Error(await res.text())
-      return await res.json()
-    } catch (e) { toast.error(`据图片生成失败：${e instanceof Error ? e.message : '未知错误'}`); return null }
-  }
-
   if (loading) return <p className="p-4" style={{ color: 'var(--color-text-secondary)' }}>加载中…</p>
 
   const tagsText = Array.isArray(data.world_setting.tags) ? (data.world_setting.tags as string[]).join('、') : wsStr(data.world_setting, 'tags')
@@ -203,7 +147,6 @@ export function ModuleDetailPage() {
               {tabBtn('detail', <FileText size={14} />, '详情')}
               {tabBtn('graph', <Network size={14} />, '关系图')}
               {tabBtn('timeline', <GitBranch size={14} />, '时间线')}
-              {tabBtn('map', <MapIcon size={14} />, '地图')}
             </div>
           )}
           {!isNew && !edit && view === 'detail' && (
@@ -220,7 +163,7 @@ export function ModuleDetailPage() {
 
       {!edit && (
         <div className="card mb-4 flex items-center gap-2 text-sm" style={{ borderColor: 'var(--color-danger)', color: 'var(--color-danger)' }}>
-          <Eye size={15} /> 剧透警告：{view === 'graph' ? '关系图含线索归属等剧情结构' : view === 'timeline' ? '时间线含剧情推进与 NPC 生死等结构' : view === 'map' ? '地图含场景布局与物体/NPC 位置' : '以下含 NPC 秘密、线索与真相'}。若你打算亲自游玩本模组，请勿继续阅读。
+          <Eye size={15} /> 剧透警告：{view === 'graph' ? '关系图含线索归属等剧情结构' : view === 'timeline' ? '时间线含剧情推进与 NPC 生死等结构' : '以下含 NPC 秘密、线索与真相'}。若你打算亲自游玩本模组，请勿继续阅读。
         </div>
       )}
 
@@ -228,17 +171,6 @@ export function ModuleDetailPage() {
         <ModuleGraph scenes={data.scenes} npcs={data.npcs} clues={data.clues} />
       ) : view === 'timeline' && !edit ? (
         <ModuleTimeline scenes={data.scenes} npcs={data.npcs} triggers={data.triggers} />
-      ) : view === 'map' && !edit ? (
-        <MapPanel
-          scenes={data.scenes}
-          sceneId={mapSceneId || (data.scenes[0]?.id ?? '')}
-          onPick={setMapSceneId}
-          generating={genMaps}
-          onGenerate={generateMaps}
-          onSaveMap={saveSceneMap}
-          onVariantAI={genVariantMap}
-          onImageGen={genMapFromImage}
-        />
       ) : (
       <>
       {/* 基本信息 */}
@@ -416,111 +348,6 @@ function AttrGrid({ attrs, edit, onChange }: { attrs?: Record<string, number>; e
             className="w-full px-1 py-0.5 rounded" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)' }} />
         </label>
       ))}
-    </div>
-  )
-}
-
-/** 地图视图：选场景 → 看其像素地图；可一键生成/重生成全部场景地图。 */
-function MapPanel({ scenes, sceneId, onPick, generating, onGenerate, onSaveMap, onVariantAI }: {
-  scenes: Scene[]
-  sceneId: string
-  onPick: (id: string) => void
-  generating: boolean
-  onGenerate: (force: boolean) => void
-  onSaveMap: (sceneId: string, map: TileMap, variantIdx?: number) => void
-  onVariantAI: (sceneId: string, hint: string) => Promise<TileMap | null>
-  onImageGen: (sceneId: string, file: File) => Promise<TileMap | null>
-}) {
-  const scene = scenes.find((s) => s.id === sceneId) || scenes[0]
-  const hasAnyMap = scenes.some((s) => s.map)
-  const assets = useMapAssets()
-  const [editing, setEditing] = useState(false)
-  const [variant, setVariant] = useState(-1)   // -1=基础；否则 scene.states 下标
-  const [floorIdx, setFloorIdx] = useState(0)  // 多层建筑：当前查看楼层
-  // 切换场景时退出编辑、回到基础/首层
-  useEffect(() => { setEditing(false); setVariant(-1); setFloorIdx(0) }, [sceneId])
-  if (scenes.length === 0) {
-    return <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-secondary)' }}>暂无场景，无法生成地图</p>
-  }
-  const states = (scene?.states || []).filter((st) => (st.when || []).length > 0)
-  const variantLabel = (st: SceneState) => `变体：${(st.when || []).join('/')}`
-  // 多层建筑：场景以 floors 存多张楼层图（此处只读预览，暂不支持逐层编辑）
-  const floors = (scene as { floors?: { name: string; map: TileMap }[] } | undefined)?.floors
-  const isMultiFloor = Array.isArray(floors) && floors.length > 0
-  // 当前查看/编辑的地图：基础或变体（变体未画过则以基础为起点）
-  const shownMap = variant < 0 ? scene?.map : (states[variant]?.map || scene?.map)
-
-  if (editing && scene) {
-    return (
-      <MapEditor
-        title={variant < 0 ? '编辑基础地图' : variantLabel(states[variant])}
-        initial={shownMap}
-        assets={assets}
-        onSave={(m) => { onSaveMap(scene.id, m, variant < 0 ? -1 : (scene.states || []).indexOf(states[variant])); setEditing(false) }}
-        onCancel={() => setEditing(false)}
-        onAIGenerate={variant < 0 ? undefined : (hint) => onVariantAI(scene.id, hint)}
-        onImageGenerate={variant < 0 ? (file) => onImageGen(scene.id, file) : undefined}
-      />
-    )
-  }
-  return (
-    <div>
-      <div className="flex items-center gap-2 mb-3 flex-wrap">
-        <Select value={scene?.id || ''} onValueChange={onPick}>
-          <SelectTrigger className="w-40"><SelectValue placeholder="选择场景" /></SelectTrigger>
-          <SelectContent>{scenes.map((s) => <SelectItem key={s.id} value={s.id}>{sceneName(s)}</SelectItem>)}</SelectContent>
-        </Select>
-        {states.length > 0 && (
-          <Select value={String(variant)} onValueChange={(v) => setVariant(Number(v))}>
-            <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="-1">基础地图</SelectItem>
-              {states.map((st, i) => <SelectItem key={i} value={String(i)}>{variantLabel(st)}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        )}
-        <button onClick={() => onGenerate(false)} disabled={generating}
-          className="btn-secondary flex items-center gap-1 text-sm" style={generating ? { opacity: 0.6 } : undefined}>
-          {generating ? <Loader2 size={14} className="animate-spin" /> : <MapIcon size={14} />}
-          {generating ? '生成中…' : hasAnyMap ? '生成缺失地图' : '生成全部地图'}
-        </button>
-        {hasAnyMap && variant < 0 && (
-          <button onClick={() => onGenerate(true)} disabled={generating} className="btn-secondary text-sm" style={generating ? { opacity: 0.6 } : undefined}>全部重生成</button>
-        )}
-        {scene && !isMultiFloor && (
-          <button onClick={() => setEditing(true)} className="btn-secondary flex items-center gap-1 text-sm">
-            <Pencil size={14} /> {shownMap ? '编辑' : (variant < 0 ? '手绘地图' : '绘制此变体')}
-          </button>
-        )}
-      </div>
-      {variant >= 0 && !states[variant]?.map && (
-        <p className="text-xs mb-2" style={{ color: 'var(--color-text-secondary)' }}>此变体尚未单独绘制，下面显示的是基础地图——点「绘制此变体」可基于基础图改（含 AI 生成）。</p>
-      )}
-      {isMultiFloor ? (() => {
-        const f = floors![Math.min(floorIdx, floors!.length - 1)]
-        return (
-          <div className="rounded-md p-3 overflow-auto" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
-            <div className="flex flex-wrap gap-1 mb-2">
-              {floors!.map((fl, i) => (
-                <button key={i} onClick={() => setFloorIdx(i)} className="text-xs px-2 py-0.5 rounded border"
-                  style={{ borderColor: i === floorIdx ? 'var(--color-accent)' : 'var(--color-border)', background: i === floorIdx ? 'var(--color-accent)' : 'transparent', color: i === floorIdx ? 'var(--color-on-accent)' : 'var(--color-text-secondary)' }}>
-                  {fl.name || `第 ${i + 1} 层`}
-                </button>
-              ))}
-            </div>
-            <MapView map={f.map} assets={assets} />
-            {f.map?.notes && <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>布局说明：{f.map.notes}</p>}
-            <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>多层建筑地图（只读预览）；如需重画请「全部重生成」。</p>
-          </div>
-        )
-      })() : shownMap ? (
-        <div className="rounded-md p-3 overflow-auto" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
-          <MapView map={shownMap} assets={assets} />
-          {shownMap.notes && <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>布局说明：{shownMap.notes}</p>}
-        </div>
-      ) : (
-        <p className="text-sm text-center py-8" style={{ color: 'var(--color-text-secondary)' }}>该场景暂无地图——点「生成」由 AI 生成，或「手绘地图」自己画。</p>
-      )}
     </div>
   )
 }
