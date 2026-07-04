@@ -11,10 +11,10 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.ai.context import (
-    CONTEXT_TOKEN_BUDGET,
     RESERVE_FOR_OUTPUT,
     _estimate_tokens,
     build_kp_context,
+    resolve_context_budget,
 )
 from app.models.character import Character
 from app.models.module import Module
@@ -55,11 +55,17 @@ def estimate_session_context(db: Session, session_id: str) -> dict | None:
     rules_enabled = bool(events) and rulebook_service.has_rulebook(db, module.rule_system)
     module_rag_enabled = bool(events) and getattr(module, "rag_status", "") == "ready"
 
+    # 先解析当前模型窗口 → 自适应组装预算，让预估与实际跑团用同一套预算（否则事件裁剪口径不一致）。
+    profile = load_active_profile()
+    context_window = resolve_context_window(profile)
+    context_budget = resolve_context_budget(context_window)
+
     messages = build_kp_context(
         session, module, player_char, events,
         teammates=teammates or None,
         rules_lookup_enabled=rules_enabled,
         module_lookup_enabled=module_rag_enabled,
+        context_budget=context_budget,
     )
 
     # 分项：system（KP 系统提示 + 模组数据 + 台账/记忆/幕后）、summary（滚动剧情摘要）、
@@ -80,9 +86,6 @@ def estimate_session_context(db: Session, session_id: str) -> dict | None:
 
     input_tokens = system_tokens + summary_tokens + history_tokens
 
-    profile = load_active_profile()
-    context_window = resolve_context_window(profile)
-
     # 优先用「上一回合服务端真实 usage」（world_state.turn_usage.prompt_tokens）作占用真值——
     # 它是精确分词结果、且已计入 RAG 摘录等一切实际内容；无则回落启发式估算。
     ws = session.world_state or {}
@@ -102,7 +105,7 @@ def estimate_session_context(db: Session, session_id: str) -> dict | None:
     return {
         "model": profile.model_name if profile else "unknown",
         "context_window": context_window,
-        "context_budget": CONTEXT_TOKEN_BUDGET,   # 组装时的硬上限：超出即摘要/截断
+        "context_budget": context_budget,         # 组装硬上限（按模型窗口自适应）：超出即摘要/截断
         "output_reserve": RESERVE_FOR_OUTPUT,
         "input_tokens": input_tokens,             # 启发式分项估算（下一回合的粗估）
         "measured_input_tokens": measured,        # 上一回合服务端真实输入 token（无则 None）

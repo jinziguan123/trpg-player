@@ -30,10 +30,44 @@ from app.services import world_memory
 
 logger = logging.getLogger(__name__)
 
-# 上下文总预算（输入 + 输出，按 _estimate_tokens 粗估）。现代模型上下文窗口普遍 ≥64K
-# （DeepSeek 64K/128K、Claude 200K），估算启发式（中文 1.5 token/字）偏高于真实 BPE
-# （中文约 1 token/字），故 48000 估算 ≈ 32000 真实，对 64K 窗口仍有充裕安全垫。
+# 上下文总预算（输入 + 输出，按 _estimate_tokens 粗估）的**下限**，也是解析失败时的回落值。
+# 估算启发式（中文 1.5 token/字）偏高于真实 BPE（中文约 1 token/字），故 48000 估算 ≈ 32000
+# 真实，对 64K 窗口仍有充裕安全垫。≤64K 窗口的模型（如 DeepSeek）用此值，行为与放宽前完全一致。
+# 实际生效预算由 resolve_context_budget 按当前模型窗口放大（见下），封顶 CONTEXT_BUDGET_CEIL。
 CONTEXT_TOKEN_BUDGET = 48000
+# 自适应组装预算：预算 = clamp(窗口 × FRACTION, 下限 CONTEXT_TOKEN_BUDGET, 上限 CEIL)。
+# · FRACTION 取 0.6——延续「估算预算 ≈ 窗口的 0.6~0.7」的既有比例（估算过高 1.5x，故真实占用
+#   仅约窗口的 0.4）；窗口越大，越多早期事件以逐字原文留在上下文，KP 记忆更厚、少走有损摘要。
+# · CEIL 封顶 15 万估算（≈10 万真实）：即便 256K/1M 窗口也**绝不塞满**——一是躲开长上下文中段
+#   召回衰减（lost-in-the-middle，塞太满质量不升反降），二是控成本与首字延迟。滚动摘要照常保留，
+#   只是更晚、更少介入。用户已确认为大窗口模型放宽。
+CONTEXT_BUDGET_WINDOW_FRACTION = 0.6
+CONTEXT_BUDGET_CEIL = 150_000
+
+
+def resolve_context_budget(context_window: int) -> int:
+    """按模型上下文窗口自适应解析组装预算（估算单位）。
+
+    窗口越大留越多逐字记忆，但 clamp 在 [CONTEXT_TOKEN_BUDGET, CONTEXT_BUDGET_CEIL] 内：
+    ≤64K 窗口回落下限（行为与放宽前完全一致），超大窗口封顶避免塞满。窗口非法时回落下限。
+    """
+    if not context_window or context_window <= 0:
+        return CONTEXT_TOKEN_BUDGET
+    scaled = int(context_window * CONTEXT_BUDGET_WINDOW_FRACTION)
+    return max(CONTEXT_TOKEN_BUDGET, min(scaled, CONTEXT_BUDGET_CEIL))
+
+
+def _active_context_budget() -> int:
+    """按「当前激活模型」的窗口解析组装预算；任何异常一律回落下限（放宽前行为）。
+
+    局部导入 ai_settings 避免顶层循环依赖（与 context_estimate 同款处理）。
+    """
+    try:
+        from app.api.ai_settings import load_active_profile, resolve_context_window
+        return resolve_context_budget(resolve_context_window(load_active_profile()))
+    except Exception:
+        logger.exception("解析自适应上下文预算失败，回落下限")
+        return CONTEXT_TOKEN_BUDGET
 # 输出预留：KP 叙事（尤其分头/多 NPC/tool-loop 多步）可能较长，给足避免被截断。
 RESERVE_FOR_OUTPUT = 7000
 # 系统提示上限。此处装的不只是静态裁定手册，还有模组数据 + RAG 原文摘录（可达 ~2700 token）
@@ -488,6 +522,7 @@ def build_kp_context(
     module_excerpts: list[dict] | None = None,
     module_lookup_enabled: bool = False,
     rule_excerpts: list[dict] | None = None,
+    context_budget: int | None = None,
 ) -> list[dict]:
     # 本函数保持纯粹（不触数据库）：module_excerpts 是调用方（chat_service）检索好的
     # 模组原文片段（[{"text", ...}]），未建索引/检索失败时传 None → 行为与无此特性时完全一致。
@@ -708,7 +743,9 @@ def build_kp_context(
             )
         messages.append({"role": "user", "content": opening})
     else:
-        event_budget = CONTEXT_TOKEN_BUDGET - system_tokens - RESERVE_FOR_OUTPUT
+        # 组装预算：调用方显式传入优先；否则按当前激活模型窗口自适应（≤64K 回落下限）。
+        budget = context_budget if context_budget is not None else _active_context_budget()
+        event_budget = budget - system_tokens - RESERVE_FOR_OUTPUT
 
         # 滚动剧情摘要：已被浓缩进 world_state.story_summary 的老事件（seq ≤ 游标）不再逐条进
         # 上下文，只保留这份持久摘要；游标之后的事件照常按预算给全文，仍超预算的再兜底即时摘要。

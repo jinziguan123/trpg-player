@@ -86,6 +86,31 @@ def test_resolve_context_window_unknown_falls_back():
     assert resolve_context_window(None) == 65_536
 
 
+def test_resolve_context_budget_scales_with_window():
+    """组装预算按窗口自适应：≤64K 回落下限、中窗口线性放大、超大窗口封顶。"""
+    from app.ai.context import (
+        CONTEXT_BUDGET_CEIL,
+        CONTEXT_BUDGET_WINDOW_FRACTION,
+        CONTEXT_TOKEN_BUDGET,
+        resolve_context_budget,
+    )
+    # 64K（DeepSeek）：0.6×64K < 下限 → 回落下限，行为与放宽前完全一致
+    assert resolve_context_budget(65_536) == CONTEXT_TOKEN_BUDGET
+    # 200K（Claude）：线性放大，未触顶
+    assert resolve_context_budget(200_000) == int(200_000 * CONTEXT_BUDGET_WINDOW_FRACTION)
+    # 1M（Gemini/gpt-4.1）：0.6×1M 远超上限 → 封顶
+    assert resolve_context_budget(1_000_000) == CONTEXT_BUDGET_CEIL
+    # 放大后始终在 [下限, 上限] 内，且随窗口单调不减
+    assert CONTEXT_TOKEN_BUDGET <= resolve_context_budget(256_000) <= CONTEXT_BUDGET_CEIL
+    assert resolve_context_budget(256_000) >= resolve_context_budget(128_000)
+
+
+def test_resolve_context_budget_invalid_window_falls_back():
+    from app.ai.context import CONTEXT_TOKEN_BUDGET, resolve_context_budget
+    assert resolve_context_budget(0) == CONTEXT_TOKEN_BUDGET
+    assert resolve_context_budget(-1) == CONTEXT_TOKEN_BUDGET
+
+
 def test_estimate_prefers_measured_usage(db_factory):
     """world_state.turn_usage 存在时，占用真值用服务端实测 prompt_tokens，ratio 随之。"""
     from app.ai.context import RESERVE_FOR_OUTPUT
