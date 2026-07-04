@@ -216,7 +216,9 @@ def build_turn_plan_messages(
     """
     flags = _active_flags(session)
     resolved_scenes = [_resolve_state(scene, flags) for scene in (module.scenes or [])]
-    resolved_npcs = [_resolve_state(npc, flags) for npc in (module.npcs or [])]
+    # 模组 NPC + 已转正的临场 NPC 一并作为正典，进 visible_npcs / canonical_npcs
+    _npc_defs = (module.npcs or []) + world_memory.promoted_npc_cards(session.world_state or {})
+    resolved_npcs = [_resolve_state(npc, flags) for npc in _npc_defs]
 
     visible_ids = _visible_scene_ids(session)
     visible_clues = _filter_visible_items(module.clues, visible_ids)
@@ -270,12 +272,13 @@ def build_turn_plan_messages(
             for clue in visible_clues
         ],
         "clue_ledger": clue_ledger,
-        # 正典 NPC 名单（speakers/nudge 只能用这些名字）+ 临场龙套名单（不得带线索/推剧情）
+        # 正典 NPC 名单（含已转正的临场 NPC；speakers/nudge 只能用这些名字）+
+        # 未转正的临场龙套名单（不得带线索/推剧情）
         "canonical_npcs": [npc.get("name", "") for npc in visible_npcs if npc.get("name")],
         "improvised_npcs": [
             str(n).strip()
-            for n in ((session.world_state or {}).get("improvised_npcs") or {})
-            if str(n).strip()
+            for n, e in ((session.world_state or {}).get("improvised_npcs") or {}).items()
+            if str(n).strip() and not (isinstance(e, dict) and (e.get("card") or {}).get("id"))
         ],
     }
 

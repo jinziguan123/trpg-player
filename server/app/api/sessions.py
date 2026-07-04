@@ -316,6 +316,47 @@ def growth_settle(
     return result
 
 
+@router.get("/{session_id}/improvised-npcs")
+def list_improvised_npcs(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """列出本局临场 NPC（KP 临时添加的开口龙套）及其是否已转正，供房主决定收编。"""
+    from app.services import promote_service
+
+    if not session_service.get_session(db, session_id):
+        raise HTTPException(404, "会话不存在")
+    return {"improvised_npcs": promote_service.list_improvised(db, session_id)}
+
+
+@router.post("/{session_id}/improvised-npcs/promote")
+async def promote_improvised_npc(
+    session_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """把某临场 NPC 受控转正为正式配角（据其既有言行生成 NPC 卡，存会话级）。
+
+    仅房主可操作（seat_order==0）。生成失败返回 502；未登记的名字返回 404。
+    """
+    from app.services import promote_service
+
+    session = session_service.get_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "会话不存在")
+    if not session_service.is_host(db, session_id, token):
+        raise HTTPException(403, "仅房主可转正临场 NPC")
+    name = (body or {}).get("name")
+    if not name:
+        raise HTTPException(400, "缺少 name")
+    card = await promote_service.promote(db, session_id, name)
+    if card is None:
+        raise HTTPException(502, "转正失败（可能该名字未登记，或模型未配置），请稍后重试")
+    return card
+
+
 @router.get("/{session_id}/replay")
 async def export_replay(
     session_id: str,

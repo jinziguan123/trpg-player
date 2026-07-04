@@ -13,8 +13,9 @@ import { ContextUsageBadge } from '../components/game/ContextUsageBadge'
 import { RecapModal } from '../components/game/RecapModal'
 import { GrowthModal } from '../components/game/GrowthModal'
 import { InvestigationBoard } from '../components/game/InvestigationBoard'
+import { ImprovisedNpcModal } from '../components/game/ImprovisedNpcModal'
 import { Modal } from '../components/ui/modal'
-import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade } from 'react-icons/gi'
+import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter } from 'react-icons/gi'
 import { Copy, Bot, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 
@@ -136,6 +137,7 @@ export function GameSessionPage() {
   const [showBigMap, setShowBigMap] = useState(false)         // 大地图（已知地点前往）
   const [showRecap, setShowRecap] = useState(false)           // 战报 / 章节小结弹窗
   const [showGrowth, setShowGrowth] = useState(false)         // 成长结算弹窗
+  const [showImprov, setShowImprov] = useState(false)         // 临场角色收编（房主专用）
   const [locations, setLocations] = useState<KnownLocation[]>([])
   const [confirmTravel, setConfirmTravel] = useState<KnownLocation | null>(null)  // 前往二次确认
   const [splitView, setSplitView] = useState(true)            // 分头行动分栏（检测到多组时生效）
@@ -167,6 +169,8 @@ export function GameSessionPage() {
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastTypingSent = useRef(0)
   const myName = currentSession?.participants?.find((p) => p.is_mine)?.character_name ?? null
+  // 房主 = 我认领的席位是 0 号（房主锚点）；仅房主可收编临场角色
+  const isHost = currentSession?.participants?.find((p) => p.is_mine)?.seat_order === 0
   const myNameRef = useRef<string | null>(null)
   myNameRef.current = myName
   const [liveConnected, setLiveConnected] = useState(true)
@@ -753,6 +757,15 @@ export function GameSessionPage() {
             >
               <GiTreasureMap size={13} /> {showBigMap ? '收起大地图' : '大地图'}
             </button>
+            {isHost && (
+              <button
+                onClick={() => setShowImprov(true)}
+                className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
+                title="临场角色：把 KP 临时添加的出彩龙套收编为正式配角（房主）"
+              >
+                <GiCharacter size={13} /> 临场角色
+              </button>
+            )}
             {!(showPanel && panelChar) && (
               <button
                 onClick={() => setShowPanel(true)}
@@ -768,6 +781,7 @@ export function GameSessionPage() {
         {showGrowth && myCharId && (
           <GrowthModal sessionId={currentSession.id} characterId={myCharId} onClose={() => setShowGrowth(false)} />
         )}
+        {showImprov && <ImprovisedNpcModal sessionId={currentSession.id} onClose={() => setShowImprov(false)} />}
         {showSearch && (
           // 历史检索悬浮窗（portal 到 body，遮罩盖全屏含侧栏、居中于聊天区、Esc 关闭）
           <Modal onClose={() => { setShowSearch(false); setSearchQ(''); setSearchResults([]) }} widthClass="max-w-xl" align="top">

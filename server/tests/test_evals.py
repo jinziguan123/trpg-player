@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from evals import checks
 from evals.common import dict_to_model, load_fixture, row_to_dict
 from evals.judge import RUBRIC, _parse_judge_output, build_judge_messages
@@ -295,6 +297,95 @@ class TestImprovisedNpcContainment:
         assert "canonical_npcs" in content and "格雷夫斯" in content
         assert "improvised_npcs" in content and "门房老赵" in content
         assert "canonical_npcs" in content  # 指令提到只能用正典名字
+
+
+# ── P2 受控转正 ──
+
+
+def _promote_probe_case():
+    """基于 IMPROV_PROBE，给「门房老赵」挂一张转正卡后返回 case。"""
+    from app.services import world_memory
+    case = load_fixture(IMPROV_PROBE)
+    ws = world_memory.promote_improvised_npc(
+        dict(case.session.world_state or {}),
+        "门房老赵",
+        {"name": "门房老赵", "description": "佝偻的守夜门房", "personality": "话少、怕事",
+         "background": "在庄园守了二十年门"},
+    )
+    case.session.world_state = ws
+    return case, ws
+
+
+class TestImprovisedPromotion:
+    def test_promote_card_secrets_恒空_且带id(self):
+        from app.services import world_memory
+        _, ws = _promote_probe_case()
+        card = ws["improvised_npcs"]["门房老赵"]["card"]
+        assert card["id"].startswith("improv_")
+        assert card["secrets"] == []          # 转正不自动获得秘密
+        cards = world_memory.promoted_npc_cards(ws)
+        assert len(cards) == 1 and cards[0]["name"] == "门房老赵" and cards[0]["improvised"]
+
+    def test_转正后从临场名单移除_并入KP正典资料(self):
+        case, _ = _promote_probe_case()
+        messages = build_kp_context(
+            case.session, case.module, case.player_char, case.events,
+            teammates=case.teammates or None,
+        )
+        sys_msg = messages[0]["content"]
+        # 已转正 → 不再出现在「临场角色名单」小节
+        assert "临场角色名单" not in sys_msg
+        # 但作为正典 NPC 资料出现（description 进了 npcs_info）
+        assert "门房老赵" in sys_msg and "佝偻的守夜门房" in sys_msg
+
+    def test_转正后进planner正典名单_且不再算龙套(self):
+        from app.ai import turn_planner
+        case, _ = _promote_probe_case()
+        content = turn_planner.build_turn_plan_messages(
+            case.session, case.module, case.player_char, case.events,
+            teammates=case.teammates or None,
+        )[1]["content"]
+        payload = _extract_probe_payload(content)
+        assert "门房老赵" in payload["canonical_npcs"]
+        assert "门房老赵" not in payload["improvised_npcs"]
+
+    def test_NPC_ACT_能解析到转正卡(self):
+        from app.ai.context import build_npc_context
+        case, ws = _promote_probe_case()
+        card_id = ws["improvised_npcs"]["门房老赵"]["card"]["id"]
+        msgs = build_npc_context(card_id, case.session, case.module, case.events)
+        assert "门房老赵" in msgs[0]["content"]  # 人格提示用了转正卡的名字，非「未知NPC」
+
+    @pytest.mark.asyncio
+    async def test_generate_npc_card_强制name且secrets空(self):
+        from app.ai import npc_promote
+
+        class _LLM:
+            async def complete(self, messages, **kw):
+                # 模型故意改名 + 试图塞秘密，应被规整掉
+                return ('{"name":"别的名字","description":"守夜人",'
+                        '"personality":"寡言","background":"看门二十年",'
+                        '"secrets":["其实是凶手"]}')
+        card = await npc_promote.generate_npc_card(
+            _LLM(), name="门房老赵", material="……", module_title="鬼屋",
+        )
+        assert card["name"] == "门房老赵"     # name 强制用传入值，不被模型改名
+        assert card["secrets"] == []          # secrets 恒空，模型塞的秘密被丢弃
+        assert card["personality"] == "寡言"
+
+
+def _extract_probe_payload(content: str) -> dict:
+    import json as _json
+    start = content.index("{")
+    depth = 0
+    for i in range(start, len(content)):
+        if content[i] == "{":
+            depth += 1
+        elif content[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return _json.loads(content[start:i + 1])
+    raise AssertionError("payload 未找到")
 
 
 # ── 裁判输出解析（不调 LLM）──

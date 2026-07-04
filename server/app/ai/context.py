@@ -191,7 +191,11 @@ def _improvised_npc_section(session: GameSession) -> str:
     「临场角色纪律」——保持边缘、不带线索、不升级。
     """
     improv = (session.world_state or {}).get("improvised_npcs") or {}
-    names = [str(n).strip() for n in improv if str(n).strip()]
+    # 已转正（有 card）的不再列入名单——它们已并入正典 NPC 资料、受完整人设约束。
+    names = [
+        str(n).strip() for n, e in improv.items()
+        if str(n).strip() and not (isinstance(e, dict) and (e.get("card") or {}).get("id"))
+    ]
     if not names:
         return ""
     return (
@@ -595,7 +599,9 @@ def build_kp_context(
     # 剧情状态：按已激活 flags 把场景/NPC 解析到「当前样貌」，再喂给 KP（向后兼容：无 states 即原样）。
     flags = _active_flags(session)
     scenes = [_resolve_state(s, flags) for s in (module.scenes or [])]
-    npcs = [_resolve_state(n, flags) for n in (module.npcs or [])]
+    # 模组 NPC + 本会话已转正的临场 NPC（会话级卡，不写模组本体）——一并按 flags 解析后喂给 KP。
+    all_npc_defs = (module.npcs or []) + world_memory.promoted_npc_cards(session.world_state or {})
+    npcs = [_resolve_state(n, flags) for n in all_npc_defs]
     current_scene = _resolve_scene(scenes, scene_id, flags)
 
     teammates = teammates or []
@@ -880,6 +886,13 @@ def build_npc_context(
     trigger_context: str = "",
 ) -> list[dict]:
     npc_def = _find_npc_def(module, npc_id)
+    if not npc_def:
+        # 模组里没有 → 查本会话已转正的临场 NPC 卡
+        npc_def = next(
+            (c for c in world_memory.promoted_npc_cards(session.world_state or {})
+             if c.get("id") == npc_id),
+            None,
+        )
     if not npc_def:
         npc_def = {"name": "未知NPC", "description": "", "personality": "", "secrets": ""}
     else:

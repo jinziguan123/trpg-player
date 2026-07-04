@@ -502,14 +502,20 @@ def _make_chunk(
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _matcher_npcs(module: Module, teammates: list[Character] | None) -> list[dict]:
-    """供行内台词归属用的名字表：模组 NPC + 在场队友（真人/AI）。
+def _matcher_npcs(
+    module: Module,
+    teammates: list[Character] | None,
+    session: GameSession | None = None,
+) -> list[dict]:
+    """供行内台词归属用的名字表：模组 NPC + 已转正的临场 NPC + 在场队友（真人/AI）。
 
     队友不在 module.npcs 里，若不加进来，KP 偶尔替队友写的引号台词会被
     错误归给附近提到的某个模组 NPC（如把约翰·卡特的话记到萨沙·卡纳头上）。
+    已转正的临场 NPC 同理并入，否则其台词归属会漂移。
     """
     extra = [{"name": t.name, "is_player": True} for t in (teammates or []) if t.name]
-    return (module.npcs or []) + extra
+    promoted = world_memory.promoted_npc_cards(session.world_state or {}) if session else []
+    return (module.npcs or []) + promoted + extra
 
 
 def event_to_chunk(ev) -> str:
@@ -1546,9 +1552,13 @@ def _record_npc_say_memory(
     """
     if not speaker_texts:
         return
+    # 正典说话人 = 模组 NPC + 本会话已转正的临场 NPC（后者转正后开始有 npc_memory、不再算龙套）
+    _npc_defs = ((module.npcs if module else []) or []) + world_memory.promoted_npc_cards(
+        game_session.world_state or {}
+    )
     by_name = {
         (npc.get("name") or "").strip(): npc.get("id")
-        for npc in (module.npcs if module else []) or []
+        for npc in _npc_defs
         if npc.get("id") and npc.get("name")
     }
     # 玩家侧名单 + 系统/KP：这些说话人不算临场 NPC（audience_names 即玩家+队友名）
@@ -1760,7 +1770,7 @@ async def _run_generation(
     # 仅在非开场、且模组原文索引就绪时，向 KP 广告 [MODULE_LOOKUP] 能力（镜像规则书模式）
     module_rag_enabled = bool(events) and getattr(module, "rag_status", "") == "ready"
     party_ids = {player_char.id} | {t.id for t in (teammates or [])}
-    matcher_npcs = _matcher_npcs(module, teammates)
+    matcher_npcs = _matcher_npcs(module, teammates, game_session)
 
     # 回合裁定计划：主链路（run_chat_generation）已在队友回合之前先跑好 plan 并记过线索台账，
     # 通过 plan 参数传入 → 此处不重复调用。其他入口（run_travel_generation / _run_kp_turn 尾部）
@@ -2193,7 +2203,7 @@ async def _run_kp_turn(
     res = ["", "", [], [], []]
     try:
         async for chunk in _stream_narration_filtered(
-            kp, messages, res, npcs=_matcher_npcs(module, party_others),
+            kp, messages, res, npcs=_matcher_npcs(module, party_others, game_session),
         ):
             room_hub.broadcast(session_id, chunk)
     except asyncio.CancelledError:
@@ -3446,7 +3456,7 @@ async def _process_commands(
         cont_result = ["", "", [], [], []]
         try:
             async for chunk in _stream_narration_filtered(
-                kp, messages, cont_result, npcs=_matcher_npcs(module, teammates),
+                kp, messages, cont_result, npcs=_matcher_npcs(module, teammates, game_session),
             ):
                 yield chunk
         finally:
@@ -3542,7 +3552,7 @@ async def _handle_rule_lookup(
     cont_result = ["", "", [], [], []]
     try:
         async for chunk in _stream_narration_filtered(
-            kp, messages, cont_result, npcs=_matcher_npcs(module, teammates),
+            kp, messages, cont_result, npcs=_matcher_npcs(module, teammates, game_session),
         ):
             yield chunk
     finally:
@@ -3602,7 +3612,7 @@ async def _handle_module_lookup(
     cont_result = ["", "", [], [], []]
     try:
         async for chunk in _stream_narration_filtered(
-            kp, messages, cont_result, npcs=_matcher_npcs(module, teammates),
+            kp, messages, cont_result, npcs=_matcher_npcs(module, teammates, game_session),
         ):
             yield chunk
     finally:

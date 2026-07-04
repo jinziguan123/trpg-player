@@ -153,6 +153,45 @@ def record_improvised_npc(ws: dict, name: str, seq: int) -> dict:
     return ws
 
 
+def promote_improvised_npc(ws: dict, name: str, card: dict) -> dict:
+    """把一张转正 NPC 卡挂到 improvised_npcs[name].card（会话级，不写模组本体）。
+
+    card 需含 name/description/personality/background/secrets；此处补一个 `improv_` 前缀的
+    稳定 id（供 npc_memory / [NPC_ACT] 归属）。name 必须已登记在 improvised_npcs 里。
+    """
+    name = str(name or "").strip()
+    if not name or not isinstance(card, dict):
+        return ws
+    ws = dict(ws or {})
+    improv = dict(ws.get("improvised_npcs") or {})
+    entry = dict(improv.get(name) or {})
+    card = dict(card)
+    # 稳定 id：优先复用已有卡的 id，否则据首次登场序号派生（同名不同局互不影响）
+    card_id = str((entry.get("card") or {}).get("id") or "").strip()
+    if not card_id:
+        card_id = f"improv_{entry.get('first_seq', 0)}_{abs(hash(name)) % 100000}"
+    card["id"] = card_id
+    card.setdefault("secrets", [])
+    entry["card"] = card
+    improv[name] = entry
+    ws["improvised_npcs"] = improv
+    return ws
+
+
+def promoted_npc_cards(ws: dict) -> list[dict]:
+    """返回本会话已转正的临场 NPC 卡列表（module.npcs 同形，带 improvised 标记）。
+
+    未转正（无 card）的临场龙套不返回——他们仍受「临场角色纪律」约束、不入正典集合。
+    """
+    improv = (ws or {}).get("improvised_npcs") or {}
+    out: list[dict] = []
+    for name, entry in improv.items():
+        card = (entry or {}).get("card") if isinstance(entry, dict) else None
+        if isinstance(card, dict) and card.get("id") and card.get("name"):
+            out.append({**card, "improvised": True})
+    return out
+
+
 def record_npc_interaction(ws: dict, npc_id: str, seq: int, summary: str) -> dict:
     """给某 NPC 的互动史追加一条（环形缓冲，只保留最近 ``MAX_NPC_INTERACTIONS`` 条）。"""
     npc_id = str(npc_id or "").strip()
