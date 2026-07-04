@@ -84,3 +84,47 @@ def test_resolve_context_window_by_model_name():
 def test_resolve_context_window_unknown_falls_back():
     assert resolve_context_window(AIProfile(model_name="某国产小模型")) == 65_536
     assert resolve_context_window(None) == 65_536
+
+
+def test_estimate_prefers_measured_usage(db_factory):
+    """world_state.turn_usage 存在时，占用真值用服务端实测 prompt_tokens，ratio 随之。"""
+    from app.ai.context import RESERVE_FOR_OUTPUT
+    db = db_factory()
+    sid = _seed(db)
+    s = db.get(GameSession, sid)
+    ws = dict(s.world_state)
+    ws["turn_usage"] = {"prompt_tokens": 12345, "completion_tokens": 600, "total_tokens": 12945, "at_seq": 6}
+    s.world_state = ws
+    db.commit()
+    r = context_estimate.estimate_session_context(db, sid)
+    assert r["source"] == "measured"
+    assert r["measured_input_tokens"] == 12345
+    expected = round((12345 + RESERVE_FOR_OUTPUT) / r["context_window"], 4)
+    assert abs(r["usage_ratio"] - expected) < 1e-6
+
+
+def test_estimate_falls_back_to_estimate_without_usage(db_factory):
+    db = db_factory()
+    sid = _seed(db)   # 无 turn_usage
+    r = context_estimate.estimate_session_context(db, sid)
+    assert r["source"] == "estimated"
+    assert r["measured_input_tokens"] is None
+    assert r["input_tokens"] > 0
+
+
+def test_record_turn_usage_persists_and_failopen(db_factory):
+    from app.services import chat_service
+    db = db_factory()
+    sid = _seed(db)
+    s = db.get(GameSession, sid)
+    events = session_service.get_session_events(db, sid, limit=0)
+
+    class _LLM:
+        last_usage = {"prompt_tokens": 900, "completion_tokens": 100, "total_tokens": 1000}
+    chat_service._record_turn_usage(db, s, _LLM(), events)
+    assert (db.get(GameSession, sid).world_state or {})["turn_usage"]["prompt_tokens"] == 900
+
+    class _LLM2:
+        last_usage = None   # 不支持 usage → 不覆盖、不报错
+    chat_service._record_turn_usage(db, s, _LLM2(), events)
+    assert (db.get(GameSession, sid).world_state or {})["turn_usage"]["prompt_tokens"] == 900

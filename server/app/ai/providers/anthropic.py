@@ -79,6 +79,21 @@ class AnthropicProvider(LLMProvider):
         self._client = httpx.AsyncClient(timeout=120.0)
         base = base_url.rstrip("/") if base_url else "https://api.anthropic.com"
         self._api_url = f"{base}/v1/messages"
+        self.last_usage: dict | None = None
+
+    def _set_usage(self, u: dict | None) -> None:
+        """把 Anthropic 的 {input_tokens, output_tokens} 归一为 OpenAI 形态，下游统一读 prompt_tokens。"""
+        if not u:
+            return
+        pt = u.get("input_tokens")
+        ct = u.get("output_tokens")
+        if pt is None and ct is None:
+            return
+        self.last_usage = {
+            "prompt_tokens": pt or 0,
+            "completion_tokens": ct or 0,
+            "total_tokens": (pt or 0) + (ct or 0),
+        }
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -129,6 +144,7 @@ class AnthropicProvider(LLMProvider):
         )
         resp.raise_for_status()
         data = resp.json()
+        self._set_usage(data.get("usage"))
         # Anthropic 返回格式: {"content": [{"type": "text", "text": "..."}]}
         return data["content"][0]["text"]
 
@@ -180,6 +196,7 @@ class AnthropicProvider(LLMProvider):
         # tool_use 块的聚合状态：content_block_start 记 id/name，input_json_delta 累积
         # partial_json，content_block_stop 时产出完整调用。
         pending: dict | None = None
+        u_in = u_out = 0
         async with self._client.stream(
             "POST", self._api_url, headers=self._headers(), json=payload,
         ) as resp:
@@ -195,6 +212,10 @@ class AnthropicProvider(LLMProvider):
                 except json.JSONDecodeError:
                     continue
                 event_type = chunk.get("type", "")
+                if event_type == "message_start":
+                    u_in = ((chunk.get("message") or {}).get("usage") or {}).get("input_tokens") or u_in
+                elif event_type == "message_delta":
+                    u_out = (chunk.get("usage") or {}).get("output_tokens") or u_out
                 if event_type == "content_block_start":
                     block = chunk.get("content_block") or {}
                     if block.get("type") == "tool_use":
@@ -224,6 +245,7 @@ class AnthropicProvider(LLMProvider):
                     ))
                     pending = None
                 elif event_type == "message_stop":
+                    self._set_usage({"input_tokens": u_in, "output_tokens": u_out})
                     break
 
     async def stream(
@@ -243,6 +265,7 @@ class AnthropicProvider(LLMProvider):
         if system_text:
             payload["system"] = system_text
 
+        u_in = u_out = 0
         async with self._client.stream(
             "POST", self._api_url, headers=self._headers(), json=payload,
         ) as resp:
@@ -258,10 +281,15 @@ class AnthropicProvider(LLMProvider):
                 except json.JSONDecodeError:
                     continue
                 event_type = chunk.get("type", "")
+                if event_type == "message_start":
+                    u_in = ((chunk.get("message") or {}).get("usage") or {}).get("input_tokens") or u_in
+                elif event_type == "message_delta":
+                    u_out = (chunk.get("usage") or {}).get("output_tokens") or u_out
                 if event_type == "content_block_delta":
                     delta = chunk.get("delta", {})
                     text = delta.get("text", "")
                     if text:
                         yield text
                 elif event_type == "message_stop":
+                    self._set_usage({"input_tokens": u_in, "output_tokens": u_out})
                     break

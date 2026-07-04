@@ -29,6 +29,10 @@ class StreamDelta:
 class LLMProvider(ABC):
     """LLM 服务提供者抽象接口"""
 
+    # 最近一次调用的服务端真实 usage（{prompt_tokens, completion_tokens, total_tokens, ...}）；
+    # 不支持的 Provider 保持 None，调用方回落启发式估算。
+    last_usage: dict | None = None
+
     @abstractmethod
     async def complete(
         self,

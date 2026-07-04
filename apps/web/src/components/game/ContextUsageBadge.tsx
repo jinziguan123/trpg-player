@@ -9,6 +9,8 @@ interface ContextEstimate {
   context_budget: number
   output_reserve: number
   input_tokens: number
+  measured_input_tokens: number | null
+  source: 'measured' | 'estimated'
   breakdown: { system: number; summary: number; history: number }
   events: { total: number; summarized: number; verbatim_candidates: number }
   usage_ratio: number
@@ -56,21 +58,26 @@ export function ContextUsageBadge({
   const pct = Math.round(est.usage_ratio * 100)
   const color = STATUS_COLOR[est.status]
   const b = est.breakdown
+  const measured = est.source === 'measured'
+  const headline = measured
+    ? `上一回合实测输入 ${fmt(est.measured_input_tokens || 0)} token（服务端真实分词），加输出预留 ${fmt(est.output_reserve)} ≈ 窗口的 ${pct}%`
+    : `本回合预估输入约 ${fmt(est.input_tokens)} token（启发式），加输出预留 ${fmt(est.output_reserve)} ≈ 窗口的 ${pct}%`
   const title = [
     `模型 ${est.model}（窗口 ${fmt(est.context_window)} token）`,
-    `本回合输入约 ${fmt(est.input_tokens)} token，加输出预留 ${fmt(est.output_reserve)} ≈ 窗口的 ${pct}%`,
+    headline,
     '',
+    `分项估算（构成参考）：`,
     `· 系统提示/模组/记忆：${fmt(b.system)}`,
     `· 剧情摘要：${fmt(b.summary)}`,
     `· 近期逐条事件：${fmt(b.history)}`,
     '',
     `事件 ${est.events.total} 条：已折叠进摘要 ${est.events.summarized}，可逐条 ${est.events.verbatim_candidates}`,
     est.status === 'critical'
-      ? '⚠ 逼近模型窗口上限，建议换更大窗口的模型或精简。'
+      ? '注意：逼近模型窗口上限，建议换更大窗口的模型或精简。'
       : est.status === 'warn'
         ? '上下文偏紧，注意后续增长。'
         : '上下文充裕。',
-    est.excludes_rag_excerpts ? '（未计入按需检索的规则/原文摘录）' : '',
+    measured ? '' : '（尚无实测：本回合结束后改用服务端真实用量。分项估算未计入按需检索的规则/原文摘录。）',
   ].filter((l) => l !== '').join('\n')
 
   return (
@@ -79,7 +86,7 @@ export function ContextUsageBadge({
       style={{ borderColor: 'var(--color-border)', color }}
       title={title}
     >
-      <GiBrain size={13} /> 上下文 {pct}%
+      <GiBrain size={13} /> 上下文 {measured ? '' : '约'}{pct}%
     </span>
   )
 }

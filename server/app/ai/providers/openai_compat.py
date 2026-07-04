@@ -66,6 +66,9 @@ class OpenAICompatProvider(LLMProvider):
         self._client = httpx.AsyncClient(timeout=120.0)
         base = base_url.rstrip("/") if base_url else "https://api.deepseek.com"
         self._api_url = f"{base}/chat/completions"
+        # 最近一次调用的服务端真实 usage（prompt/completion/total_tokens）。每次 complete/stream
+        # 结束后更新——调用方须在下一次调用前读取（生成串行化，主叙事后、validator 前读即拿到主叙事那次）。
+        self.last_usage: dict | None = None
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -97,6 +100,7 @@ class OpenAICompatProvider(LLMProvider):
         )
         resp.raise_for_status()
         data = resp.json()
+        self.last_usage = data.get("usage")   # 非流式响应体本就带 usage
         # content 可能为 null（推理模型只填 reasoning_content、内容被过滤等）→ 归一为空串，
         # 免得下游把 None 当合法输出。
         return data["choices"][0]["message"].get("content") or ""
@@ -142,6 +146,7 @@ class OpenAICompatProvider(LLMProvider):
             "messages": messages,
             "temperature": temperature,
             "stream": True,
+            "stream_options": {"include_usage": True},   # 收尾块附真实 usage
         }
         if tools:
             payload["tools"] = tools
@@ -163,6 +168,10 @@ class OpenAICompatProvider(LLMProvider):
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                # usage 可能挂在收尾内容块上（DeepSeek）或单独的 choices=[] 块（标准 OpenAI）——
+                # 见到 usage 就抓，别只认 choices 为空。
+                if chunk.get("usage"):
+                    self.last_usage = chunk["usage"]
                 choices = chunk.get("choices") or []
                 if not choices:
                     continue
@@ -192,6 +201,7 @@ class OpenAICompatProvider(LLMProvider):
             "messages": messages,
             "temperature": temperature,
             "stream": True,
+            "stream_options": {"include_usage": True},   # 收尾块附真实 usage
         }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
@@ -210,6 +220,8 @@ class OpenAICompatProvider(LLMProvider):
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue  # 忽略心跳/非 JSON 行
+                if chunk.get("usage"):
+                    self.last_usage = chunk["usage"]
                 # 有些 OpenAI 兼容服务会发 choices=[] 的块（usage 统计 / 内容过滤 /
                 # keep-alive），不能用 choices[0] 硬取，否则 IndexError 整段断流。
                 choices = chunk.get("choices") or []

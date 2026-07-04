@@ -82,11 +82,19 @@ def estimate_session_context(db: Session, session_id: str) -> dict | None:
 
     profile = load_active_profile()
     context_window = resolve_context_window(profile)
-    required = input_tokens + RESERVE_FOR_OUTPUT
+
+    # 优先用「上一回合服务端真实 usage」（world_state.turn_usage.prompt_tokens）作占用真值——
+    # 它是精确分词结果、且已计入 RAG 摘录等一切实际内容；无则回落启发式估算。
+    ws = session.world_state or {}
+    tu = ws.get("turn_usage") or {}
+    measured = tu.get("prompt_tokens")
+    measured = measured if isinstance(measured, int) and measured > 0 else None
+    effective_input = measured if measured is not None else input_tokens
+
+    required = effective_input + RESERVE_FOR_OUTPUT
     ratio = round(required / context_window, 4) if context_window else 0.0
 
     # 压缩指标：滚动摘要游标之后的事件才可能逐条进上下文，游标之前的已被浓缩进 story_summary。
-    ws = session.world_state or {}
     cursor = ws.get("story_summary_seq") or 0
     total_events = len(events)
     summarized_events = sum(1 for e in events if (e.sequence_num or 0) <= cursor)
@@ -96,7 +104,9 @@ def estimate_session_context(db: Session, session_id: str) -> dict | None:
         "context_window": context_window,
         "context_budget": CONTEXT_TOKEN_BUDGET,   # 组装时的硬上限：超出即摘要/截断
         "output_reserve": RESERVE_FOR_OUTPUT,
-        "input_tokens": input_tokens,
+        "input_tokens": input_tokens,             # 启发式分项估算（下一回合的粗估）
+        "measured_input_tokens": measured,        # 上一回合服务端真实输入 token（无则 None）
+        "source": "measured" if measured is not None else "estimated",
         "breakdown": {
             "system": system_tokens,
             "summary": summary_tokens,
@@ -107,8 +117,8 @@ def estimate_session_context(db: Session, session_id: str) -> dict | None:
             "summarized": summarized_events,        # 已并入滚动摘要（非逐条）
             "verbatim_candidates": total_events - summarized_events,
         },
-        "usage_ratio": ratio,                       # (输入+输出预留)/窗口
+        "usage_ratio": ratio,                       # (有效输入+输出预留)/窗口
         "status": _status(ratio),
-        # 说明：估算未计入按需检索的规则/模组原文摘录（生成时现检索、量有界）。
+        # 说明：估算口径未计入按需检索的规则/模组原文摘录；实测口径（measured）已含一切。
         "excludes_rag_excerpts": True,
     }

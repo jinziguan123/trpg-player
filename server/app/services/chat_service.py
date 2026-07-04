@@ -1701,6 +1701,32 @@ def _rule_excerpts_for_context(
         return None
 
 
+def _record_turn_usage(db: Session, game_session: GameSession, llm, events: list) -> None:
+    """把主叙事那次调用的服务端真实 usage 落到 world_state.turn_usage，供「上下文占用」显示实测值。
+
+    **必须在主叙事流结束后、validator/摘要等后续 complete 覆盖 llm.last_usage 之前**调用。
+    fail-open：无 usage（Provider 不支持）或异常都静默跳过，徽标回落启发式估算。
+    """
+    u = getattr(llm, "last_usage", None)
+    if not isinstance(u, dict):
+        return
+    pt = u.get("prompt_tokens")
+    if not isinstance(pt, int):
+        return
+    try:
+        ws = dict(game_session.world_state or {})
+        ws["turn_usage"] = {
+            "prompt_tokens": pt,
+            "completion_tokens": u.get("completion_tokens") or 0,
+            "total_tokens": u.get("total_tokens") or 0,
+            "at_seq": (events[-1].sequence_num if events else 0) or 0,
+        }
+        game_session.world_state = ws
+        db.commit()
+    except Exception:
+        logger.exception("落库回合 usage 失败（忽略）")
+
+
 async def _run_generation(
     db: Session,
     session_id: str,
@@ -1799,6 +1825,7 @@ async def _run_generation(
         except BaseException:
             _persist_narration(db, session_id, result)
             raise
+        _record_turn_usage(db, game_session, llm, events)   # validator 前，趁 last_usage 仍是主叙事那次
         await _validate_and_patch_narration(llm, plan, result)
         _persist_narration(db, session_id, result)
         # 世界记忆钩子 c：本轮 NPC 台词记入其互动史（对全队说话）
@@ -1819,6 +1846,7 @@ async def _run_generation(
             # CancelledError(继承 BaseException) 与普通异常都先把已生成片段落库再上抛
             _persist_narration(db, session_id, result)
             raise
+        _record_turn_usage(db, game_session, llm, events)   # validator 前，趁 last_usage 仍是主叙事那次
         await _validate_and_patch_narration(llm, plan, result)
         _persist_narration(db, session_id, result)
         # 世界记忆钩子 c：本轮 NPC 台词记入其互动史（对全队说话）
