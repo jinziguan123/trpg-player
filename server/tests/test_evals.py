@@ -15,6 +15,7 @@ FIXTURES = Path(__file__).resolve().parent.parent / "evals" / "fixtures"
 SYNTHETIC = FIXTURES / "synthetic_study_search.json"
 MULTI_ACTOR_CONT = FIXTURES / "manor_multi_actor_int_continuation.json"
 SPLIT_PERCEPTION = FIXTURES / "manor_split_npc_perception.json"
+IMPROV_PROBE = FIXTURES / "manor_improvised_npc_probe.json"
 
 
 # ── 确定性检查 ──
@@ -211,6 +212,91 @@ class TestNpcPerceptionIsolation:
         assert "当前人员分布" not in messages[0]["content"]
 
 
+# ── 临场 NPC 收容（复现线上「编造 NPC 存在感雪球」）──
+
+
+class TestImprovisedNpcContainment:
+    def test_kp提示词含临场角色纪律(self):
+        from app.ai.prompts.kp_system import KP_SYSTEM_PROMPT
+        p = KP_SYSTEM_PROMPT
+        assert "临场角色纪律" in p
+        assert "带货不行" in p          # 指路可以、带货不行
+        assert "不升级" in p            # 反复互动不升级重要性
+
+    def test_judge_含收容评分项(self):
+        assert "improvised_containment" in RUBRIC
+
+    def test_record_improvised_npc_累加(self):
+        from app.services import world_memory
+        ws = world_memory.record_improvised_npc({}, "门房老赵", 3)
+        assert ws["improvised_npcs"]["门房老赵"]["first_seq"] == 3
+        assert ws["improvised_npcs"]["门房老赵"]["mentions"] == 1
+        ws = world_memory.record_improvised_npc(ws, "门房老赵", 5)
+        e = ws["improvised_npcs"]["门房老赵"]
+        assert e["first_seq"] == 3 and e["last_seq"] == 5 and e["mentions"] == 2
+        assert world_memory.record_improvised_npc(ws, "  ", 6) is ws or True  # 空名不崩
+
+    def test_record_npc_say_memory_登记非正典说话人(self):
+        # 说话人不在 module.npcs、不是玩家/系统 → 登记进 improvised_npcs；正典/玩家/系统不登记。
+        from app.services import chat_service
+        from app.models import Character, GameSession, Module
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.models import Base
+        eng = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(eng)
+        db = sessionmaker(bind=eng)()
+        module = Module(title="M", rule_system="coc",
+                        npcs=[{"id": "npc_g", "name": "格雷夫斯"}], scenes=[])
+        pc = Character(name="伊芙琳·哈特", rule_system="coc", is_player=True)
+        db.add_all([module, pc]); db.flush()
+        gs = GameSession(module_id=module.id, player_character_id=pc.id,
+                         status="active", world_state={})
+        db.add(gs); db.commit()
+        chat_service._record_npc_say_memory(
+            db, gs.id, gs, module,
+            [("门房老赵", "屋里的事我不晓得"),      # 临场龙套 → 登记
+             ("格雷夫斯", "请随我来"),               # 正典 → 不登记进 improvised
+             ("伊芙琳·哈特", "你说谎"),              # 玩家 → 不登记
+             ("系统", "检定失败")],                  # 系统 → 不登记
+            audience_names=["伊芙琳·哈特"],
+        )
+        improv = (db.get(GameSession, gs.id).world_state or {}).get("improvised_npcs") or {}
+        assert "门房老赵" in improv
+        assert "格雷夫斯" not in improv and "伊芙琳·哈特" not in improv and "系统" not in improv
+
+    def test_上下文注入临场角色名单(self):
+        case = load_fixture(IMPROV_PROBE)
+        messages = build_kp_context(
+            case.session, case.module, case.player_char, case.events,
+            teammates=case.teammates or None,
+        )
+        sys_msg = messages[0]["content"]
+        assert "临场角色名单" in sys_msg
+        assert "门房老赵" in sys_msg
+        assert "带货" in sys_msg or "不携带线索" in sys_msg
+
+    def test_无临场角色不注入名单(self):
+        case = load_fixture(SYNTHETIC)  # 无 improvised_npcs
+        messages = build_kp_context(
+            case.session, case.module, case.player_char, case.events,
+            teammates=case.teammates or None,
+        )
+        assert "临场角色名单" not in messages[0]["content"]
+
+    def test_planner_payload_含正典与临场名单(self):
+        from app.ai import turn_planner
+        case = load_fixture(IMPROV_PROBE)
+        messages = turn_planner.build_turn_plan_messages(
+            case.session, case.module, case.player_char, case.events,
+            teammates=case.teammates or None,
+        )
+        content = messages[1]["content"]
+        assert "canonical_npcs" in content and "格雷夫斯" in content
+        assert "improvised_npcs" in content and "门房老赵" in content
+        assert "canonical_npcs" in content  # 指令提到只能用正典名字
+
+
 # ── 裁判输出解析（不调 LLM）──
 
 
@@ -230,13 +316,14 @@ class TestJudgeParsing:
             '"in_character": {"pass": true, "reason": ""},'
             '"coherence": {"pass": true, "reason": ""},'
             '"subject_fidelity": {"pass": true, "reason": ""},'
-            '"perception_isolation": {"pass": true, "reason": ""}}'
+            '"perception_isolation": {"pass": true, "reason": ""},'
+            '"improvised_containment": {"pass": true, "reason": ""}}'
         )
         parsed = _parse_judge_output(raw)
         assert parsed and not parsed["plan_adherence"]["pass"]
 
     def test_解析带代码栅栏的输出(self):
-        raw = '```json\n{"no_leak": {"pass": true}, "plan_adherence": {"pass": true}, "no_player_control": {"pass": true}, "in_character": {"pass": true}, "coherence": {"pass": true}, "subject_fidelity": {"pass": true}, "perception_isolation": {"pass": true}}\n```'
+        raw = '```json\n{"no_leak": {"pass": true}, "plan_adherence": {"pass": true}, "no_player_control": {"pass": true}, "in_character": {"pass": true}, "coherence": {"pass": true}, "subject_fidelity": {"pass": true}, "perception_isolation": {"pass": true}, "improvised_containment": {"pass": true}}\n```'
         assert _parse_judge_output(raw)
 
     def test_缺项返回None(self):

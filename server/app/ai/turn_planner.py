@@ -270,6 +270,13 @@ def build_turn_plan_messages(
             for clue in visible_clues
         ],
         "clue_ledger": clue_ledger,
+        # 正典 NPC 名单（speakers/nudge 只能用这些名字）+ 临场龙套名单（不得带线索/推剧情）
+        "canonical_npcs": [npc.get("name", "") for npc in visible_npcs if npc.get("name")],
+        "improvised_npcs": [
+            str(n).strip()
+            for n in ((session.world_state or {}).get("improvised_npcs") or {})
+            if str(n).strip()
+        ],
     }
 
     # 导演信号：确定性算出的节奏经营提示（冷场/卡关/单调/未解悬念），作为规划器输入。
@@ -315,6 +322,9 @@ def build_turn_plan_messages(
                 "失败不给或给误导），不要干等玩家自己想起来申请。"
                 "但主动裁定仅限被动/本能类（感知/抗性/灵光/SAN）；心理学、话术、图书馆使用等"
                 "**主动运用型技能**只能因应玩家自己的宣言裁定，玩家没说要用就不发——那是替玩家行动。\n"
+                "npc_policy.speakers 与 direction.nudge 里的 NPC **只能用 canonical_npcs 里的名字**；"
+                "improvised_npcs 是 KP 此前临场添加的龙套——**绝不安排他们携带线索、透露情报或推动剧情**，"
+                "最多作为氛围出现，追问时指回模组内容。\n"
                 + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
                 + director_block
             ),

@@ -1538,10 +1538,11 @@ def _record_npc_say_memory(
     audience_names: list[str],
 ) -> None:
     """世界记忆钩子 c：本轮落库的 NPC 台词（[SAY]/引号抽取）记入该 NPC 的互动史
-    ——「对谁说了话」。
+    ——「对谁说了话」。同时登记**临场 NPC**（模组未列出的开口龙套）供收容机制约束。
 
     只认得出 module.npcs 的说话人（队友台词不入 NPC 记忆）；同一 NPC 一轮只记一条，
-    防止多句台词灌爆环形缓冲。
+    防止多句台词灌爆环形缓冲。说话人不在 module.npcs、也不是玩家角色/系统 → 视为临场 NPC，
+    登记进 world_state.improvised_npcs（详见临场 NPC 收容设计）。
     """
     if not speaker_texts:
         return
@@ -1550,12 +1551,22 @@ def _record_npc_say_memory(
         for npc in (module.npcs if module else []) or []
         if npc.get("id") and npc.get("name")
     }
+    # 玩家侧名单 + 系统/KP：这些说话人不算临场 NPC（audience_names 即玩家+队友名）
+    _non_npc = {n.strip() for n in (audience_names or []) if n and n.strip()}
+    _non_npc |= {"系统", "KP", "旁白"}
     picked: dict[str, str] = {}
+    improv_names: list[str] = []
     for speaker, text in speaker_texts:
-        nid = by_name.get((speaker or "").strip())
-        if nid and nid not in picked and str(text or "").strip():
-            picked[nid] = str(text).strip()
-    if not picked:
+        sp = (speaker or "").strip()
+        if not sp or not str(text or "").strip():
+            continue
+        nid = by_name.get(sp)
+        if nid:
+            if nid not in picked:
+                picked[nid] = str(text).strip()
+        elif sp not in _non_npc and sp not in improv_names:
+            improv_names.append(sp)   # 非正典、非玩家、非系统 → 临场龙套
+    if not picked and not improv_names:
         return
     try:
         evs = session_service.get_session_events(db, session_id)
@@ -1569,6 +1580,11 @@ def _record_npc_say_memory(
             lambda ws, _nid=nid, _text=text: world_memory.record_npc_interaction(
                 ws, _nid, seq, f"对{audience}说：{_text[:40]}",
             ),
+        )
+    for name in improv_names:
+        _apply_world_memory(
+            db, game_session,
+            lambda ws, _name=name: world_memory.record_improvised_npc(ws, _name, seq),
         )
 
 

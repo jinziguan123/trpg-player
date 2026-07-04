@@ -133,6 +133,26 @@ def record_handout_issue(
     return ws
 
 
+def record_improvised_npc(ws: dict, name: str, seq: int) -> dict:
+    """登记一个「临场 NPC」（模组未列出、KP 临时添加的开口龙套）到 world_state.improvised_npcs。
+
+    只增不删；``mentions`` 每登记一次自增，用于观察存在感（不驱动任何自动行为）。
+    key 用规整后的显示名（同名变体不做模糊合并，见设计文档 §7）。
+    """
+    name = str(name or "").strip()
+    if not name:
+        return ws
+    ws = dict(ws or {})
+    improv = dict(ws.get("improvised_npcs") or {})
+    entry = dict(improv.get(name) or {})
+    entry["first_seq"] = entry.get("first_seq", int(seq or 0))
+    entry["last_seq"] = int(seq or 0)
+    entry["mentions"] = int(entry.get("mentions", 0)) + 1
+    improv[name] = entry
+    ws["improvised_npcs"] = improv
+    return ws
+
+
 def record_npc_interaction(ws: dict, npc_id: str, seq: int, summary: str) -> dict:
     """给某 NPC 的互动史追加一条（环形缓冲，只保留最近 ``MAX_NPC_INTERACTIONS`` 条）。"""
     npc_id = str(npc_id or "").strip()

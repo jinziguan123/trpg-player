@@ -184,6 +184,24 @@ def _party_distribution_section(
     return "\n".join(lines)
 
 
+def _improvised_npc_section(session: GameSession) -> str:
+    """「临场角色名单」小节：列出 world_state.improvised_npcs 里 KP 临时添加的开口龙套。
+
+    空则返回空串（不注入，行为不变）。名单本身不含剧情信息，只是提醒 KP 对这些人执行
+    「临场角色纪律」——保持边缘、不带线索、不升级。
+    """
+    improv = (session.world_state or {}).get("improvised_npcs") or {}
+    names = [str(n).strip() for n in improv if str(n).strip()]
+    if not names:
+        return ""
+    return (
+        "【临场角色名单】以下人物是你此前临场添加的龙套（不在模组设定中）："
+        + "、".join(names)
+        + "。对他们严格执行「临场角色纪律」：保持边缘、只知公共信息、不携带线索或秘密、"
+        "不把守剧情、不升级重要性；玩家追问时指回模组内容。"
+    )
+
+
 def _find_npc_def(module: Module, npc_id: str) -> dict | None:
     for npc in (module.npcs or []):
         if npc.get("id") == npc_id:
@@ -734,6 +752,16 @@ def build_kp_context(
                 system_content += "\n\n" + backstage_section
         except Exception:
             logger.exception("幕后动态注入 KP 上下文失败（忽略）")
+
+    # 临场角色名单：此前 KP 临时添加的开口龙套（world_state.improvised_npcs）。
+    # 让 KP 每回合都看得见谁是龙套，据「临场角色纪律」保持其边缘（不带线索、不升级）。
+    if not is_opening:
+        try:
+            improv_section = _improvised_npc_section(session)
+            if improv_section:
+                system_content += "\n\n" + improv_section
+        except Exception:
+            logger.exception("临场角色名单注入 KP 上下文失败（忽略）")
 
     party_char_ids = {player_char.id} | {t.id for t in teammates}
 

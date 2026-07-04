@@ -13,6 +13,21 @@ from app.ai import turn_planner
 from app.models import Base, Character, EventLog, GameSession, Module  # noqa: F401
 
 
+def _payload(messages) -> dict:
+    """从规划器 user 消息里稳健地抠出 payload JSON（不依赖指令文本里的换行数量）。"""
+    content = messages[1]["content"]
+    start = content.index("{")
+    depth = 0
+    for i in range(start, len(content)):
+        if content[i] == "{":
+            depth += 1
+        elif content[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(content[start:i + 1])
+    raise AssertionError("payload JSON 未找到")
+
+
 @pytest.fixture
 def db_factory(tmp_path):
     engine = create_engine(
@@ -158,7 +173,7 @@ def test_turn_plan_messages_apply_flag_resolved_npc_state(db_factory):
     messages = turn_planner.build_turn_plan_messages(
         session, module, hero, [], teammates=[], rules_lookup_enabled=False,
     )
-    payload = json.loads(messages[1]["content"].split("\n", 1)[1])
+    payload = _payload(messages)
     npc = next(n for n in payload["visible_npcs"] if n["id"] == "butler")
     assert npc["location"] == "study"  # 因 flag 已搬到书房，不是模组里定义的门厅
     assert npc["secrets"] == ["管家就是纵火者"]  # 秘密也随 flag 更新，不是初始定义
@@ -183,7 +198,7 @@ def test_turn_plan_messages_include_recent_actor_names(db_factory):
         teammates=[],
         rules_lookup_enabled=False,
     )
-    payload = json.loads(messages[1]["content"].split("\n", 1)[1])
+    payload = _payload(messages)
     assert payload["recent_events"][0]["speaker"] == "调查员"
     assert payload["recent_events"][0]["content"] == "我搜查书桌"
 
