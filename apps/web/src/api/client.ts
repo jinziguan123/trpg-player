@@ -16,12 +16,6 @@ export function getApiBase(): string {
   return s ? `${s}/api` : '/api'
 }
 
-/** 把后端返回的资源相对路径（如 /api/assets/:id/image）拼成可直接用于 <img src> 的地址：
- *  本机=同源原样（vite 代理）；连主机时=<host>+path。 */
-export function mediaUrl(path: string): string {
-  return getServerUrl() + path
-}
-
 /** 轻量玩家身份：localStorage 生成并持久化 UUID，作为 X-Player-Token 带上。 */
 export function getPlayerToken(): string {
   let t = localStorage.getItem('trpg_player_token')

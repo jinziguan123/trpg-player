@@ -5,7 +5,6 @@ import { HomePage } from './pages/HomePage'
 import { ModulePage } from './pages/ModulePage'
 import { ModuleDetailPage } from './pages/ModuleDetailPage'
 import { RulebookPage } from './pages/RulebookPage'
-import { AssetsPage } from './pages/AssetsPage'
 import { CharacterPage } from './pages/CharacterPage'
 import { GamePage } from './pages/GamePage'
 import { GameSessionPage } from './pages/GameSessionPage'
@@ -24,7 +23,6 @@ export default function App() {
           <Route path="modules/new" element={<ModuleDetailPage />} />
           <Route path="modules/:id" element={<ModuleDetailPage />} />
           <Route path="rulebooks" element={<RulebookPage />} />
-          <Route path="assets" element={<AssetsPage />} />
           <Route path="characters" element={<CharacterPage />} />
           <Route path="game" element={<GamePage />} />
           <Route path="room/:sessionId" element={<RoomLobbyPage />} />

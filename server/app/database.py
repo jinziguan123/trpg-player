@@ -59,12 +59,6 @@ def seed_if_needed() -> None:
     try:
         settings.db_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(seed_db, settings.db_path)
-        seed_assets = seed / "assets"
-        if seed_assets.is_dir():
-            settings.assets_dir.mkdir(parents=True, exist_ok=True)
-            for f in seed_assets.iterdir():
-                if f.is_file():
-                    shutil.copy(f, settings.assets_dir / f.name)
         logger.info("已从内置种子初始化数据到 app-data：%s", settings.db_path)
     except Exception:
         logger.exception("内置种子初始化失败（将以空库启动）")
