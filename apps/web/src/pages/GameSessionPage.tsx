@@ -183,6 +183,9 @@ export function GameSessionPage() {
   // 关键：渲染阶段只「读」不「写」ref（保持纯函数，兼容 StrictMode 双渲染）；所有 ref 变更放在 effect 里。
   const renderedIds = useRef<Set<string>>(new Set())
   const firstBatchDone = useRef(false)
+  // 「本批之前见过的最大事件序号」——用于区分「实时新到达」（seq 更大，尾部追加）与
+  // 「往前翻页 prepend 的历史事件」（seq 更小）。仅在 effect 里更新（渲染阶段只读上一提交的值）。
+  const maxSeqSeen = useRef(-1)
 
   // —— 3D 骰子动画层 ——
   // diceRollerRef：命令式触发投掷；revealedDice：已「放行」显示结果卡的 dice 事件 id
@@ -198,7 +201,11 @@ export function GameSessionPage() {
     if (!firstBatchDone.current) return new Set<string>()   // 首屏整批不播入场
     const fresh = new Set<string>()
     for (const m of messages) {
-      if (m.id && !m.id.startsWith('stream-') && !renderedIds.current.has(m.id)) fresh.add(m.id)
+      if (!m.id || m.id.startsWith('stream-') || renderedIds.current.has(m.id)) continue
+      // 往前翻页 prepend 的历史事件：seq 不高于「本批之前的最大 seq」→ 不是实时新到达，
+      // 不播入场/骰子动画（无 seq 的乐观/流式消息一律视为实时，照常播）。
+      if (m.sequence_num != null && m.sequence_num <= maxSeqSeen.current) continue
+      fresh.add(m.id)
     }
     return fresh
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -206,12 +213,15 @@ export function GameSessionPage() {
   // 提交后：把本轮所有 id 并入「已渲染」，并标记首屏已完成。只在 effect 里写 ref → StrictMode 安全。
   useEffect(() => {
     for (const m of messages) if (m.id) renderedIds.current.add(m.id)
+    // 运行最大 seq（历史 prepend 的低 seq 抬不高它，实时新事件才抬高）→ 下一批的「实时」基线。
+    for (const m of messages) if (m.sequence_num != null && m.sequence_num > maxSeqSeen.current) maxSeqSeen.current = m.sequence_num
     if (!firstBatchDone.current && messages.length > 0) firstBatchDone.current = true
   }, [messages])
   // 会话切换：重置动效追踪，新会话的首屏历史同样不逐条弹入。
   useEffect(() => {
     renderedIds.current = new Set()
     firstBatchDone.current = false
+    maxSeqSeen.current = -1
     animatedDiceIds.current = new Set()
     setDiceAnimating(new Set())
     setRevealedDice(new Set())
