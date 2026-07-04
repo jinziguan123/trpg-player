@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { GiBrain } from 'react-icons/gi'
 import { api } from '../../api/client'
 
-/** 上下文占用预估：分项 token、模型窗口占比与健康度。与后端 estimate_session_context 对齐。 */
+/** 上下文占用预估：分项 token、组装预算与记忆压缩情况。与后端 estimate_session_context 对齐。 */
 interface ContextEstimate {
   model: string
   context_window: number
@@ -18,18 +18,18 @@ interface ContextEstimate {
   excludes_rag_excerpts: boolean
 }
 
-const STATUS_COLOR: Record<ContextEstimate['status'], string> = {
-  ok: 'var(--color-text-secondary)',
-  warn: 'var(--color-accent)',
-  critical: 'var(--color-danger)',
-}
-
 function fmt(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
 
 /**
- * 头部的上下文占用小徽标：显示「上下文 NN%」，颜色随健康度变化，悬停看分项明细。
+ * 头部的上下文小徽标：显示「本回合送入 KP 的输入体量」（实测优先，无实测才是启发式约值）。
+ *
+ * 刻意**不显示占窗口的百分比、不搞红黄溢出警戒**——上下文由组装预算主动裁剪，永远不会撑爆模型
+ * 窗口，占比只会绕着一个远低于窗口的天花板来回抖，是个误导性隐喻。真正影响体验、也随局面单调
+ * 变化的是「KP 还逐字记得多少剧情、多少已被压成摘要」，这条放进悬停详情；早期剧情大量压缩时，
+ * 徽标转强调色作轻提示（表示 KP 对早期细节记得没那么细了，并非危险）。
+ *
  * `refreshKey` 变化（本局消息增减）且不在生成中时刷新；生成中不拉（上下文正在变）。
  */
 export function ContextUsageBadge({
@@ -55,29 +55,38 @@ export function ContextUsageBadge({
 
   if (!est) return null
 
-  const pct = Math.round(est.usage_ratio * 100)
-  const color = STATUS_COLOR[est.status]
-  const b = est.breakdown
   const measured = est.source === 'measured'
-  const headline = measured
-    ? `上一回合实测输入 ${fmt(est.measured_input_tokens || 0)} token（服务端真实分词），加输出预留 ${fmt(est.output_reserve)} ≈ 窗口的 ${pct}%`
-    : `本回合预估输入约 ${fmt(est.input_tokens)} token（启发式），加输出预留 ${fmt(est.output_reserve)} ≈ 窗口的 ${pct}%`
+  const tokens = measured ? (est.measured_input_tokens || 0) : est.input_tokens
+  const b = est.breakdown
+  const ev = est.events
+  const verbatim = Math.max(ev.total - ev.summarized, 0)
+  // 早期剧情已过半被折叠进摘要 → 轻提示 KP 对早期细节记忆精度下降（非危险，仅信息）。
+  const heavilyCompressed = ev.total > 0 && ev.summarized / ev.total >= 0.5
+  const color = heavilyCompressed ? 'var(--color-accent)' : 'var(--color-text-secondary)'
+
+  const memoryLine =
+    ev.total === 0
+      ? 'KP 记忆：开局，尚无历史事件'
+      : ev.summarized === 0
+        ? `KP 记忆：全部 ${ev.total} 段事件逐字在场，细节完整`
+        : `KP 记忆：近 ${verbatim} 段逐字在场，早期 ${ev.summarized} 段已压缩为摘要`
+
   const title = [
     `模型 ${est.model}（窗口 ${fmt(est.context_window)} token）`,
-    headline,
+    measured
+      ? `本回合实测输入 ${fmt(tokens)} token（服务端真实分词）`
+      : `本回合预估输入约 ${fmt(tokens)} token（启发式；本回合结束后转为实测）`,
+    `组装预算上限 ${fmt(est.context_budget)}（按模型窗口自适应），另预留输出 ${fmt(est.output_reserve)}`,
     '',
-    `分项估算（构成参考）：`,
+    '构成（估算参考）：',
     `· 系统提示/模组/记忆：${fmt(b.system)}`,
     `· 剧情摘要：${fmt(b.summary)}`,
     `· 近期逐条事件：${fmt(b.history)}`,
     '',
-    `事件 ${est.events.total} 条：已折叠进摘要 ${est.events.summarized}，可逐条 ${est.events.verbatim_candidates}`,
-    est.status === 'critical'
-      ? '注意：逼近模型窗口上限，建议换更大窗口的模型或精简。'
-      : est.status === 'warn'
-        ? '上下文偏紧，注意后续增长。'
-        : '上下文充裕。',
-    measured ? '' : '（尚无实测：本回合结束后改用服务端真实用量。分项估算未计入按需检索的规则/原文摘录。）',
+    memoryLine,
+    '说明：上下文由组装预算主动裁剪，不会溢出模型窗口——越往后越多早期剧情被压成摘要，'
+      + '此处体量随之在预算内起伏（这是正常的，不代表快满）。',
+    measured ? '' : '（尚无实测；分项估算未计入按需检索的规则/原文摘录，实测口径已含一切。）',
   ].filter((l) => l !== '').join('\n')
 
   return (
@@ -86,7 +95,7 @@ export function ContextUsageBadge({
       style={{ borderColor: 'var(--color-border)', color }}
       title={title}
     >
-      <GiBrain size={13} /> 上下文 {measured ? '' : '约'}{pct}%
+      <GiBrain size={13} /> 上下文 {measured ? '' : '~'}{fmt(tokens)}
     </span>
   )
 }
