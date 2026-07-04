@@ -98,14 +98,14 @@ function nameHue(name: string): number {
 
 /** 直立 billboard：锚定在某格地面、反向抵消地面倾斜 → 立起来正对镜头（透视缩放由浏览器免费给）。
  * 注意：必须是 3D 平面的直接子节点（用 Fragment 渲染、勿包普通 div），否则 3D 变换会被压平、token 平躺。 */
-function Billboard({ x, y, h, z = 1, dx = 0, children }: { x: number; y: number; h: number; z?: number; dx?: number; children: React.ReactNode }) {
+function Billboard({ x, y, h, z = 1, dx = 0, tilt = TILT, children }: { x: number; y: number; h: number; z?: number; dx?: number; tilt?: number; children: React.ReactNode }) {
   return (
     <div style={{
       position: 'absolute',
       left: x * TILE + dx, top: y * TILE + TILE / 2 - h,
       width: TILE, height: h,
       transformOrigin: '50% 100%',
-      transform: `translateZ(${z}px) rotateX(-${TILT}deg)`,
+      transform: `translateZ(${z}px) rotateX(-${tilt}deg)`,
       display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
       pointerEvents: 'none',
     }}>
@@ -169,6 +169,16 @@ export function MapView({ map, entities, assets, onIntent }: { map: TileMap; ent
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
+  // 视角切换：2.5D 透视（默认，氛围）↔ 俯视 90°（信息密度高、不压缩）。偏好持久化。
+  const [topdown, setTopdown] = useState(() => {
+    try { return localStorage.getItem('map.topdown') === '1' } catch { return false }
+  })
+  const toggleView = () => {
+    const next = !topdown
+    try { localStorage.setItem('map.topdown', next ? '1' : '0') } catch { /* 忽略 */ }
+    setTopdown(next)
+  }
+  const tilt = topdown ? 0 : TILT
 
   // 进入时按视口大小自适应缩放，并居中
   useLayoutEffect(() => {
@@ -178,7 +188,7 @@ export function MapView({ map, entities, assets, onIntent }: { map: TileMap; ent
     setZoom(fit > 0.1 ? fit : 1)
     setPan({ x: 0, y: 0 })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map])
+  }, [map, topdown])
 
   useEffect(() => {
     const el = viewportRef.current
@@ -242,6 +252,10 @@ export function MapView({ map, entities, assets, onIntent }: { map: TileMap; ent
             imageRendering: 'pixelated',
             cursor: walkable ? 'pointer' : undefined,
           }}>
+          {/* 俯视模式：墙直接画成平面块（顶面色），不再立墙板 */}
+          {topdown && c === '#' && (
+            <div style={{ position: 'absolute', inset: 0, background: sprite ? undefined : '#4a4230', boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.3), inset 0 1px 0 rgba(232,220,192,0.12)' }} />
+          )}
           {!sprite && c === '+' && <div style={{ position: 'absolute', inset: '20% 28%', background: 'linear-gradient(#7a5427,#5c3d1c)', borderRadius: 2, boxShadow: `0 0 6px rgba(${CANDLE},0.35)` }} />}
           {!sprite && c === ':' && <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(rgba(232,220,192,0.10) 1px, transparent 1.5px)', backgroundSize: '9px 9px' }} />}
           {!sprite && c === '~' && <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(180deg, rgba(143,163,176,0.10) 0px, rgba(143,163,176,0.10) 1px, transparent 1px, transparent 7px)' }} />}
@@ -267,9 +281,9 @@ export function MapView({ map, entities, assets, onIntent }: { map: TileMap; ent
   const topDy = WALL_H * Math.cos(tiltRad)
   const topDz = WALL_H * Math.sin(tiltRad)
 
-  // 直立元素：墙板 + token，自上而下排序（远先画、近压上）
+  // 直立元素：墙板 + token，自上而下排序（远先画、近压上）。俯视模式不立墙板（墙在地面层画平面块）。
   const stand: { y: number; key: string; el: React.ReactNode }[] = []
-  for (let y = 0; y < H; y++) {
+  for (let y = 0; y < H && !topdown; y++) {
     for (let x = 0; x < W; x++) {
       if (at(x, y) !== '#') continue
       const wov = map.tile_assets?.[`${x},${y}`]
@@ -367,7 +381,7 @@ export function MapView({ map, entities, assets, onIntent }: { map: TileMap; ent
     const { dx, idx } = fanAt(x, y)
     stand.push({
       y, key, el: (
-        <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2} dx={dx}>
+        <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2} dx={dx} tilt={tilt}>
           {sprite ? spriteEl(label, sprite, idx, intent) : (
             <div title={label}
               onClick={intent ? () => fireIntent(intent) : undefined}
@@ -387,7 +401,7 @@ export function MapView({ map, entities, assets, onIntent }: { map: TileMap; ent
     const { dx, idx } = fanAt(x, y)
     stand.push({
       y, key, el: (
-        <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2} dx={dx}>
+        <Billboard x={x} y={y} h={sprite ? TILE : TOKEN_H} z={2} dx={dx} tilt={tilt}>
           {sprite ? spriteEl(label, sprite, idx, intent) : (
             <div title={label}
               onClick={intent ? () => fireIntent(intent) : undefined}
@@ -424,8 +438,8 @@ export function MapView({ map, entities, assets, onIntent }: { map: TileMap; ent
   stand.sort((a, b) => a.y - b.y)
 
   // 场景盒：给透视投影留足横向（近边变宽）与纵向（墙体抬高）余量。
-  const sceneW = planeW * 1.35 + 40
-  const sceneH = planeH * 0.55 + WALL_H + 60
+  const sceneW = planeW * (topdown ? 1 : 1.35) + 40
+  const sceneH = topdown ? planeH + TOKEN_H + 40 : planeH * 0.55 + WALL_H + 60
 
   return (
     <div
@@ -444,6 +458,11 @@ export function MapView({ map, entities, assets, onIntent }: { map: TileMap; ent
       <style>{'@keyframes mapTokenPulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:.9;transform:scale(1.12)}}'}</style>
       <button onMouseDown={(e) => e.stopPropagation()} onClick={() => setZoom((z) => Math.max(0.2, z * 0.89))} title="缩小" style={zoomBtn(8)}><ZoomOut size={14} /></button>
       <button onMouseDown={(e) => e.stopPropagation()} onClick={() => setZoom((z) => Math.min(4, z * 1.12))} title="放大" style={zoomBtn(40)}><ZoomIn size={14} /></button>
+      <button onMouseDown={(e) => e.stopPropagation()} onClick={toggleView}
+        title={topdown ? '切换到 2.5D 透视（氛围）' : '切换到俯视（信息密度高）'}
+        style={{ ...zoomBtn(72), fontSize: 10, fontWeight: 700 }}>
+        {topdown ? '3D' : '2D'}
+      </button>
       {/* 内容层：固定视口内做 平移+缩放，容器尺寸不随缩放变化 */}
       <div style={{
         position: 'absolute', left: '50%', top: '50%',
@@ -454,7 +473,7 @@ export function MapView({ map, entities, assets, onIntent }: { map: TileMap; ent
           <div style={{
             position: 'absolute', left: '50%', top: '50%',
             width: planeW, height: planeH, marginLeft: -planeW / 2, marginTop: -planeH / 2,
-            transformStyle: 'preserve-3d', transform: `rotateX(${TILT}deg)`,
+            transformStyle: 'preserve-3d', transform: `rotateX(${tilt}deg)`,
           }}>
             {floors}
             {glows}
