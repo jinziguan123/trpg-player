@@ -118,6 +118,37 @@ def test_dialogue_after_paragraph_break_still_attributed():
     assert speakers == ["史蒂芬·诺特"]  # 跨段落仍能归到诺特
 
 
+def test_progressive_verb_phrase_not_split_into_speaker():
+    """「修女在回答"关闭井"的问题时」——"回答"不能被切成「修女在回」+「答」当说话人；
+    "关闭井"是旁白复述的话题词，不是台词，整句留旁白。"""
+    text = "当约翰抬眼观察时，修女在回答“关闭井”的问题时，左手几不可见地动了一下。"
+    npcs = [{"name": "沃尔特·科比特"}]  # 修女是临场 NPC，不在名字表
+    result = ["", "", []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    speakers = [name for name, _ in result[2]]
+    assert speakers == []                       # 不抽任何台词
+    assert "关闭井" in result[0]                 # 话题词留在旁白
+
+
+def test_talked_about_npc_not_attributed_as_speaker():
+    """说话人（临场修女，不在名字表）谈论模组 NPC 科比特时，台词不能被署名成科比特——
+    被谈论者≠说话者。宁可留旁白，也不张冠李戴。"""
+    text = (
+        "科比特的名字在她口中反复出现。她压低声音："
+        "“那份手抄本还在那栋房子里，科比特藏得很深，没人动过地下室。”\n她说完便沉默了。"
+    )
+    npcs = [{"name": "沃尔特·科比特"}, {"name": "伊芙琳·哈特", "is_player": True}]
+    result = ["", "", []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    speakers = [name for name, _ in result[2]]
+    assert "沃尔特·科比特" not in speakers        # 被谈论者不当说话人
+    assert "科比特藏得很深" in result[0]          # 台词退回旁白，内容不丢
+
+
 def test_prefix_speaker_label_not_duplicated_in_narration():
     """「史蒂芬·诺特：「台词」」抽成气泡后，前缀「史蒂芬·诺特：」不应再留在旁白里重复显示。"""
     text = "他顿了顿。史蒂芬·诺特：“他们在面包店打工，从不惹事。”"

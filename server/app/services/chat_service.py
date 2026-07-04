@@ -98,8 +98,10 @@ _REFERENCE_BEFORE_RE = re.compile(
     r"(听到|听见|听过|想起|想到|提到|提及|讲到|说到|读到|看到|见到|记得|念及|称为|称作|叫做|叫作|唤作|所谓|对于|关于)[：:，,、\s]*$"
 )
 # 显式说话前缀：行尾「X说道：」「X：」（X 为 2-6 个中文名/称呼），用于把紧邻引号判为台词。
+# 不收单字「答」——它几乎只作双字词尾（回答/答话），单收会把「修女在回答」切成「修女在回」+「答」，
+# 把动词短语的半截当说话人；真正的答话由「答道/回答」或冒号形式覆盖。
 _SAY_PREFIX_RE = re.compile(
-    r"([一-龥·]{2,6})(?:说道|说|问道|问|答道|答|开口道|开口|低声道|低声|喊道|叫道|笑道|沉声道|轻声道|道|：|:)[：:，,]?\s*$"
+    r"([一-龥·]{2,6})(?:说道|说|问道|问|答道|回答|开口道|开口|低声道|低声|喊道|叫道|笑道|沉声道|轻声道|道|：|:)[：:，,]?\s*$"
 )
 _SPEAK_VERB_ALT = (
     r"(?:说道|说|问道|问|答道|答|开口道|开口|低声道|低声|喊道|叫道|笑道|沉声道|轻声道|道)?"
@@ -594,6 +596,7 @@ async def _filter_narration_stream(
     quote_buf = ""
     pending_speaker: str | None = None   # 本引号判定出的说话人（None=留旁白）
     pending_weak = False                 # 该说话人是否弱信号（仅靠最近主语推断）
+    pending_from_prefix = False          # 该说话人是否来自显式「X：」前缀（强信号，内容提名不压制）
     last_speaker: str | None = None
     written_run = False                  # 处于「一串书写标识引号」中（门牌列表等），后续相邻引号同样留旁白
     gap_since_quote = ""                 # 上一处闭引号至今累计的旁白文本（判断引号是否相邻成串）
@@ -631,6 +634,18 @@ async def _filter_narration_stream(
                 return canonical
         return name
 
+    def _speaker_named_in_text(speaker: str | None, text: str) -> bool:
+        """说话人名字出现在台词内容里 → 多半是「被谈论」而非「在说话」。
+
+        典型：修女谈论科比特（『科比特藏得很深…』），启发式却把台词署名成科比特——
+        被谈论者≠说话者。用于压制这类张冠李戴（仅对非显式前缀的弱判定生效）。"""
+        if not speaker or not text:
+            return False
+        for canonical, parts, _ in npc_matchers:
+            if canonical == speaker:
+                return any(p in text for p in parts)
+        return speaker in text
+
     def _prefix_speaker(s: str) -> str | None:
         """行尾「X说道：」「X：」→ 说话人（命中已知 NPC 局部名则归一；玩家方角色返回 None 抑制）。"""
         m = _SAY_PREFIX_RE.search(s)
@@ -640,9 +655,10 @@ async def _filter_narration_stream(
         for canonical, parts, is_player in npc_matchers:
             if name == canonical or name in parts or name in canonical:
                 return None if is_player else canonical
-        # 泛称（护工/老板…）：但排除代词起头与动词短语（如「他开口」），它们不是名字，
+        # 泛称（护工/老板…）：但排除代词起头与动词短语（如「他开口」「修女在回答」），它们不是名字，
         # 交由「最近 NPC 主语」判定真正的说话人（玩家方角色会被那里排除→抑制）。
-        if name[0] in "他她它我你咱其这那您" or any(v in name for v in "说道问答开口喊叫笑声"):
+        # 含「在」= 进行体动词短语（在说/在回答/在念），是动作描写而非说话前缀，一律排除。
+        if name[0] in "他她它我你咱其这那您" or any(v in name for v in "说道问答开口喊叫笑声在"):
             return None
         # 仅当该泛称是「独立称呼」——紧贴小句边界（句首/标点/换行后）才认作说话人；
         # 否则像「他指了指墙上的四个门：」这种以冒号收尾的叙述会把「墙上的四个门」误当名字。
@@ -758,6 +774,9 @@ async def _filter_narration_stream(
                 if _TRAILING_SAY_VERB_RE.search(deferred_tail[:12]):
                     speaker = _trailing_speaker(deferred_tail)
                     text = deferred_buf.strip()
+                    # 后置说话人同样压制「被台词内容点名」的张冠李戴（后置判定从不来自显式前缀）
+                    if speaker and _speaker_named_in_text(speaker, text):
+                        speaker = None
                     if speaker:
                         last_speaker = speaker
                         extracted.append((speaker, text))
@@ -844,6 +863,7 @@ async def _filter_narration_stream(
                     pending_speaker, pending_weak, from_prefix, is_written = _resolve_speaker(narration + pending)
                     written_run = is_written
                     quote_written = is_written
+                pending_from_prefix = from_prefix
                 # 经显式前缀（「史蒂芬·诺特：」）判定说话人时，把该前缀从旁白里抹掉——
                 # 否则说话人名会既作旁白文字、又作气泡署名，重复显示。按「完整说话人名」抹，
                 # 避免长名（如「加布里埃尔·马卡里奥」）只被删掉后半截、残留「加布里埃」。
@@ -861,6 +881,9 @@ async def _filter_narration_stream(
                 text = quote_buf.strip()
                 # 弱信号下要求「像台词」，否则按标签/名词留旁白（门牌、招牌等）
                 ok = bool(text and pending_speaker) and (not pending_weak or _looks_like_speech(text))
+                # 非显式前缀判定的说话人若被台词内容点名（修女谈论科比特→署名科比特），压制归属
+                if ok and not pending_from_prefix and _speaker_named_in_text(pending_speaker, text):
+                    ok = False
                 if ok:
                     last_speaker = pending_speaker
                     extracted.append((pending_speaker, text))
@@ -877,6 +900,7 @@ async def _filter_narration_stream(
                 quote_buf = ""
                 pending_speaker = None
                 pending_weak = False
+                pending_from_prefix = False
             else:
                 if in_quote:
                     quote_buf += ch
