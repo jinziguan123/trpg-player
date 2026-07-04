@@ -58,7 +58,12 @@ MAP_GEN_PROMPT = """你是 TRPG 像素地图设计师。请把下面这个【场
 9. 素材库：下表是已有的可用素材（格式 [类型] id｜名称）。若某 object/NPC 与表中某素材**语义匹配**
    （按名称/类型，如「石棺」对应素材库里的石棺），就把它的 "asset_id" 填成该素材的 id，让地图用上对应贴图；
    拿不准或无匹配就**不要填 asset_id**，系统会按类型取默认素材。terrain（地板/墙/门）不用填，按类型默认。
-10. **多层建筑（重要）**：若该地点含多个楼层/层级（如楼上/楼下/阁楼/地下室），**绝不要**把多层塞进同一张网格；
+10. **房间分割（重要）**：大型室内（宅邸/疗养院/教堂/旅馆等机构，可走面积超过 ~60 格）**绝不要画成一个
+    空荡大厅**：用内部 `#` 墙分割出多个房间与走廊（如 病房+走廊+护士站），房间之间用门 `+` 连通，
+    家具分布到各房间。一间民居/墓室等小空间不必强行分割。
+11. **出口语义**：只把「物理上从本场景直接走得过去」的连接画成门；connections 里隔着半座城的地点
+    （跨城/跨街区往来）**不要**画成室内的门——那类移动交给大地图，本图可不放对应出口。
+12. **多层建筑（重要）**：若该地点含多个楼层/层级（如楼上/楼下/阁楼/地下室），**绝不要**把多层塞进同一张网格；
     改为**每层各出一张地图**，返回：{{"floors": [{{"name": "一楼", "w":.., "h":.., "tiles":[..], "objects":[..], "entrances":[..], "npc_pos":[..], "notes":".."}}, {{"name": "地下室", ...}}]}}。
     每层内部按上面的规则各自成图；楼梯在该层画成一个出口（entrances，name 写「上楼」「下楼」，to 留空）。**单层场景照常返回单张地图**（不要用 floors）。
 
@@ -179,8 +184,33 @@ def _extract_json(raw: str) -> dict:
     return json.loads(s[a:b + 1])
 
 
+_WALKABLE_GLYPHS = {".", "+", ":", "~"}
+# 「大型室内无房间分割」判定阈值：可走面积 ≥ 该值且有围墙、却无一堵内部隔断墙 → 空荡大盒子
+_BIG_ROOM_AREA = 60
+_NO_PARTITION_ISSUE = "室内面积过大且无内部隔墙"
+
+
+def _has_partition_wall(tiles: list[str]) -> bool:
+    """是否存在「隔断墙」：某面墙 `#` 的左右两侧、或上下两侧都是可走格——它在分割两个空间。
+    外围墙一侧是虚空/界外，不会命中；带门的隔断墙照样命中（门 `+` 算可走）。"""
+    for y, row in enumerate(tiles):
+        for x, c in enumerate(row):
+            if c != "#":
+                continue
+            left = row[x - 1] if x > 0 else None
+            right = row[x + 1] if x + 1 < len(row) else None
+            up = tiles[y - 1][x] if y > 0 and x < len(tiles[y - 1]) else None
+            down = tiles[y + 1][x] if y + 1 < len(tiles) and x < len(tiles[y + 1]) else None
+            if (left in _WALKABLE_GLYPHS and right in _WALKABLE_GLYPHS) or (
+                up in _WALKABLE_GLYPHS and down in _WALKABLE_GLYPHS
+            ):
+                return True
+    return False
+
+
 def validate_map(m: dict) -> list[str]:
-    """机器校验：尺寸一致、坐标在界内、物体/NPC 落在地板、出口落在门。返回问题列表（空=通过）。"""
+    """机器校验：尺寸一致、坐标在界内、物体/NPC 落在地板、出口落在门、
+    大型室内须有房间分割。返回问题列表（空=通过）。"""
     issues: list[str] = []
     w, h, tiles = m.get("w"), m.get("h"), m.get("tiles") or []
     if not isinstance(w, int) or not isinstance(h, int):
@@ -205,6 +235,15 @@ def validate_map(m: dict) -> list[str]:
                 issues.append(f"出口 {it.get('name')} 未落在门 + 上（在 {c!r}）")
             elif grp != "entrances" and c == "#":
                 issues.append(f"{grp} {it.get('name')} 落在墙里")
+
+    # 大型室内的「空荡大盒子」检测：可走面积大、有围墙（是室内），却没有一堵内部隔断墙
+    # ——一座疗养院/宅邸画成一间空厅。室外场景（无墙）不受此规则约束。
+    walkable = sum(1 for row in tiles if isinstance(row, str) for ch in row if ch in _WALKABLE_GLYPHS)
+    walls = sum(row.count("#") for row in tiles if isinstance(row, str))
+    if walkable >= _BIG_ROOM_AREA and walls >= 8 and not _has_partition_wall(tiles):
+        issues.append(
+            f"{_NO_PARTITION_ISSUE}（可走 {walkable} 格）——大型建筑应用内部 # 墙分割出多房间/走廊，房间之间开门 +"
+        )
     return issues
 
 
@@ -222,15 +261,21 @@ async def generate_scene_map(
     assets: list[dict] | None = None,
 ) -> dict:
     """调用 LLM 为单个场景生成地图（含一次校验，问题随 map._issues 返回，不抛错）。
-    assets 给定时把素材库目录喂给 AI，让它为匹配的物体/NPC 填 asset_id（自动用上库内素材）。"""
+    assets 给定时把素材库目录喂给 AI，让它为匹配的物体/NPC 填 asset_id（自动用上库内素材）。
+    命中「大型室内无房间分割」时带强化提示重试一次（空荡大盒子是最伤体验的生成缺陷）。"""
     llm = get_llm()
-    raw = await llm.complete(
-        messages=[{"role": "user", "content": build_map_prompt(scene, npcs, clues, scene_names, assets)}],
-        response_format={"type": "json_object"},
-        temperature=0.4,
-        max_tokens=4096,
-    )
-    data = _extract_json(raw)
+    base_prompt = build_map_prompt(scene, npcs, clues, scene_names, assets)
+
+    async def _gen(prompt: str) -> dict:
+        raw = await llm.complete(
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.4,
+            max_tokens=4096,
+        )
+        return _extract_json(raw)
+
+    data = await _gen(base_prompt)
     ids = {a.get("id") for a in (assets or [])}
 
     def _finish(m: dict) -> dict:
@@ -241,17 +286,33 @@ async def generate_scene_map(
             logger.warning("场景 %s 地图校验问题：%s", scene.get("id"), issues)
         return m
 
-    floors = data.get("floors")
-    if isinstance(floors, list) and floors:
-        # 多层建筑：每层各一张图（楼层字段可能内联，也可能嵌在 map 下）
-        out = []
-        for i, f in enumerate(floors):
-            fm = f.get("map") if isinstance(f.get("map"), dict) else {
-                k: f[k] for k in ("w", "h", "tiles", "objects", "entrances", "npc_pos", "notes") if k in f
-            }
-            out.append({"name": f.get("name") or f"第 {i + 1} 层", "map": _finish(fm)})
-        return {"floors": out}
-    return _finish(data)
+    def _pack(d: dict) -> dict:
+        floors = d.get("floors")
+        if isinstance(floors, list) and floors:
+            # 多层建筑：每层各一张图（楼层字段可能内联，也可能嵌在 map 下）
+            out = []
+            for i, f in enumerate(floors):
+                fm = f.get("map") if isinstance(f.get("map"), dict) else {
+                    k: f[k] for k in ("w", "h", "tiles", "objects", "entrances", "npc_pos", "notes") if k in f
+                }
+                out.append({"name": f.get("name") or f"第 {i + 1} 层", "map": _finish(fm)})
+            return {"floors": out}
+        return _finish(d)
+
+    result = _pack(data)
+    # 空荡大盒子 → 重试一次（仅单层图；多层建筑各层通常不大）。重试结果无论好坏都采用并如实记录 _issues。
+    if any(_NO_PARTITION_ISSUE in s for s in (result.get("_issues") or [])):
+        logger.info("场景 %s 首次生成为空荡大盒子，带强化提示重试一次", scene.get("id"))
+        retry_prompt = base_prompt + (
+            "\n\n【重要返工要求】你上一次把这个场景画成了一个没有内部隔墙的空荡大厅。"
+            "请重画：用内部 `#` 墙把空间分割成多个房间与走廊（如病房+走廊+储物间），"
+            "房间之间用门 `+` 连通，家具分布到各房间里。"
+        )
+        try:
+            result = _pack(await _gen(retry_prompt))
+        except Exception:
+            logger.exception("场景 %s 重试生成失败，沿用首次结果", scene.get("id"))
+    return result
 
 
 def _spawn_pos(m: dict) -> tuple[int, int]:
