@@ -1,0 +1,247 @@
+{
+  "meta": {
+    "name": "manor_split_npc_perception",
+    "tags": ["synthetic", "kp_core", "npc", "multiplayer", "leak_risk"],
+    "note": "多人分处两地：伊芙琳/亨利在书房撬开暗格发现黑皮日记，约翰在走廊问管家问题。重放 KP 对约翰提问的回应——走廊上的管家对书房里的发现一无所知，绝不能有任何反应或知情表现（复现线上「隔墙有耳」bug）。",
+    "source": {"session_id": "synthetic", "turn": 8}
+  },
+  "module": {
+    "id": "mod_synthetic_manor3",
+    "title": "灰雾庄园·分头（合成评测模组）",
+    "rule_system": "coc",
+    "description": "1925 年新英格兰乡间庄园，老主人暴毙，调查员受托查明死因。",
+    "theme": "default",
+    "world_setting": {
+      "era": "1925 年",
+      "location": "新英格兰乡间",
+      "tone": "哥特式悬疑",
+      "intro": "灰雾终年不散的庄园里，老主人韦尔登死在了书房。",
+      "player_brief": "你们受韦尔登家族之托，调查老主人的死因。"
+    },
+    "raw_content": "",
+    "scenes": [
+      {
+        "id": "scene_study",
+        "title": "书房",
+        "description": "老韦尔登死去的地方。深色橡木书桌居中，身后是顶到天花板的书架。房门厚重，关上后走廊里听不见屋内动静。",
+        "danger": "uneasy",
+        "atmosphere": "压抑，空气里有淡淡的药味",
+        "connections": ["scene_corridor"]
+      },
+      {
+        "id": "scene_corridor",
+        "title": "走廊",
+        "description": "铺着褪色地毯的长走廊，墙上挂着韦尔登家历代家主的画像。书房的门关着。",
+        "danger": "calm",
+        "atmosphere": "昏暗而安静，烛台的光摇曳",
+        "connections": ["scene_study"]
+      }
+    ],
+    "npcs": [
+      {
+        "id": "npc_butler_graves",
+        "name": "格雷夫斯",
+        "description": "侍奉韦尔登家三十年的老管家，背微驼，言辞恭敬而滴水不漏。",
+        "personality": "谨慎、忠诚、习惯性回避正面回答",
+        "background": "他知道老主人晚年沉迷降神会，一直替主人遮掩。",
+        "secrets": "案发当晚他听到书房里有第二个人的声音，但为了家族名誉守口如瓶。",
+        "initial_location": "scene_corridor",
+        "attributes": {"STR": 45, "CON": 50, "SIZ": 55, "DEX": 40, "APP": 50, "INT": 65, "POW": 55, "EDU": 60, "LUCK": 50},
+        "skills": {"聆听": 60, "话术": 55, "图书馆使用": 40}
+      }
+    ],
+    "maps": [],
+    "clues": [
+      {
+        "id": "clue_black_diary",
+        "name": "黑皮日记",
+        "description": "书桌暗格里的黑皮日记，记着老主人参加降神会的日期与一个反复出现的名字。",
+        "location": "scene_study",
+        "trigger_condition": "撬开书桌暗格"
+      }
+    ],
+    "triggers": [],
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:00:00"
+  },
+  "session": {
+    "id": "sess_synthetic_manor3",
+    "module_id": "mod_synthetic_manor3",
+    "status": "active",
+    "room_code": "SPLIT1",
+    "player_character_id": "char_evelyn",
+    "current_scene_id": "scene_study",
+    "world_state": {
+      "visited_scenes": ["scene_study", "scene_corridor"],
+      "flags": [],
+      "story_summary": "",
+      "story_summary_seq": 0,
+      "party_locations": {
+        "char_evelyn": "scene_study",
+        "char_henry": "scene_study",
+        "char_john": "scene_corridor"
+      }
+    },
+    "turn_state": null,
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:40:00"
+  },
+  "player_char": {
+    "id": "char_evelyn",
+    "name": "伊芙琳·哈特",
+    "module_id": "mod_synthetic_manor3",
+    "rule_system": "coc",
+    "is_player": true,
+    "owner_token": "token_evelyn",
+    "base_attributes": {"STR": 55, "CON": 75, "SIZ": 60, "DEX": 50, "APP": 35, "INT": 75, "POW": 50, "EDU": 75, "LUCK": 65},
+    "skills": {"心理学": 70, "精神分析": 60, "图书馆使用": 57, "侦查": 48, "话术": 56, "医学": 40},
+    "system_data": {"hitPoints": {"current": 13, "max": 13}, "sanity": {"current": 50, "max": 99}, "occupation": "精神病医生"},
+    "backstory": "笃信精神分析的精神病医生。",
+    "status": "active",
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:00:00"
+  },
+  "teammates": [
+    {
+      "id": "char_henry",
+      "name": "亨利·卡特",
+      "module_id": "mod_synthetic_manor3",
+      "rule_system": "coc",
+      "is_player": false,
+      "owner_token": null,
+      "base_attributes": {"STR": 80, "CON": 35, "SIZ": 45, "DEX": 50, "APP": 60, "INT": 55, "POW": 40, "EDU": 70, "LUCK": 45},
+      "skills": {"侦查": 50, "考古学": 70, "历史": 60, "锁匠": 55},
+      "system_data": {"hitPoints": {"current": 8, "max": 8}, "sanity": {"current": 40, "max": 99}, "occupation": "考古学家"},
+      "backstory": "细致耐心的考古学家。",
+      "status": "active",
+      "created_at": "2026-07-01T12:00:00",
+      "updated_at": "2026-07-01T12:00:00"
+    },
+    {
+      "id": "char_john",
+      "name": "约翰·卡特",
+      "module_id": "mod_synthetic_manor3",
+      "rule_system": "coc",
+      "is_player": false,
+      "owner_token": "token_john",
+      "base_attributes": {"STR": 35, "CON": 45, "SIZ": 55, "DEX": 30, "APP": 65, "INT": 55, "POW": 40, "EDU": 45, "LUCK": 50},
+      "skills": {"话术": 60, "取悦": 50, "心理学": 45},
+      "system_data": {"hitPoints": {"current": 9, "max": 9}, "sanity": {"current": 45, "max": 99}, "occupation": "记者"},
+      "backstory": "善于跟人打交道的记者。",
+      "status": "active",
+      "created_at": "2026-07-01T12:00:00",
+      "updated_at": "2026-07-01T12:00:00"
+    }
+  ],
+  "events": [
+    {
+      "id": "evt_1",
+      "session_id": "sess_synthetic_manor3",
+      "sequence_num": 1,
+      "event_type": "narration",
+      "actor_id": null,
+      "actor_name": "KP",
+      "content": "书房里药味未散。伊芙琳·哈特与亨利·卡特留下来检查那张深色橡木书桌；约翰·卡特则退出书房、随手带上了那扇厚重的门，去走廊找管家格雷夫斯问话。",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_study"},
+      "summary": null,
+      "created_at": "2026-07-01T12:20:00"
+    },
+    {
+      "id": "evt_2",
+      "session_id": "sess_synthetic_manor3",
+      "sequence_num": 2,
+      "event_type": "narration",
+      "actor_id": null,
+      "actor_name": "KP",
+      "content": "走廊里，格雷夫斯正躬身修剪烛台的灯芯。听到脚步声，他直起身，朝约翰·卡特微微颔首。",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_corridor"},
+      "summary": null,
+      "created_at": "2026-07-01T12:21:00"
+    },
+    {
+      "id": "evt_3",
+      "session_id": "sess_synthetic_manor3",
+      "sequence_num": 3,
+      "event_type": "action",
+      "actor_id": "char_henry",
+      "actor_name": "亨利·卡特",
+      "content": "我用随身的细钎子撬书桌侧板的暗格锁扣。",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_study"},
+      "summary": null,
+      "created_at": "2026-07-01T12:22:00"
+    },
+    {
+      "id": "evt_4",
+      "session_id": "sess_synthetic_manor3",
+      "sequence_num": 4,
+      "event_type": "dice",
+      "actor_id": null,
+      "actor_name": "系统",
+      "content": "亨利·卡特｜锁匠 检定（normal）：普通成功（41 ≤ 55）",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_study", "actor": "亨利·卡特", "skill": "锁匠", "tier": "success"},
+      "summary": null,
+      "created_at": "2026-07-01T12:23:00"
+    },
+    {
+      "id": "evt_5",
+      "session_id": "sess_synthetic_manor3",
+      "sequence_num": 5,
+      "event_type": "narration",
+      "actor_id": null,
+      "actor_name": "KP",
+      "content": "锁扣发出一声轻响，书桌侧板的暗格无声地弹开。伊芙琳·哈特与亨利·卡特看到暗格丝绒衬垫上放着一本黑皮日记——封面没有任何字，边角被摩挲得发亮。整个过程隔着那扇厚门，走廊里听不见。",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_study"},
+      "summary": null,
+      "created_at": "2026-07-01T12:24:00"
+    },
+    {
+      "id": "evt_6",
+      "session_id": "sess_synthetic_manor3",
+      "sequence_num": 6,
+      "event_type": "dialogue",
+      "actor_id": "char_john",
+      "actor_name": "约翰·卡特",
+      "content": "「格雷夫斯先生，老爷去世前那几个月，有没有什么访客让您印象深刻？」",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_corridor"},
+      "summary": null,
+      "created_at": "2026-07-01T12:25:00"
+    }
+  ],
+  "rules_lookup_enabled": false,
+  "plan": {
+    "turn_kind": "mixed",
+    "player_intent": "约翰在走廊向管家打听死者生前的访客",
+    "requires_check": false,
+    "check": {"skill": "", "difficulty": "normal", "visibility": "open", "reason": ""},
+    "clue_policy": {
+      "action_matches_clue": false,
+      "candidate_clue_ids": [],
+      "reveal_level": "none",
+      "requires_inspiration": false,
+      "notes": "黑皮日记刚在书房被发现，与走廊的对话无关"
+    },
+    "npc_policy": {
+      "speakers": ["格雷夫斯"],
+      "reaction": "恭敬但回避正面回答，可透露世俗层面的观察",
+      "needs_npc_act": false
+    },
+    "scene_policy": {"scene_change": null, "set_flags": [], "clear_flags": []},
+    "narration_brief": [
+      "格雷夫斯回应约翰的提问，语气恭敬而有所保留",
+      "只叙述走廊这一侧；书房内的发现另行叙述"
+    ],
+    "safety": {
+      "do_not_reveal": [
+        "格雷夫斯在案发当晚听到书房里有第二个人的声音（他守口如瓶）",
+        "格雷夫斯对书房里刚发生的撬暗格、黑皮日记一无所知——不得让他提及、暗示或表现出任何知情"
+      ],
+      "do_not_control_players": true
+    }
+  }
+}

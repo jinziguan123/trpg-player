@@ -139,6 +139,51 @@ def _acting_player_names(events: list, party_names: list[str]) -> list[str]:
     return names
 
 
+def _party_distribution_section(
+    session: GameSession,
+    party: list[Character],
+    scenes: list[dict],
+    npcs: list[dict],
+) -> str:
+    """多人分处多个场景时的「当前人员分布」小节：按场景列出在场玩家角色与 NPC。
+
+    这是 NPC 感知边界（隔墙有耳 bug）的结构性提醒——KP 每回合都看得见「谁和谁不在一处」，
+    而不是从事件流里自行脑补。全员同处一地（或无位置记录）返回空串，不注入（行为不变）。
+    """
+    locs = (session.world_state or {}).get("party_locations") or {}
+    fallback = session.current_scene_id
+    by_scene: dict[str, list[str]] = {}
+    for m in party:
+        sid = locs.get(m.id) or fallback
+        if not sid:
+            return ""
+        by_scene.setdefault(sid, []).append(m.name)
+    if len(by_scene) < 2:
+        return ""  # 全员同处，无隔断可言
+
+    def scene_name(sid: str) -> str:
+        for s in scenes:
+            if s.get("id") == sid:
+                return s.get("title") or s.get("name") or sid
+        return sid
+
+    lines = ["**当前人员分布**（各 NPC 的感知以此为准）："]
+    for sid, names in by_scene.items():
+        line = f"- {scene_name(sid)}：{('、'.join(names))}"
+        here_npcs = [
+            n.get("name") for n in npcs
+            if n.get("name") and n.get("initial_location") == sid and n.get("alive") is not False
+        ]
+        if here_npcs:
+            line += f"；在场 NPC：{('、'.join(here_npcs))}"
+        lines.append(line)
+    lines.append(
+        "各处之间互相**看不见、听不见**（除非枪声/尖叫级的巨响、或有人当面转告）——"
+        "任一处的 NPC 绝不能对别处刚发生的言行有任何反应或知情表现。"
+    )
+    return "\n".join(lines)
+
+
 def _find_npc_def(module: Module, npc_id: str) -> dict | None:
     for npc in (module.npcs or []):
         if npc.get("id") == npc_id:
@@ -578,6 +623,10 @@ def build_kp_context(
             + actors_line
             + "你只负责：描述环境与场景、扮演模组 NPC、裁定检定、对全队已做出的行动给出世界的回应。"
         )
+        # 队伍分处多地时注入人员分布——NPC 感知边界的结构性提醒（全员同处不注入）。
+        distribution = _party_distribution_section(session, party, scenes, npcs)
+        if distribution:
+            player_info += "\n\n" + distribution
     else:
         # 单人单角色：直接给完整角色卡（只有一名玩家角色，无平等性问题）。
         player_info = _format_player_info(player_char)

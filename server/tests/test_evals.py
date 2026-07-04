@@ -14,6 +14,7 @@ from app.models import EventLog
 FIXTURES = Path(__file__).resolve().parent.parent / "evals" / "fixtures"
 SYNTHETIC = FIXTURES / "synthetic_study_search.json"
 MULTI_ACTOR_CONT = FIXTURES / "manor_multi_actor_int_continuation.json"
+SPLIT_PERCEPTION = FIXTURES / "manor_split_npc_perception.json"
 
 
 # ── 确定性检查 ──
@@ -170,6 +171,46 @@ class TestContinuationSubjectFidelity:
         assert "智力" in joined and "侦查" in joined
 
 
+# ── NPC 感知边界（复现线上「隔墙有耳」bug）──
+
+
+class TestNpcPerceptionIsolation:
+    def test_kp提示词含感知边界硬规则(self):
+        from app.ai.prompts.kp_system import KP_SYSTEM_PROMPT
+        p = KP_SYSTEM_PROMPT
+        assert "感知边界" in p
+        assert "当面告诉" in p and "隔墙可闻" in p
+        assert "感知之外的事" in p  # 明确禁止 NPC 反应视野外事件
+
+    def test_分头提示词含NPC隔离条款(self):
+        from app.services.chat_service import SPLIT_FOCUS_PROMPT
+        assert "一无所知" in SPLIT_FOCUS_PROMPT
+
+    def test_judge_含感知边界评分项(self):
+        assert "perception_isolation" in RUBRIC
+
+    def test_分处两地时注入人员分布(self):
+        case = load_fixture(SPLIT_PERCEPTION)
+        messages = build_kp_context(
+            case.session, case.module, case.player_char, case.events,
+            teammates=case.teammates or None,
+        )
+        sys_msg = messages[0]["content"]
+        assert "当前人员分布" in sys_msg
+        assert "书房" in sys_msg and "走廊" in sys_msg
+        assert "格雷夫斯" in sys_msg          # 走廊侧列出了在场 NPC
+        assert "看不见、听不见" in sys_msg     # 感知隔断提醒
+
+    def test_全员同处不注入分布(self):
+        # 用同处一地的多人 fixture（智力续写那份：两人都在前室）验证不注入——行为不变。
+        case = load_fixture(MULTI_ACTOR_CONT)
+        messages = build_kp_context(
+            case.session, case.module, case.player_char, case.events,
+            teammates=case.teammates or None,
+        )
+        assert "当前人员分布" not in messages[0]["content"]
+
+
 # ── 裁判输出解析（不调 LLM）──
 
 
@@ -188,13 +229,14 @@ class TestJudgeParsing:
             '"no_player_control": {"pass": true, "reason": ""},'
             '"in_character": {"pass": true, "reason": ""},'
             '"coherence": {"pass": true, "reason": ""},'
-            '"subject_fidelity": {"pass": true, "reason": ""}}'
+            '"subject_fidelity": {"pass": true, "reason": ""},'
+            '"perception_isolation": {"pass": true, "reason": ""}}'
         )
         parsed = _parse_judge_output(raw)
         assert parsed and not parsed["plan_adherence"]["pass"]
 
     def test_解析带代码栅栏的输出(self):
-        raw = '```json\n{"no_leak": {"pass": true}, "plan_adherence": {"pass": true}, "no_player_control": {"pass": true}, "in_character": {"pass": true}, "coherence": {"pass": true}, "subject_fidelity": {"pass": true}}\n```'
+        raw = '```json\n{"no_leak": {"pass": true}, "plan_adherence": {"pass": true}, "no_player_control": {"pass": true}, "in_character": {"pass": true}, "coherence": {"pass": true}, "subject_fidelity": {"pass": true}, "perception_isolation": {"pass": true}}\n```'
         assert _parse_judge_output(raw)
 
     def test_缺项返回None(self):
