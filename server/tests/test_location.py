@@ -118,6 +118,30 @@ def test_locations_party_distribution(db_factory):
     assert by_id["c"]["party"] == ["亨利"]
 
 
+def test_locations_clues_only_discovered_and_located(db_factory):
+    """调查板红线：只有 clue_ledger 里**已发现**、且模组定义带 location 的线索挂到地点上。"""
+    db = db_factory()
+    sid, pc_id, _, mod_id = _seed(db)
+    module = db.get(Module, mod_id)
+    module.clues = [
+        {"id": "clue_a", "name": "带血的信", "location": "a"},
+        {"id": "clue_b", "name": "地窖钥匙", "location": "d"},   # d 未知 → 其线索不该出现
+        {"id": "clue_c", "name": "未发现的真相", "location": "a"},  # 未进台账 → 不上板
+    ]
+    db.commit()
+    session = db.get(GameSession, sid)
+    ws = dict(session.world_state)
+    ws["clue_ledger"] = {
+        "clue_a": {"status": "known", "discovered_by": [pc_id]},
+        "clue_b": {"status": "partial", "discovered_by": [pc_id]},
+    }
+    session.world_state = ws; db.commit()
+    locs = session_service.list_known_locations(module, session, char_id=pc_id, events=[])
+    by_id = {x["id"]: x for x in locs}
+    assert by_id["a"]["clues"] == [{"id": "clue_a", "name": "带血的信", "status": "known"}]
+    assert "d" not in by_id  # 未知地点整体不显示，其线索自然也不泄露
+
+
 def test_known_location_unlocked_by_facility_suffix(db_factory):
     """提到设施类型后缀（「疗养院」）即可解锁完整标题含该后缀的地点（如「罗克斯伯里疗养院」）。"""
     db = db_factory()

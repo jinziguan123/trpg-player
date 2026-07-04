@@ -900,6 +900,20 @@ def list_known_locations(
             sid = pl.get(cid) or session.current_scene_id
             if sid:
                 party_at.setdefault(sid, []).append(name)
+    # 调查板红线：**已发现**的线索（clue_ledger）按其模组定义的 location 挂到地点上。
+    # 只含玩家已触碰的线索——未发现的绝不上板（不剧透）。
+    ledger = (session.world_state or {}).get("clue_ledger") or {}
+    clue_by_id = {c.get("id"): c for c in (getattr(module, "clues", None) or []) if c.get("id")}
+    clues_at: dict[str, list[dict]] = {}
+    for cid, entry in ledger.items():
+        cdef = clue_by_id.get(cid)
+        loc = (cdef or {}).get("location")
+        if cdef and loc:
+            clues_at.setdefault(loc, []).append({
+                "id": cid,
+                "name": cdef.get("name") or cid,
+                "status": (entry or {}).get("status") or "partial",
+            })
     out = []
     for sid in shown:
         s = by_id[sid]
@@ -911,6 +925,7 @@ def list_known_locations(
             "visited": sid in visited,
             "connections": conns,
             "party": party_at.get(sid, []),
+            "clues": clues_at.get(sid, []),
         })
     out.sort(key=lambda x: (not x["current"], not x["visited"], x["id"]))
     return out

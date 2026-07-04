@@ -4,11 +4,13 @@ import {
   type Node, type Edge, type NodeProps,
 } from '@xyflow/react'
 import dagre from 'dagre'
-import { GiPositionMarker } from 'react-icons/gi'
+import { GiPositionMarker, GiMagnifyingGlass } from 'react-icons/gi'
 import '@xyflow/react/dist/base.css'
 
-/** 调查板（侦探桌风大地图）：已知地点是钉在暗色软木板上的卡片，麻绳虚线连出已知路径。
- *  点卡片 = 选中前往目标（外层走既有的二次确认 → travel 流）。 */
+/** 调查板（侦探桌风大地图）：已知地点是钉在暗色软木板上的卡片，麻绳虚线连出已知路径；
+ *  已发现的线索是红图钉小卡，红丝线连到所属地点（未发现的绝不上板）。
+ *  点地点卡 = 选中前往目标（外层走既有的二次确认 → travel 流）。 */
+export interface BoardClue { id: string; name: string; status: string }
 export interface BoardLocation {
   id: string
   name: string
@@ -16,12 +18,15 @@ export interface BoardLocation {
   visited: boolean
   connections?: string[]
   party?: string[]
+  clues?: BoardClue[]
 }
 
 const CARD_W = 148
+const CLUE_W = 108
 const CANDLE = '#d4a24e'
 const PARCH = '#e8dcc0'
 const TWINE = '#8a7a5c'
+const THREAD = '#a13a42'   // 线索红丝线 / 红图钉
 
 /** 名字 → 稳定的轻微倾角（-2.4°~2.4°）：钉在板上的卡片不会摆得笔直。 */
 function tiltOf(id: string): number {
@@ -91,7 +96,50 @@ function LocationCard({ data }: NodeProps<Node<CardData>>) {
   )
 }
 
-const nodeTypes = { card: LocationCard }
+interface ClueData extends Record<string, unknown> {
+  clue: BoardClue
+}
+
+/** 线索小卡：红图钉的便签，红丝线连到所属地点。只有已发现的线索会出现在板上。 */
+function ClueCard({ data }: NodeProps<Node<ClueData>>) {
+  const { clue } = data
+  const hStyle = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0, left: '50%', top: 5 }
+  return (
+    <div
+      title={clue.status === 'known' ? '线索（已掌握）' : '线索（有所察觉）'}
+      style={{
+        width: CLUE_W,
+        transform: `rotate(${tiltOf(clue.id)}deg)`,
+        background: 'rgba(38,22,18,0.92)',
+        border: `1px solid rgba(161,58,66,0.55)`,
+        borderRadius: 3,
+        boxShadow: '0 2px 5px rgba(0,0,0,0.55)',
+        padding: '8px 7px 5px',
+        position: 'relative',
+        cursor: 'default',
+      }}
+    >
+      <Handle type="source" position={Position.Top} style={hStyle} />
+      <Handle type="target" position={Position.Top} style={hStyle} />
+      {/* 红图钉 */}
+      <div style={{
+        position: 'absolute', left: '50%', top: -4, marginLeft: -4,
+        width: 8, height: 8, borderRadius: '50%',
+        background: `radial-gradient(circle at 35% 35%, #d98089, ${THREAD} 60%, #5e1f24)`,
+        boxShadow: '0 2px 3px rgba(0,0,0,0.6)',
+      }} />
+      <div className="text-[10px] font-semibold leading-snug flex items-start gap-1" style={{ color: '#d9a3a8' }}>
+        <GiMagnifyingGlass size={10} style={{ flexShrink: 0, marginTop: 1 }} />
+        <span>{clue.name}</span>
+      </div>
+      <div className="text-[9px] mt-0.5" style={{ color: 'rgba(217,163,168,0.6)' }}>
+        {clue.status === 'known' ? '已掌握' : '有所察觉'}
+      </div>
+    </div>
+  )
+}
+
+const nodeTypes = { card: LocationCard, clue: ClueCard }
 
 function build(locations: BoardLocation[], disabled: boolean, onPick: (loc: BoardLocation) => void): { nodes: Node[]; edges: Edge[] } {
   const ids = new Set(locations.map((l) => l.id))
@@ -109,21 +157,44 @@ function build(locations: BoardLocation[], disabled: boolean, onPick: (loc: Boar
       })
     }
   }
+  // 线索小卡 + 红丝线（钉到钉）：线索节点只连所属地点
+  const clueNodes: { id: string; clue: BoardClue }[] = []
+  for (const l of locations) {
+    for (const c of l.clues || []) {
+      const nid = `clue:${c.id}`
+      clueNodes.push({ id: nid, clue: c })
+      edges.push({
+        id: `t:${nid}`, source: l.id, target: nid, type: 'default',
+        style: { stroke: THREAD, strokeWidth: 1.1, opacity: 0.8 },
+      })
+    }
+  }
   const g = new dagre.graphlib.Graph()
-  g.setGraph({ rankdir: 'LR', nodesep: 34, ranksep: 66, marginx: 26, marginy: 30 })
+  g.setGraph({ rankdir: 'LR', nodesep: 30, ranksep: 58, marginx: 26, marginy: 30 })
   g.setDefaultEdgeLabel(() => ({}))
   const cardH = (l: BoardLocation) => 52 + ((l.party?.length ?? 0) > 0 && !l.current ? 16 : 0)
   for (const l of locations) g.setNode(l.id, { width: CARD_W, height: cardH(l) })
+  for (const cn of clueNodes) g.setNode(cn.id, { width: CLUE_W, height: 44 })
   for (const e of edges) g.setEdge(e.source, e.target)
   dagre.layout(g)
-  const nodes: Node[] = locations.map((l) => {
-    const p = g.node(l.id)
-    return {
-      id: l.id, type: 'card',
-      data: { loc: l, disabled, onPick } as CardData,
-      position: { x: p.x - CARD_W / 2, y: p.y - (p.height as number) / 2 },
-    }
-  })
+  const nodes: Node[] = [
+    ...locations.map((l): Node => {
+      const p = g.node(l.id)
+      return {
+        id: l.id, type: 'card',
+        data: { loc: l, disabled, onPick } as CardData,
+        position: { x: p.x - CARD_W / 2, y: p.y - (p.height as number) / 2 },
+      }
+    }),
+    ...clueNodes.map((cn): Node => {
+      const p = g.node(cn.id)
+      return {
+        id: cn.id, type: 'clue',
+        data: { clue: cn.clue } as ClueData,
+        position: { x: p.x - CLUE_W / 2, y: p.y - (p.height as number) / 2 },
+      }
+    }),
+  ]
   return { nodes, edges }
 }
 
