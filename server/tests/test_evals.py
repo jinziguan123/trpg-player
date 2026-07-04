@@ -4,13 +4,16 @@ from pathlib import Path
 
 from evals import checks
 from evals.common import dict_to_model, load_fixture, row_to_dict
-from evals.judge import _parse_judge_output, build_judge_messages
+from evals.judge import RUBRIC, _parse_judge_output, build_judge_messages
 from evals.run import build_replay_messages
 
+from app.ai.context import build_kp_context
+from app.ai.prompts.kp_system import KP_DICE_CONTINUATION_PROMPT
 from app.models import EventLog
 
 FIXTURES = Path(__file__).resolve().parent.parent / "evals" / "fixtures"
 SYNTHETIC = FIXTURES / "synthetic_study_search.json"
+MULTI_ACTOR_CONT = FIXTURES / "manor_multi_actor_int_continuation.json"
 
 
 # ── 确定性检查 ──
@@ -135,6 +138,38 @@ class TestFixtureRoundtrip:
         assert rebuilt.event_type == "narration"
 
 
+# ── 投骰后续写：主语归属（复现线上 subject-drift bug）──
+
+
+class TestContinuationSubjectFidelity:
+    def test_续写提示词钉死主语为检定执行者(self):
+        # 修复的核心：续写提示词必须把「叙述主语=检定执行者」写成硬约束（防措辞被静默删除）。
+        p = KP_DICE_CONTINUATION_PROMPT
+        assert "叙述主语" in p and "执行者" in p
+        assert "安到别的角色" in p  # 明确禁止张冠李戴
+
+    def test_judge_含主语归属评分项(self):
+        assert "subject_fidelity" in RUBRIC
+
+    def test_续写fixture可加载且带continuation(self):
+        case = load_fixture(MULTI_ACTOR_CONT)
+        assert case.player_char.name == "伊芙琳·哈特"
+        assert [t.name for t in case.teammates] == ["亨利·卡特"]
+        assert case.continuation and "伊芙琳·哈特" in case.continuation
+        assert "智力" in case.continuation
+
+    def test_续写上下文可构建且含双方检定线索(self):
+        # 上下文里应同时能看到「亨利掷了侦查」「伊芙琳掷了智力」，judge 才能判断主语该归谁。
+        case = load_fixture(MULTI_ACTOR_CONT)
+        messages = build_kp_context(
+            case.session, case.module, case.player_char, case.events,
+            teammates=case.teammates or None,
+        )
+        joined = "\n".join(m.get("content") or "" for m in messages)
+        assert "伊芙琳·哈特" in joined and "亨利·卡特" in joined
+        assert "智力" in joined and "侦查" in joined
+
+
 # ── 裁判输出解析（不调 LLM）──
 
 
@@ -152,13 +187,14 @@ class TestJudgeParsing:
             '"plan_adherence": {"pass": false, "reason": "没发检定"},'
             '"no_player_control": {"pass": true, "reason": ""},'
             '"in_character": {"pass": true, "reason": ""},'
-            '"coherence": {"pass": true, "reason": ""}}'
+            '"coherence": {"pass": true, "reason": ""},'
+            '"subject_fidelity": {"pass": true, "reason": ""}}'
         )
         parsed = _parse_judge_output(raw)
         assert parsed and not parsed["plan_adherence"]["pass"]
 
     def test_解析带代码栅栏的输出(self):
-        raw = '```json\n{"no_leak": {"pass": true}, "plan_adherence": {"pass": true}, "no_player_control": {"pass": true}, "in_character": {"pass": true}, "coherence": {"pass": true}}\n```'
+        raw = '```json\n{"no_leak": {"pass": true}, "plan_adherence": {"pass": true}, "no_player_control": {"pass": true}, "in_character": {"pass": true}, "coherence": {"pass": true}, "subject_fidelity": {"pass": true}}\n```'
         assert _parse_judge_output(raw)
 
     def test_缺项返回None(self):

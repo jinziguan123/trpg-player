@@ -112,6 +112,42 @@ async def _narrate_tool_loop(case: ReplayCase, llm, plan, messages: list[dict]) 
 
 
 async def run_case(case: ReplayCase, llm, use_judge: bool, tool_loop: bool = False) -> dict:
+    # 「投骰后续写」重放：跳过 planner，改重放 KP_DICE_CONTINUATION_PROMPT——评的是续写阶段
+    # 的行为（如叙述主语必须是检定执行者），故不走首段叙事、不注入 plan，也不进 tool loop。
+    if case.continuation:
+        from app.ai.prompts.kp_system import KP_DICE_CONTINUATION_PROMPT
+        messages = build_kp_context(
+            case.session, case.module, case.player_char, case.events,
+            teammates=case.teammates or None,
+            rules_lookup_enabled=case.rules_lookup_enabled,
+        )
+        messages.append({
+            "role": "user",
+            "content": KP_DICE_CONTINUATION_PROMPT.format(dice_results=case.continuation),
+        })
+        kp = KPAgent(llm)
+        narration = "".join([token async for token in kp.narrate(messages)])
+        plan = None
+        plan_source = "continuation"
+        findings = checks.run_all_checks(narration, case.player_names)
+        judge_result = await judge.run_judge(llm, case, plan, narration) if use_judge else None
+        errors = [f for f in findings if f.severity == "error"]
+        judge_failed = (
+            [k for k, v in judge_result.items() if not v["pass"]] if judge_result else []
+        )
+        passed = not errors and not judge_failed and (judge_result is not None or not use_judge)
+        return {
+            "fixture": case.name,
+            "tags": case.tags,
+            "plan_source": plan_source,
+            "plan": None,
+            "narration": narration,
+            "findings": [f.to_dict() for f in findings],
+            "judge": judge_result,
+            "judge_error": use_judge and judge_result is None,
+            "passed": passed,
+        }
+
     plan = case.plan
     plan_source = "fixture" if plan is not None else "live"
     if plan is None and case.events:

@@ -1,0 +1,178 @@
+{
+  "meta": {
+    "name": "manor_multi_actor_int_continuation",
+    "tags": ["synthetic", "kp_core", "check", "multiplayer", "continuation"],
+    "note": "多人局：亨利掷侦查看清挂毯的物理细节，KP 随后要伊芙琳掷智力去推理其含义。本 fixture 重放伊芙琳智力检定后的续写——叙述主语必须是伊芙琳（检定执行者），绝不能把推理结果安到亨利头上（复现线上 subject-drift bug）。",
+    "source": {"session_id": "synthetic", "turn": 12}
+  },
+  "module": {
+    "id": "mod_synthetic_manor2",
+    "title": "月缺挂毯（合成评测模组）",
+    "rule_system": "coc",
+    "description": "1925 年新英格兰庄园，前室墙上挂着一幅古怪的挂毯，月相图案中缺了一块。",
+    "theme": "default",
+    "world_setting": {
+      "era": "1925 年",
+      "location": "新英格兰乡间庄园",
+      "tone": "哥特式悬疑",
+      "intro": "庄园前室的挂毯描绘着一轮又一轮月相，唯独「月缺」处被整齐地剜去了一块。",
+      "player_brief": "你们受托调查这栋庄园的秘密。"
+    },
+    "raw_content": "",
+    "scenes": [
+      {
+        "id": "scene_antecham",
+        "title": "前室",
+        "description": "堆满旧家具的前室，北墙挂着一幅巨大的月相挂毯，月缺处有一块整齐的缺口，边缘残留着几缕银灰色细丝。",
+        "danger": "uneasy",
+        "atmosphere": "尘埃浮动，安静得能听见自己的呼吸"
+      }
+    ],
+    "npcs": [],
+    "maps": [],
+    "clues": [
+      {
+        "id": "clue_tapestry_gap",
+        "name": "挂毯月缺处的缺口",
+        "description": "月缺图案被人用利器沿弧线裁下，缺口原本的形状约指甲盖大小、呈横置椭圆、上端有一处外凸尖角，像一枚徽记或信物的轮廓。",
+        "location": "scene_antecham",
+        "trigger_condition": "仔细检查缺口并成功检定"
+      }
+    ],
+    "triggers": [],
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:00:00"
+  },
+  "session": {
+    "id": "sess_synthetic_manor2",
+    "module_id": "mod_synthetic_manor2",
+    "status": "active",
+    "room_code": "M00N01",
+    "player_character_id": "char_evelyn",
+    "current_scene_id": "scene_antecham",
+    "world_state": {
+      "visited_scenes": ["scene_antecham"],
+      "flags": [],
+      "story_summary": "",
+      "story_summary_seq": 0,
+      "party_locations": {"char_evelyn": "scene_antecham", "char_henry": "scene_antecham"}
+    },
+    "turn_state": null,
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:30:00"
+  },
+  "player_char": {
+    "id": "char_evelyn",
+    "name": "伊芙琳·哈特",
+    "module_id": "mod_synthetic_manor2",
+    "rule_system": "coc",
+    "is_player": true,
+    "owner_token": "token_evelyn",
+    "base_attributes": {"STR": 55, "CON": 75, "SIZ": 60, "DEX": 50, "APP": 35, "INT": 75, "POW": 50, "EDU": 75, "LUCK": 65},
+    "skills": {"心理学": 70, "精神分析": 60, "图书馆使用": 57, "侦查": 48, "话术": 56, "医学": 40},
+    "system_data": {"hitPoints": {"current": 13, "max": 13}, "sanity": {"current": 50, "max": 99}, "occupation": "精神病医生"},
+    "backstory": "笃信精神分析、善于从细节里推演因果的精神病医生。",
+    "status": "active",
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:00:00"
+  },
+  "teammates": [
+    {
+      "id": "char_henry",
+      "name": "亨利·卡特",
+      "module_id": "mod_synthetic_manor2",
+      "rule_system": "coc",
+      "is_player": false,
+      "owner_token": null,
+      "base_attributes": {"STR": 80, "CON": 35, "SIZ": 45, "DEX": 50, "APP": 60, "INT": 55, "POW": 40, "EDU": 70, "LUCK": 45},
+      "skills": {"侦查": 50, "考古学": 70, "历史": 60, "图书馆使用": 65, "神秘学": 40},
+      "system_data": {"hitPoints": {"current": 8, "max": 8}, "sanity": {"current": 40, "max": 99}, "occupation": "考古学家"},
+      "backstory": "细致耐心的考古学家，擅长从器物痕迹里读出线索。",
+      "status": "active",
+      "created_at": "2026-07-01T12:00:00",
+      "updated_at": "2026-07-01T12:00:00"
+    }
+  ],
+  "events": [
+    {
+      "id": "evt_1",
+      "session_id": "sess_synthetic_manor2",
+      "sequence_num": 1,
+      "event_type": "narration",
+      "actor_id": null,
+      "actor_name": "KP",
+      "content": "前室的北墙上挂着那幅巨大的月相挂毯。烛光扫过一轮轮盈亏的月，最终停在「月缺」处——那里有一块整齐的缺口，边缘还挂着几缕银灰色的细丝。",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_antecham"},
+      "summary": null,
+      "created_at": "2026-07-01T12:05:00"
+    },
+    {
+      "id": "evt_2",
+      "session_id": "sess_synthetic_manor2",
+      "sequence_num": 2,
+      "event_type": "dialogue",
+      "actor_id": "char_evelyn",
+      "actor_name": "伊芙琳·哈特",
+      "content": "「我把我想到的这个结果告诉我的同伴。」",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_antecham"},
+      "summary": null,
+      "created_at": "2026-07-01T12:06:00"
+    },
+    {
+      "id": "evt_3",
+      "session_id": "sess_synthetic_manor2",
+      "sequence_num": 3,
+      "event_type": "action",
+      "actor_id": "char_henry",
+      "actor_name": "亨利·卡特",
+      "content": "我走到挂毯前，仔细检查月缺处的边缘和周围刺绣符号的细节，试图判断这块缺失部分的形状是否与某种钥匙或信物有关。",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_antecham"},
+      "summary": null,
+      "created_at": "2026-07-01T12:07:00"
+    },
+    {
+      "id": "evt_4",
+      "session_id": "sess_synthetic_manor2",
+      "sequence_num": 4,
+      "event_type": "dice",
+      "actor_id": null,
+      "actor_name": "系统",
+      "content": "亨利·卡特｜侦查 检定（extreme）：极难成功（10 ≤ 10）",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_antecham", "actor": "亨利·卡特", "skill": "侦查", "tier": "extreme_success"},
+      "summary": null,
+      "created_at": "2026-07-01T12:08:00"
+    },
+    {
+      "id": "evt_5",
+      "session_id": "sess_synthetic_manor2",
+      "sequence_num": 5,
+      "event_type": "narration",
+      "actor_id": null,
+      "actor_name": "KP",
+      "content": "亨利·卡特俯身凑近那处月缺的缺口。布料不是被撕扯掉的，而是被利器沿一条精确的弧线裁下的——裁切口上缘还残留着几缕银灰色的细丝。他侧过头，看清那枚「月缺」符号周围延伸出的银灰色丝线，一直通向缺口的原始位置。",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_antecham"},
+      "summary": null,
+      "created_at": "2026-07-01T12:09:00"
+    },
+    {
+      "id": "evt_6",
+      "session_id": "sess_synthetic_manor2",
+      "sequence_num": 6,
+      "event_type": "dice",
+      "actor_id": null,
+      "actor_name": "系统",
+      "content": "伊芙琳·哈特｜智力 检定（hard）：困难成功（32 ≤ 37）",
+      "visibility": [],
+      "metadata_": {"scene_id": "scene_antecham", "actor": "伊芙琳·哈特", "skill": "智力", "tier": "hard_success"},
+      "summary": null,
+      "created_at": "2026-07-01T12:10:00"
+    }
+  ],
+  "rules_lookup_enabled": false,
+  "continuation": "伊芙琳·哈特 智力（hard），达成 困难成功：困难成功（32 ≤ 37）"
+}

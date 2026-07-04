@@ -62,6 +62,10 @@ class ReplayCase:
     plan: TurnPlan | None = None  # fixture 预存的裁定计划；None 则重放时现跑 planner
     tags: list[str] = field(default_factory=list)
     note: str = ""
+    # 「投骰后续写」重放：非空则不走首段叙事，而是重放 KP_DICE_CONTINUATION_PROMPT——
+    # 值即回灌给 KP 的检定结果串（形如「伊芙琳·哈特 智力（regular），达成 困难成功：…」，
+    # 每行角色名打头）。用于评测续写阶段的行为（如叙述主语必须是检定执行者）。
+    continuation: str | None = None
 
     @property
     def player_names(self) -> list[str]:
@@ -92,6 +96,7 @@ def load_fixture(path: Path) -> ReplayCase:
         plan=TurnPlan.model_validate(plan_data) if plan_data else None,
         tags=list(meta.get("tags") or []),
         note=meta.get("note") or "",
+        continuation=payload.get("continuation") or None,
     )
 
 
