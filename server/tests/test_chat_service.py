@@ -118,6 +118,33 @@ def test_dialogue_after_paragraph_break_still_attributed():
     assert speakers == ["史蒂芬·诺特"]  # 跨段落仍能归到诺特
 
 
+def test_duplicate_dice_check_deduped(db_factory):
+    """同 角色+技能+难度 的待投检定只挂一次、只弹一张投骰卡——修复分头行动下同一 plan 注入
+    每个分组、多组各吐一条 [DICE_CHECK]、合并处理后重复弹卡的问题。"""
+    db = db_factory()
+    module = Module(title="M", rule_system="coc", npcs=[], scenes=[])
+    pc = Character(
+        name="伊芙琳·哈特", rule_system="coc", is_player=True,
+        base_attributes={"INT": 75}, skills={}, system_data={},
+    )
+    db.add_all([module, pc])
+    db.flush()
+    gs = GameSession(module_id=module.id, player_character_id=pc.id, status="active", world_state={})
+    db.add(gs)
+    db.commit()
+
+    kv = {"skill": "智力", "difficulty": "normal", "char": ""}  # 空 char → 主角（真人）
+    c1, _, p1 = asyncio.run(chat_service._exec_dice_check(db, gs.id, gs, module, dict(kv), pc, []))
+    c2, _, p2 = asyncio.run(chat_service._exec_dice_check(db, gs.id, gs, module, dict(kv), pc, []))
+
+    assert p1 and p2  # 两次都收束本轮（suspend）
+    req1 = [c for c in c1 if '"type": "check_request"' in c]
+    req2 = [c for c in c2 if '"type": "check_request"' in c]
+    assert len(req1) == 1 and len(req2) == 0  # 第一次弹卡；第二次去重、不再弹
+    pending = (db.get(GameSession, gs.id).world_state or {}).get("pending_checks") or {}
+    assert len(pending) == 1  # 只挂了一个待投检定
+
+
 def test_finish_generation_broadcasts_done_after_housekeeping(monkeypatch):
     """done 必须在 housekeeping（滚动摘要 + 幕后推演）之后广播。
 

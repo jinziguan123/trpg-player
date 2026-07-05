@@ -413,6 +413,25 @@ def add_pending_check(db: Session, session_id: str, check: dict) -> None:
     db.commit()
 
 
+def find_pending_check(
+    db: Session, session_id: str, char_id: str | None, skill: str, difficulty: str,
+) -> dict | None:
+    """查是否已存在等价的待投检定（同 角色+技能+难度）。用于去重——分头行动下同一 plan 注入
+    每个分组，多组会各自吐出同一条 [DICE_CHECK]，合并处理会重复挂 pending / 弹重复投骰卡。"""
+    session = db.get(GameSession, session_id)
+    if not session:
+        return None
+    pending = (session.world_state or {}).get("pending_checks") or {}
+    for c in pending.values():
+        if (
+            c.get("char_id") == char_id
+            and c.get("skill") == skill
+            and (c.get("difficulty") or "normal") == (difficulty or "normal")
+        ):
+            return c
+    return None
+
+
 def pop_pending_check(db: Session, session_id: str, check_id: str) -> dict | None:
     """取出并移除一个待定检定；不存在返回 None。"""
     session = db.get(GameSession, session_id)

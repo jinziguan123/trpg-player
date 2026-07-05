@@ -2816,6 +2816,11 @@ async def _exec_dice_check(
         not is_npc and not blind
         and session_service.is_human_controlled(db, session_id, char_id)
     ):
+        # 去重：分头行动下同一 plan 被注入每个分组，多组常各自吐出同一条 [DICE_CHECK]，
+        # 合并文本后逐条处理会重复挂 pending、弹出两张相同的投骰卡。已存在等价（同角色+技能+
+        # 难度）待投检定则跳过——不重复挂、不再广播 check_request（仍返回 True 收束本轮）。
+        if session_service.find_pending_check(db, session_id, char_id, skill_name, difficulty):
+            return chunks, descs, True
         check_id = uuid.uuid4().hex
         pending = {
             "id": check_id, "skill": skill_name, "difficulty": difficulty,
