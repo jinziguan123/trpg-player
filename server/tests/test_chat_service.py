@@ -118,6 +118,32 @@ def test_dialogue_after_paragraph_break_still_attributed():
     assert speakers == ["史蒂芬·诺特"]  # 跨段落仍能归到诺特
 
 
+def test_finish_generation_broadcasts_done_after_housekeeping(monkeypatch):
+    """done 必须在 housekeeping（滚动摘要 + 幕后推演）之后广播。
+
+    否则玩家会在「KP 已不吐字」（done 到达、streaming 置 false）时，因 is_generating 仍为
+    True（housekeeping 的 LLM 调用还占着生成锁）而投骰/申请检定被后端 409「KP 正在叙事」——
+    即线上「明明不吐字了还显示 KP 叙事中」的成因。"""
+    order: list[str] = []
+
+    async def fake_summary(db, sid, llm):
+        order.append("summary")
+
+    async def fake_backstage(db, sid, llm):
+        order.append("backstage")
+
+    def fake_broadcast(sid, chunk):
+        if '"type": "done"' in chunk:
+            order.append("done")
+
+    monkeypatch.setattr(chat_service, "_maybe_roll_story_summary", fake_summary)
+    monkeypatch.setattr(chat_service, "_maybe_run_backstage", fake_backstage)
+    monkeypatch.setattr(chat_service.room_hub, "broadcast", fake_broadcast)
+
+    asyncio.run(chat_service._finish_generation(None, "sid", None))
+    assert order == ["summary", "backstage", "done"]  # done 收尾，绝不抢在 housekeeping 前
+
+
 def test_progressive_verb_phrase_not_split_into_speaker():
     """「修女在回答"关闭井"的问题时」——"回答"不能被切成「修女在回」+「答」当说话人；
     "关闭井"是旁白复述的话题词，不是台词，整句留旁白。"""

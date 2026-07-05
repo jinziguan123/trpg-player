@@ -1443,6 +1443,20 @@ async def _maybe_run_backstage(db: Session, session_id: str, llm) -> None:
         logger.exception("幕后推演失败（忽略）: session=%s", session_id)
 
 
+async def _finish_generation(db: Session, session_id: str, llm) -> None:
+    """生成收尾：先跑完会话级 housekeeping（滚动摘要 + 幕后推演，二者都写 world_state 且仍
+    持有本次生成锁 is_generating=True），**再**广播 done。
+
+    顺序很关键：若把 done 放在 housekeeping 之前，玩家会看到「KP 已不再吐字」（done 到达、
+    streaming 置 false）却因 is_generating 仍为 True（housekeeping 的 LLM 调用还在跑）而投骰/
+    申请检定被后端 409「KP 正在叙事」——这正是线上「明明不吐字了还显示 KP 叙事中」的成因。
+    housekeeping 通常是零调用（未达摘要阈值 / 模组无幕后主体），此时 done 与今日一样即时。"""
+    await _maybe_roll_story_summary(db, session_id, llm)
+    # 幕后推演：KP 回合收尾处评估（不阻塞叙事主流程；条件不满足零调用）
+    await _maybe_run_backstage(db, session_id, llm)
+    room_hub.broadcast(session_id, _make_chunk("done"))
+
+
 def _augment_plan_with_backstage(plan: turn_planner.TurnPlan | None, events: list) -> None:
     """validator 预筛：把最近的幕后事件文本挂进 ``plan.safety.do_not_reveal``。
 
@@ -1910,10 +1924,7 @@ async def _run_generation(
         ):
             room_hub.broadcast(session_id, chunk)
 
-    room_hub.broadcast(session_id, _make_chunk("done"))
-    await _maybe_roll_story_summary(db, session_id, llm)
-    # 幕后推演：KP 回合收尾处评估（不阻塞叙事主流程；条件不满足零调用）
-    await _maybe_run_backstage(db, session_id, llm)
+    await _finish_generation(db, session_id, llm)
 
 
 def _tag_turn_events_by_group(db: Session, turn_events: list, groups: list[dict]) -> None:
@@ -2033,10 +2044,7 @@ async def _run_split_generation(
     ):
         room_hub.broadcast(session_id, chunk)
 
-    room_hub.broadcast(session_id, _make_chunk("done"))
-    await _maybe_roll_story_summary(db, session_id, llm)
-    # 幕后推演：KP 回合收尾处评估（不阻塞叙事主流程；条件不满足零调用）
-    await _maybe_run_backstage(db, session_id, llm)
+    await _finish_generation(db, session_id, llm)
 
 
 def _skill_names(char: Character) -> list[str]:
@@ -2253,10 +2261,7 @@ async def _run_kp_turn(
         ):
             room_hub.broadcast(session_id, chunk)
 
-    room_hub.broadcast(session_id, _make_chunk("done"))
-    await _maybe_roll_story_summary(db, session_id, llm)
-    # 幕后推演：KP 回合收尾处评估（不阻塞叙事主流程；条件不满足零调用）
-    await _maybe_run_backstage(db, session_id, llm)
+    await _finish_generation(db, session_id, llm)
 
 
 async def run_check_request_generation(
