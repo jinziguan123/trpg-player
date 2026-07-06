@@ -118,6 +118,36 @@ def test_dialogue_after_paragraph_break_still_attributed():
     assert speakers == ["史蒂芬·诺特"]  # 跨段落仍能归到诺特
 
 
+def test_matcher_npcs_includes_registered_improvised():
+    """已登记的临场龙套（管理员）进归属名字表，垃圾名（她）与已转正的不重复。"""
+    from app.models import GameSession
+    module = Module(title="M", rule_system="coc", npcs=[{"id": "n1", "name": "沃尔特·科比特"}], scenes=[])
+    gs = GameSession(
+        module_id="m", player_character_id="p", status="active",
+        world_state={"improvised_npcs": {
+            "管理员": {"mentions": 4},
+            "她": {"mentions": 1},                       # 垃圾名 → 不进表
+            "玛格丽特修女": {"mentions": 2, "card": {"id": "improv_1", "name": "玛格丽特修女"}},  # 已转正
+        }},
+    )
+    names = [n.get("name") for n in chat_service._matcher_npcs(module, [], gs)]
+    assert "管理员" in names           # 登记龙套进表 → 其台词可正确归属，不被科比特劫走
+    assert "她" not in names           # 垃圾名挡在表外
+    assert names.count("玛格丽特修女") == 1  # 已转正的不因 improvised 再并一次
+
+
+def test_narration_fragment_not_attributed_as_speaker():
+    """旁白碎片/结构指称被当泛称说话人（「第七节：…」「但字距稍疏：…」）应被合理性校验挡掉。"""
+    text = "他翻到卷宗的第七节：“此案所呈证词数次提及旧礼拜堂的仆人。”"
+    npcs = [{"name": "沃尔特·科比特"}]
+    result = ["", "", []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    speakers = [name for name, _ in result[2]]
+    assert "第七节" not in speakers and "翻到卷宗的第七节" not in speakers
+
+
 def test_duplicate_dice_check_deduped(db_factory):
     """同 角色+技能+难度 的待投检定只挂一次、只弹一张投骰卡——修复分头行动下同一 plan 注入
     每个分组、多组各吐一条 [DICE_CHECK]、合并处理后重复弹卡的问题。"""

@@ -509,15 +509,25 @@ def _matcher_npcs(
     teammates: list[Character] | None,
     session: GameSession | None = None,
 ) -> list[dict]:
-    """供行内台词归属用的名字表：模组 NPC + 已转正的临场 NPC + 在场队友（真人/AI）。
+    """供行内台词归属用的名字表：模组 NPC + 已转正/已登记的临场 NPC + 在场队友（真人/AI）。
 
     队友不在 module.npcs 里，若不加进来，KP 偶尔替队友写的引号台词会被
     错误归给附近提到的某个模组 NPC（如把约翰·卡特的话记到萨沙·卡纳头上）。
-    已转正的临场 NPC 同理并入，否则其台词归属会漂移。
+    已转正的临场 NPC 同理并入。**已登记但未转正的临场龙套（管理员/护士长…）也并入**：
+    否则它们的台词无名可归，会被在名字表里的某个模组 NPC（甚至已死反派）劫走——即
+    「管理员的话被记到沃尔特·科比特头上」。只并入通过合理性校验的名字（滤掉旁白碎片）。
     """
     extra = [{"name": t.name, "is_player": True} for t in (teammates or []) if t.name]
     promoted = world_memory.promoted_npc_cards(session.world_state or {}) if session else []
-    return (module.npcs or []) + promoted + extra
+    improv: list[dict] = []
+    if session:
+        promoted_names = {c.get("name") for c in promoted}
+        for name in (session.world_state or {}).get("improvised_npcs") or {}:
+            name = str(name).strip()
+            if (name and name not in promoted_names
+                    and world_memory.is_plausible_npc_name(name)):
+                improv.append({"name": name})
+    return (module.npcs or []) + promoted + improv + extra
 
 
 def event_to_chunk(ev) -> str:
@@ -664,6 +674,9 @@ async def _filter_narration_stream(
         # 否则像「他指了指墙上的四个门：」这种以冒号收尾的叙述会把「墙上的四个门」误当名字。
         start = m.start(1)
         if start > 0 and s[start - 1] not in _SUBJECT_BOUNDARY:
+            return None
+        # 合理性校验：挡掉旁白碎片/结构指称被当泛称说话人（「第七节：」「但字距稍疏：」）
+        if not world_memory.is_plausible_npc_name(name):
             return None
         return name
 

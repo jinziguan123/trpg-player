@@ -139,6 +139,9 @@ export function GameSessionPage() {
   const [showGrowth, setShowGrowth] = useState(false)         // 成长结算弹窗
   const [showImprov, setShowImprov] = useState(false)         // 临场角色收编（房主专用）
   const [locations, setLocations] = useState<KnownLocation[]>([])
+  // 乐观 pending：check_request 刚到时 world_state.pending_checks 还没刷新（要等 done→refetch），
+  // 若此时按 pending_checks 判定会先显示「已投骰」再翻成「投骰」按钮。用本地集先认它是待投，消除闪烁。
+  const [optimisticPending, setOptimisticPending] = useState<Set<string>>(new Set())
   const [confirmTravel, setConfirmTravel] = useState<KnownLocation | null>(null)  // 前往二次确认
   const [splitView, setSplitView] = useState(true)            // 分头行动分栏（检测到多组时生效）
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set())  // 被收起的分组
@@ -328,6 +331,7 @@ export function GameSessionPage() {
       endStream(); liveTypeRef.current = ''
       setStreaming(false); setThinking(false); setRefreshTick((x) => x + 1)
       setTurnState(null)  // 新回合开始：确认进度归零
+      setOptimisticPending(new Set())  // done 后 pending_checks 由 refetch 权威刷新，清乐观集
       // 生成结束后从 DB 对齐：用持久化的最终叙述替换流式拼接的内容，
       // 同时兜住「刷新落在生成完成瞬间」时丢失的那段叙述。
       void resyncHistory()
@@ -387,6 +391,10 @@ export function GameSessionPage() {
     } else if (t === 'check_request') {
       // 待定检定提示：作为系统消息存（metadata.check_request 携带 check_id），渲染时带「投骰」按钮
       addMessage({ id: chunk.id || '', type: 'system', content: chunk.content || '', actor_name: chunk.actor_name, metadata: { ...(chunk.metadata || {}), is_player: isPlayer } })
+      // 乐观置为待投：后端已先落 pending_checks 再广播本 chunk，但前端 world_state 要等 done 才刷新，
+      // 先本地认它待投，避免卡片先闪「已投骰」再翻成按钮。
+      const cid = String((chunk.metadata as Record<string, unknown> | undefined)?.id ?? '')
+      if (cid) setOptimisticPending((s) => new Set(s).add(cid))
     }
   }, [addMessage, removeMessage, updateMessage, appendToStream, endStream, startStreamMessage, resyncHistory, refetchSession])
 
@@ -1075,7 +1083,8 @@ export function GameSessionPage() {
               const checkId = msg.metadata?.check_request ? String(msg.metadata?.id ?? '') : ''
               if (checkId) {
                 const pending = (currentSession?.world_state as Record<string, unknown> | undefined)?.pending_checks as Record<string, unknown> | undefined
-                const stillPending = !!pending && checkId in pending
+                // 权威（pending_checks）∪ 乐观（刚到、尚未 refetch）——消除「已投骰→投骰」闪烁
+                const stillPending = (!!pending && checkId in pending) || optimisticPending.has(checkId)
                 const mine = !msg.metadata?.char_id || msg.metadata?.char_id === myCharId
                 // 待我投骰时呼吸态提示可点；已投/非我则静止。新到达的提示卡再叠一次入场淡入。
                 const pendingAnim = stillPending && mine ? 'dice-pending' : ''
