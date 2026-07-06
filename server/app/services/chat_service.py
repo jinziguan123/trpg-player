@@ -137,6 +137,9 @@ def _strip_speaker_prefix(text: str, speaker: str) -> str:
 # 含逗号/分号：并列小句的主语常跟在逗号后（「格雷夫斯走进书房，霍尔护士长跟在身后」），
 # 漏识别会让多说话人歧义保护（≥2 主语不猜）失效。
 _SUBJECT_BOUNDARY = "。！？!?\n　 ”」』）)】，,；;"
+# 名字后紧跟这些助词 → 是所有格/枚举（「科比特的…」「科比特、邓宁」），是被谈论的修饰语，
+# 不是「在说话的主语」——「最近 NPC 主语」判定时不计入，避免被提及者被当说话人。
+_POSSESSIVE_AFTER = "的之、和与及兼或"
 
 CMD_TAG_PREFIXES = (
     "DICE_CHECK:", "OPPOSED_CHECK:", "SAN_CHECK:", "HP_CHANGE:", "NPC_ACT:",
@@ -698,9 +701,13 @@ async def _filter_narration_stream(
                     p = recent.find(part, start)
                     if p < 0:
                         break
+                    after = recent[p + len(part): p + len(part) + 1]
                     if p == 0 or recent[p - 1] in _SUBJECT_BOUNDARY:
+                        # 计入 subjects（多 NPC 在场 → 触发「≥2 不猜」保护，宁可留旁白）；
+                        # 但名字后紧跟所有格/枚举助词（「科比特的遗嘱执行人」「科比特、邓宁」）时是
+                        # 被谈论的修饰语/列举，不是「在说话的主语」——不作为返回的说话人。
                         subjects.add(canonical)
-                        if p > best_pos:
+                        if after not in _POSSESSIVE_AFTER and p > best_pos:
                             best_pos, best = p, canonical
                     start = p + 1
         if len(subjects) >= 2:

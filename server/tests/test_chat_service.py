@@ -118,6 +118,22 @@ def test_dialogue_after_paragraph_break_still_attributed():
     assert speakers == ["史蒂芬·诺特"]  # 跨段落仍能归到诺特
 
 
+def test_possessive_mention_not_attributed_as_speaker():
+    """前文里「科比特的遗嘱执行人」是所有格（被谈论），其后的台词不能被归给科比特——
+    复现：伊芙琳谈到『科比特的…』后，下一句台词被误署名成科比特。"""
+    text = (
+        "伊芙琳压低声音补充道：“我发现，科比特的遗嘱执行人与那座教堂有关。”她顿了顿。"
+        "“真正的答案埋在那面墙的背后。”"
+    )
+    npcs = [{"name": "沃尔特·科比特"}, {"name": "伊芙琳·哈特", "is_player": True}]
+    result = ["", "", []]
+    asyncio.run(_collect(
+        chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
+    ))
+    speakers = [name for name, _ in result[2]]
+    assert "沃尔特·科比特" not in speakers  # 所有格提及不使其成为说话人
+
+
 def test_matcher_npcs_includes_registered_improvised():
     """已登记的临场龙套（管理员）进归属名字表，垃圾名（她）与已转正的不重复。"""
     from app.models import GameSession
