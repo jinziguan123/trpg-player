@@ -278,7 +278,9 @@ def build_turn_plan_messages(
         "improvised_npcs": [
             str(n).strip()
             for n, e in ((session.world_state or {}).get("improvised_npcs") or {}).items()
-            if str(n).strip() and not (isinstance(e, dict) and (e.get("card") or {}).get("id"))
+            if str(n).strip()
+            and not (isinstance(e, dict) and (e.get("card") or {}).get("id"))
+            and world_memory.is_plausible_npc_name(str(n))
         ],
     }
 

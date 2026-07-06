@@ -133,14 +133,40 @@ def record_handout_issue(
     return ws
 
 
+# 代词/指人虚词，不能作 NPC 名（台词归属的后置代词兜底会产出「她」「他」等）。
+_PRONOUN_NPC_NAMES = {
+    "她", "他", "它", "您", "咱", "我", "你", "其", "这", "那",
+    "我们", "你们", "他们", "她们", "它们", "咱们",
+}
+# 明显不属于人名/称呼的特征字：虚词/连词/副词/进行体/句末语气/结构指称/说话动词——
+# 命中即判定为「旁白碎片被误当说话人」（如「修女在回」「但字距稍疏」「第七节」）。
+_NON_NAME_CHARS = "在正又也但却而则就还并虽第节章页条款幕说道问答喊叫笑声开口的了着过吗呢吧啊呀嘛，,。！？"
+
+
+def is_plausible_npc_name(name: str) -> bool:
+    """粗判是否像一个 NPC 人名/称呼（护士长、前台女士、玛格丽特修女…）。
+
+    用于挡掉台词归属启发式的误命中——旁白碎片、代词、动词短语、结构指称被登记/展示为
+    临场 NPC（如「修女在回」「她」「但字距稍疏」「第七节」）。宁可漏掉个别真龙套（顶多不进
+    可收编名单），也不让垃圾名污染临场角色列表与注入 KP 的名单。
+    """
+    name = (name or "").strip()
+    if not (2 <= len(name) <= 6):
+        return False
+    if name in _PRONOUN_NPC_NAMES:
+        return False
+    return not any(c in name for c in _NON_NAME_CHARS)
+
+
 def record_improvised_npc(ws: dict, name: str, seq: int) -> dict:
     """登记一个「临场 NPC」（模组未列出、KP 临时添加的开口龙套）到 world_state.improvised_npcs。
 
     只增不删；``mentions`` 每登记一次自增，用于观察存在感（不驱动任何自动行为）。
     key 用规整后的显示名（同名变体不做模糊合并，见设计文档 §7）。
+    不像人名/称呼的（台词归属误命中的旁白碎片/代词/动词短语）直接丢弃，不登记。
     """
     name = str(name or "").strip()
-    if not name:
+    if not name or not is_plausible_npc_name(name):
         return ws
     ws = dict(ws or {})
     improv = dict(ws.get("improvised_npcs") or {})

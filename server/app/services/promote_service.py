@@ -27,11 +27,16 @@ def list_improvised(db: Session, session_id: str) -> list[dict]:
     improv = (session.world_state or {}).get("improvised_npcs") or {}
     out: list[dict] = []
     for name, entry in improv.items():
+        # 隐藏台词归属误命中留下的垃圾名（旧会话已登记的「她」「第七节」等）——写入侧现已挡掉，
+        # 读取侧再滤一遍兼容存量数据。已转正的（有 card）无条件展示。
         entry = entry if isinstance(entry, dict) else {}
+        promoted = bool((entry.get("card") or {}).get("id"))
+        if not promoted and not world_memory.is_plausible_npc_name(name):
+            continue
         out.append({
             "name": name,
             "mentions": int(entry.get("mentions", 0)),
-            "promoted": bool((entry.get("card") or {}).get("id")),
+            "promoted": promoted,
         })
     return out
 

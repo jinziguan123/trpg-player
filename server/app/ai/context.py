@@ -192,9 +192,12 @@ def _improvised_npc_section(session: GameSession) -> str:
     """
     improv = (session.world_state or {}).get("improvised_npcs") or {}
     # 已转正（有 card）的不再列入名单——它们已并入正典 NPC 资料、受完整人设约束。
+    # 同时滤掉台词归属误命中的垃圾名（「她」「第七节」等），别把旁白碎片当龙套注入 prompt。
     names = [
         str(n).strip() for n, e in improv.items()
-        if str(n).strip() and not (isinstance(e, dict) and (e.get("card") or {}).get("id"))
+        if str(n).strip()
+        and not (isinstance(e, dict) and (e.get("card") or {}).get("id"))
+        and world_memory.is_plausible_npc_name(str(n))
     ]
     if not names:
         return ""

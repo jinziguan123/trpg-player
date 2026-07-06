@@ -238,6 +238,40 @@ class TestImprovisedNpcContainment:
         assert e["first_seq"] == 3 and e["last_seq"] == 5 and e["mentions"] == 2
         assert world_memory.record_improvised_npc(ws, "  ", 6) is ws or True  # 空名不崩
 
+    def test_implausible_names_不登记(self):
+        """台词归属误命中的垃圾名（代词/动词短语/结构指称/旁白碎片）不得登记为临场 NPC。"""
+        from app.services import world_memory
+        for bad in ["她", "修女在回", "但字距稍疏", "第七节", "他们", "一"]:
+            ws = world_memory.record_improvised_npc({}, bad, 1)
+            assert not (ws.get("improvised_npcs") or {}), f"垃圾名不该登记：{bad}"
+        for good in ["护士长", "前台女士", "管理员", "门房老赵", "玛格丽特修女"]:
+            ws = world_memory.record_improvised_npc({}, good, 1)
+            assert good in (ws.get("improvised_npcs") or {}), f"真龙套应登记：{good}"
+
+    def test_list_improvised_滤除存量垃圾名(self):
+        """读取侧兼容存量：已登记的垃圾名不出现在可收编列表（写入侧现已挡掉）。"""
+        from app.services import promote_service
+        from app.models import Character, GameSession, Module, Base
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        eng = create_engine("sqlite://", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(eng)
+        db = sessionmaker(bind=eng)()
+        module = Module(title="M", rule_system="coc", npcs=[], scenes=[])
+        pc = Character(name="伊芙琳", rule_system="coc", is_player=True)
+        db.add_all([module, pc]); db.flush()
+        gs = GameSession(
+            module_id=module.id, player_character_id=pc.id, status="active",
+            world_state={"improvised_npcs": {
+                "护士长": {"mentions": 2},
+                "她": {"mentions": 1},          # 存量垃圾
+                "第七节": {"mentions": 1},        # 存量垃圾
+            }},
+        )
+        db.add(gs); db.commit()
+        names = [x["name"] for x in promote_service.list_improvised(db, gs.id)]
+        assert names == ["护士长"]  # 垃圾名被滤掉
+
     def test_record_npc_say_memory_登记非正典说话人(self):
         # 说话人不在 module.npcs、不是玩家/系统 → 登记进 improvised_npcs；正典/玩家/系统不登记。
         from app.services import chat_service
