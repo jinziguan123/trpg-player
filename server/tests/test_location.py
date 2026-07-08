@@ -162,6 +162,46 @@ def test_house_unlocked_by_generic_suffix_mention(db_factory):
     assert "house" in session_service.known_scene_ids(module, session, events)
 
 
+def test_derive_keywords_strips_state_modifier_suffix():
+    """核心修复：『沉思礼拜堂废墟』要派生出核心名『沉思礼拜堂』『礼拜堂』『沉思』——
+    这样说『沉思礼拜堂』（不带废墟）也能解锁；修饰词『废墟』本身不作关键词。"""
+    kw = session_service.derive_scene_keywords("沉思礼拜堂废墟")
+    assert "沉思礼拜堂废墟" in kw and "沉思礼拜堂" in kw and "礼拜堂" in kw and "沉思" in kw
+    assert "废墟" not in kw
+    # 向后兼容：无修饰词的旧例不变
+    assert session_service.derive_scene_keywords("罗克斯伯里疗养院") == {
+        "罗克斯伯里疗养院", "疗养院", "罗克斯伯里",
+    }
+
+
+def test_chapel_ruins_unlocked_by_core_name(db_factory):
+    """回归用户报告：说『沉思礼拜堂』（不带废墟、老模组无存储 keywords）也能解锁该地点。"""
+    db = db_factory()
+    sid, _, _, mod_id = _seed(db)
+    module = db.get(Module, mod_id)
+    module.scenes = _SCENES + [{"id": "chapel", "title": "沉思礼拜堂废墟", "connections": []}]
+    db.commit()
+    session = db.get(GameSession, sid)
+    events = [_Ev("dialogue", "我们已经知道沉思礼拜堂的地址了，去那儿看看。")]
+    assert "chapel" in session_service.known_scene_ids(module, session, events)
+
+
+def test_stored_keywords_unlock_by_any_including_address(db_factory):
+    """解析时存储的 keywords（含地址/俗称）：玩家提到任一即解锁——与派生取并集。"""
+    db = db_factory()
+    sid, _, _, mod_id = _seed(db)
+    module = db.get(Module, mod_id)
+    module.scenes = _SCENES + [{
+        "id": "chapel", "title": "沉思礼拜堂废墟", "connections": [],
+        "keywords": ["沉思礼拜堂", "断头谷路13号", "老教堂"],
+    }]
+    db.commit()
+    session = db.get(GameSession, sid)
+    # 提到门牌地址即可解锁（纯派生做不到，靠存储 keywords）
+    events = [_Ev("action", "我们照卷宗上的地址前往断头谷路13号。")]
+    assert "chapel" in session_service.known_scene_ids(module, session, events)
+
+
 def test_scene_change_moves_player_and_colocated_party(db_factory):
     """[SCENE_CHANGE] 明确移动：主角切场景，同处的队友一同前往；目的地变已访问、可见。"""
     import asyncio

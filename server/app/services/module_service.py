@@ -38,6 +38,7 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       "danger": "该场景的危险等级，仅限四选一：calm（安全平静）/uneasy（隐隐不安）/dangerous（明确危险）/deadly（致命凶险）",
       "atmosphere": "一句话氛围基调，给 KP 渲染用：以感官（声/味/光/体感）+ 情绪基调描述，如『腐臭、低压、木板随时塌陷』。不要写成剧透或台词",
       "kind": "二选一：location（一个真实存在的地点，默认）/ chapter（纯叙事章节或抽象阶段，如『委托与准备』『尾声』——它不是玩家能在地图上前往的地方）",
+      "keywords": ["解锁关键词：玩家在对话/行动里提到其中任意一个，大地图就解锁该地点。覆盖：完整地名、核心地名（去掉『废墟/遗址/旧址』等状态词，如『沉思礼拜堂废墟』→『沉思礼拜堂』）、通俗设施名（礼拜堂/图书馆/老房子）、专名（沉思/科比特/罗克斯伯里），以及模组原文里提到的门牌地址或俗称/绰号。2-6 个，每个≥2字；不要过于宽泛的通用词（如『房间』『那边』『这里』）。chapter 类场景留空数组"],
       "connections": ["scene_2"],
       "states": [
         {{"when": ["剧情标志名，如 basement_flooded"], "danger": "切换后的危险度", "atmosphere": "切换后的氛围", "description": "（可选）切换后的场景描述，覆盖默认", "structural": false}}
@@ -119,6 +120,9 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
     content 逐字照抄原文，一个字都不许改；原文只是提到某文书而没给正文的，不收。
     与 clues 的关系：手书本身可同时是线索——照常在 clues 里登记该线索，handouts 里存其原文正文，两者 id 各自独立。
     模组没有此类文书时 handouts 留空数组 []。
+13. 每个 location 类场景给出 keywords（解锁关键词，2-6 个）：玩家提到任一即在大地图解锁该地点。
+    务必覆盖『核心地名』——把『废墟/遗址/旧址』等状态词剥掉后的地名（如『沉思礼拜堂废墟』要含『沉思礼拜堂』
+    与『礼拜堂』），以及模组里出现的门牌地址、俗称/绰号。避免过泛的通用词。chapter 类场景 keywords 留空数组 []。
 
 模组文本：
 {content}"""
@@ -164,6 +168,23 @@ async def parse_module_images(images: list[tuple[bytes, str]], rule_system: str,
     return _extract_json(raw)
 
 
+def _ensure_scene_keywords(scenes: list) -> list:
+    """给每个 location 场景补全解锁关键词：LLM 生成的 keywords ∪ 标题确定性派生（兜底），
+    归一（去空白、去重、≥2字）。chapter 类不需要（不上地图）。解析与手动编辑都经此归一。"""
+    from app.services.session_service import derive_scene_keywords
+
+    for s in scenes or []:
+        if not isinstance(s, dict) or s.get("kind") == "chapter":
+            continue
+        title = s.get("title") or s.get("name") or ""
+        given = {
+            k.strip() for k in (s.get("keywords") or [])
+            if isinstance(k, str) and len(k.strip()) >= 2
+        }
+        s["keywords"] = sorted(given | derive_scene_keywords(title))
+    return scenes
+
+
 def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
     world_setting = data.get("world_setting", {})
     for key in ("player_count", "era", "region", "difficulty", "tags", "player_brief", "intro"):
@@ -179,7 +200,7 @@ def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
         description=data.get("description", ""),
         world_setting=world_setting,
         raw_content=raw_content,
-        scenes=data.get("scenes", []),
+        scenes=_ensure_scene_keywords(data.get("scenes", [])),
         npcs=data.get("npcs", []),
         clues=data.get("clues", []),
         triggers=data.get("triggers", []),
@@ -208,7 +229,7 @@ def update_module(db: Session, module_id: str, data: dict) -> Module | None:
             ws["difficulty"] = ""
         module.world_setting = ws
     if "scenes" in data and data["scenes"] is not None:
-        module.scenes = data["scenes"]
+        module.scenes = _ensure_scene_keywords(data["scenes"])
     if "npcs" in data and data["npcs"] is not None:
         module.npcs = data["npcs"]
     if "clues" in data and data["clues"] is not None:

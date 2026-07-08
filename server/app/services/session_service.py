@@ -882,24 +882,58 @@ _FACILITY_SUFFIXES = [
 ]
 
 
-def _scene_aliases(title: str) -> set[str]:
-    """从场景标题析出可被对话「提及」的别名：完整标题 + 设施类型后缀 + 专名前缀。
+# 「状态修饰」后缀：跟在设施类型之后表示地点当下状态（沉思礼拜堂+废墟）。它们**只用于剥离**
+# 得到核心地名，本身**不**作为解锁关键词（否则说个「废墟」就乱解锁）。
+_MODIFIER_SUFFIXES = ["废墟", "遗址", "旧址", "遗迹", "残址", "废址", "旧宅"]
 
-    例：「罗克斯伯里疗养院」→ {完整标题, "疗养院", "罗克斯伯里"}，
-    这样对话里出现「疗养院」即可解锁该地点。
+
+def derive_scene_keywords(title: str) -> set[str]:
+    """从场景标题**确定性地**派生解锁关键词：完整标题 + 核心地名（剥离废墟/遗址等状态词）+
+    设施类型后缀 + 专名前缀。玩家在对话/行动里提到其中任意一个即解锁该地点。
+
+    例：
+      「罗克斯伯里疗养院」→ {完整标题, "疗养院", "罗克斯伯里"}
+      「沉思礼拜堂废墟」  → {完整标题, "沉思礼拜堂", "礼拜堂", "沉思"}
+        （此前只得完整标题，故必须说全名才解锁——本函数补上核心名与专名）
+
+    这是**兜底/派生**逻辑：新模组解析时会另外生成并存储更丰富的 keywords（含地址/俗称），
+    运行时二者取并集（见 known_scene_ids）。
     """
     title = (title or "").strip()
-    aliases = {title} if title else set()
-    # 收集标题结尾命中的所有设施类型后缀（如「科比特的老房子」→「老房子」「房子」），
-    # 这样对话里提到较宽泛的「房子」也能解锁；再用最长后缀之前的专名作前缀（「科比特」）。
-    matched = [suf for suf in _FACILITY_SUFFIXES if title.endswith(suf) and len(title) > len(suf)]
-    aliases.update(matched)
+    if not title:
+        return set()
+    keywords = {title}
+    # 先剥掉结尾的状态修饰后缀（可叠多个）得到核心地名，核心名本身入库
+    core = title
+    changed = True
+    while changed:
+        changed = False
+        for suf in _MODIFIER_SUFFIXES:
+            if core.endswith(suf) and len(core) > len(suf):
+                core = core[: -len(suf)].strip("·的 ")
+                changed = True
+    if core != title and len(core) >= 2:
+        keywords.add(core)
+    # 对核心名跑设施后缀逻辑：加设施类型别名（礼拜堂）+ 最长后缀前的专名（沉思）
+    matched = [suf for suf in _FACILITY_SUFFIXES if core.endswith(suf) and len(core) > len(suf)]
+    keywords.update(matched)
     if matched:
         longest = max(matched, key=len)
-        prefix = title[: -len(longest)].strip("·的 ")
+        prefix = core[: -len(longest)].strip("·的 ")
         if len(prefix) >= 2:
-            aliases.add(prefix)
-    return {a for a in aliases if len(a) >= 2}
+            keywords.add(prefix)
+    return {k for k in keywords if len(k) >= 2}
+
+
+def scene_unlock_keywords(scene: dict) -> set[str]:
+    """一个场景的全部解锁关键词 = 存储的 keywords（解析时生成，含地址/俗称）∪ 标题派生关键词。
+    存储缺失（老模组）时退化为纯派生——这样『沉思礼拜堂废墟』说「沉思礼拜堂」也能解锁。"""
+    stored = {
+        k.strip() for k in (scene.get("keywords") or [])
+        if isinstance(k, str) and len(k.strip()) >= 2
+    }
+    title = scene.get("title") or scene.get("name") or ""
+    return stored | derive_scene_keywords(title)
 
 
 def known_scene_ids(module, session: GameSession, events: list | None = None) -> set:
@@ -920,7 +954,7 @@ def known_scene_ids(module, session: GameSession, events: list | None = None) ->
         for sid, s in by_id.items():
             if sid in known:
                 continue
-            if any(alias in convo for alias in _scene_aliases(s.get("title") or s.get("name") or "")):
+            if any(kw in convo for kw in scene_unlock_keywords(s)):
                 known.add(sid)
     return {sid for sid in known if sid in by_id}
 
