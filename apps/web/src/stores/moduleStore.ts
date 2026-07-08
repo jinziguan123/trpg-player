@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api } from '../api/client'
+import { api, uploadFile } from '../api/client'
 
 interface Module {
   id: string
@@ -38,11 +38,7 @@ export const useModuleStore = create<ModuleStore>((set) => ({
     set({ loading: true })
     const form = new FormData()
     for (const f of files) form.append('files', f)
-    const res = await fetch(`/api/modules/upload?rule_system=${ruleSystem}`, {
-      method: 'POST',
-      body: form,
-    })
-    if (!res.ok) throw new Error(await res.text())
+    await uploadFile(`/modules/upload?rule_system=${ruleSystem}`, form)
     const modules = await api.get<Module[]>('/modules')
     set({ modules, loading: false })
   },

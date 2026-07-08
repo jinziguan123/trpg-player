@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
-import { api } from '../api/client'
+import { api, uploadFile } from '../api/client'
 import { useModuleStore } from '../stores/moduleStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { CharacterEditModal } from '../components/character/CharacterEditModal'
@@ -580,15 +580,10 @@ export function CharacterPage() {
     try {
       const formData = new FormData()
       formData.append('file', file)
-      const resp = await fetch(`/api/characters/import-excel?module_id=${encodeURIComponent(moduleId)}`, {
-        method: 'POST',
-        body: formData,
-      })
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ detail: '导入失败' }))
-        throw new Error(err.detail || '导入失败')
-      }
-      const data: ImportedCharacterData = await resp.json()
+      const data = await uploadFile<ImportedCharacterData>(
+        `/characters/import-excel?module_id=${encodeURIComponent(moduleId)}`,
+        formData,
+      )
       applyImportedData(data)
       toast.success(`已导入角色「${data.name}」的数据，请检查后继续`)
     } catch (e) {

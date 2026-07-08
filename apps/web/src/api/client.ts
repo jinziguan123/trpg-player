@@ -47,6 +47,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json()
 }
 
+/** multipart 文件上传：走 getApiBase()（客人模式打到房主 IP）+ 带 X-Player-Token；
+ *  刻意不设 Content-Type，让浏览器自动带 multipart boundary。 */
+export async function uploadFile<T>(path: string, form: FormData): Promise<T> {
+  const res = await fetch(`${getApiBase()}${path}`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: form,
+  })
+  if (!res.ok) {
+    const body = await res.text()
+    let msg = body
+    try {
+      const json = JSON.parse(body)
+      msg = json.detail || json.message || body
+    } catch { /* use raw text */ }
+    throw new Error(msg)
+  }
+  return res.json()
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
