@@ -15,7 +15,7 @@ from app.schemas.session import (
     SessionStatusUpdate,
 )
 from app.services import session_service
-from app.services.chat_service import _make_chunk, event_to_chunk, run_opening_generation
+from app.services.chat_service import _make_chunk, run_opening_generation
 from app.services.generation_manager import generation_manager
 from app.services.room_hub import room_hub, stream_room
 

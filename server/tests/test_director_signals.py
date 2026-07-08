@@ -5,9 +5,6 @@
 
 from types import SimpleNamespace
 
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app.ai import director_signals as ds
 from app.ai import turn_planner

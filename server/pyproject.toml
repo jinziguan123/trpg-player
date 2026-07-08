@@ -23,6 +23,7 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "ruff>=0.6",
 ]
 # 桌面打包（PyInstaller sidecar）：cd server && .venv/bin/pyinstaller desktop.spec --noconfirm
 packaging = [
@@ -37,3 +38,16 @@ build-backend = "setuptools.build_meta"
 # 否则 setuptools 在 app 与 alembic 两个顶层目录间无法自动判定，pip install -e . 会报错。
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# 迁移脚本由 alembic 自动生成，不纳入 lint。
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+# 保守起步，只选当前代码已干净、且高信噪比的规则：pyflakes(F) 抓未用导入/变量/未定义名，
+# E9 抓语法/缩进等硬错误。后续可逐步收紧到 I(导入排序)/UP/B(bugbear) —— 那批约百处、
+# 含 22 处 B904 需手工加 `raise ... from e`，宜单独一 PR 做，不混进本次 CI 接线。
+select = ["F", "E9"]
+ignore = []

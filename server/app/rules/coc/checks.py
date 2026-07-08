@@ -87,7 +87,7 @@ def resolve_skill_check(
 
     if d100 == 1:
         outcome = "critical_success"
-        desc = f"大成功！掷出了 01"
+        desc = "大成功！掷出了 01"
     elif d100 <= skill_value // 5:
         outcome = "hard_success" if difficulty != "extreme" else "success"
         desc = f"极难成功 ({d100} ≤ {skill_value // 5})"
@@ -109,7 +109,7 @@ def resolve_skill_check(
         desc = f"大失败！掷出了 {d100}"
     elif d100 == 100:
         outcome = "fumble"
-        desc = f"大失败！掷出了 100"
+        desc = "大失败！掷出了 100"
     else:
         outcome = "failure"
         desc = f"失败 ({d100} > {target})"

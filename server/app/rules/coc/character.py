@@ -52,7 +52,6 @@ def compute_derived(attrs: dict[str, int], age: int = 25) -> dict:
     siz_val = attrs.get("SIZ", 50)
     dex_val = attrs.get("DEX", 50)
     pow_val = attrs.get("POW", 50)
-    edu_val = attrs.get("EDU", 50)
 
     hp = (con_val + siz_val) // 10
     mp = pow_val // 5

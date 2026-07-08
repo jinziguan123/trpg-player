@@ -143,7 +143,7 @@ def test_队友受伤也结算并重伤昏迷(db_factory, monkeypatch):
     module, hero, sid = _seed(db)
     ally = _ally(db)
     monkeypatch.setattr("app.rules.coc.checks.roll_percentile", lambda: 99)  # 体质必失败→昏迷
-    chunks = asyncio.run(chat_service._exec_hp_change(
+    asyncio.run(chat_service._exec_hp_change(
         db, sid, hero, "阿尔法", "-5", "被兽爪撕开", module=module, teammates=[ally],
     ))
     assert ally.system_data["hitPoints"]["current"] == 5   # 队友 HP 结算

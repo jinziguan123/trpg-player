@@ -1,0 +1,18 @@
+# gitleaks 配置：沿用内置规则集，只对「已知历史泄漏且已轮换」的提交加白名单，
+# 避免 CI 密钥扫描因历史对象永久标红。新泄漏仍会被拦下。
+[extend]
+useDefault = true
+
+[allowlist]
+description = "历史泄漏的 DeepSeek key（server/ai_settings.json）——已在控制台吊销/轮换。"
+# 该文件的明文 key 曾提交进以下历史对象；密钥已作废，故白名单放行。
+# 注意：这只是止血，根治仍需 git filter-repo 清洗历史后开源。
+commits = [
+  "5570b3b188a480c95b4a9e1856bdafd76158851a",
+  "29e90792a2875da14dc73e9d1fe0be1c9ca26b6d",
+  "a3f8a06aa8b05fe4d92615d69e19dee2e98101e8",
+  "4a107c3438cbb13c175fe57e4a0cf98c3247f58c",
+]
+paths = [
+  '''server/ai_settings\.json''',
+]

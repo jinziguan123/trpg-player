@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException

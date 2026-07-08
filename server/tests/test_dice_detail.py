@@ -22,7 +22,7 @@ from app.models import (  # noqa: F401 注册表
 )
 from app.rules.coc.checks import resolve_skill_check
 from app.rules.dice import compose_d100, decompose_d100, roll_percentile_detailed
-from app.services import chat_service, session_service
+from app.services import chat_service
 
 
 # ---------- 纯函数：奖惩骰与合成 ----------
