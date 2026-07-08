@@ -1,32 +1,59 @@
 import logging
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 
 logger = logging.getLogger(__name__)
 
+# 迁移失败进入的「维护模式」：非空即代表启动迁移失败，所有请求返回可读错误页而非
+# 以「新代码 + 旧 schema」带病运行（仅打包分发场景启用；dev 下保持 log-and-continue）。
+_MIGRATION_ERROR: str | None = None
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # 打包首次启动先从内置种子初始化 app-data（开箱即用），再把数据库升到最新；
-    # 失败不阻断启动（多数功能不依赖最新迁移），但醒目记录。
+    # 打包首次启动先从内置种子初始化 app-data（开箱即用），再把数据库升到最新（升级前自动备份）。
+    global _MIGRATION_ERROR
     from app.database import run_migrations, seed_if_needed
 
     seed_if_needed()
     try:
         run_migrations()
-    except Exception:
+    except Exception as e:
         logger.exception("启动自动迁移失败，请手动执行 alembic upgrade head")
+        if getattr(sys, "frozen", False):
+            # 打包分发：不以半新半旧 schema 运行，进入维护模式，请求返回可读错误页。
+            _MIGRATION_ERROR = str(e)
     yield
 
 
 app = FastAPI(title="TRPG Player", version="0.1.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def _maintenance_gate(request: Request, call_next):
+    """迁移失败的维护模式：除健康检查外一律返回可读错误页，提示用户升级/从备份恢复。"""
+    if _MIGRATION_ERROR is not None and request.url.path != "/api/health":
+        return HTMLResponse(
+            "<html><head><meta charset='utf-8'><title>需要维护</title></head>"
+            "<body style='font-family:serif;background:#0c0e13;color:#e8dcc0;"
+            "text-align:center;padding:12vh 8vw'>"
+            "<h1>数据库升级未完成</h1>"
+            "<p>本次启动的自动迁移失败，为保护你的存档，应用已暂停运行。</p>"
+            f"<pre style='color:#98a2ad;white-space:pre-wrap'>{_MIGRATION_ERROR}</pre>"
+            "<p>迁移前的自动备份位于数据目录下的 <code>trpg.db.bak-*</code>；"
+            "可升级到匹配的程序版本后重试，或从备份恢复。</p>"
+            "</body></html>",
+            status_code=503,
+        )
+    return await call_next(request)
 
 app.add_middleware(
     CORSMiddleware,

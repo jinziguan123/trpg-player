@@ -47,3 +47,51 @@ def test_run_migrations_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", db_file)
     database.run_migrations()
     database.run_migrations()  # 第二次为 no-op，不应抛错
+
+
+def test_noop_migration_creates_no_backup(tmp_path, monkeypatch):
+    """已是最新时 run_migrations 为 no-op，不应留下备份文件（避免每次启动都堆备份）。"""
+    db_file = tmp_path / "noop.db"
+    monkeypatch.setattr(settings, "db_path", db_file)
+    database.run_migrations()
+    database.run_migrations()
+    assert not list(tmp_path.glob("noop.db.bak-*"))
+
+
+def test_migration_backs_up_before_upgrading(tmp_path, monkeypatch):
+    """有待应用迁移时，升级前先自动备份整库；升级后库到达最新。"""
+    from alembic import command
+
+    db_file = tmp_path / "up.db"
+    monkeypatch.setattr(settings, "db_path", db_file)
+    database.run_migrations()  # 建到最新
+    # 回退一格，制造「有待应用迁移」的状态
+    command.downgrade(database._alembic_config(), "-1")
+    cur_before, head = database.migration_status()
+    assert cur_before != head
+
+    database.run_migrations()  # 应先备份再升级
+    backups = list(tmp_path.glob("up.db.bak-*"))
+    assert backups, "迁移前应生成备份"
+    cur_after, head2 = database.migration_status()
+    assert cur_after == head2  # 已升到最新
+
+
+def test_downgrade_scenario_rejected(tmp_path, monkeypatch):
+    """库版本不在代码已知迁移链内（旧程序打开新库）时，拒绝迁移而非带病运行。"""
+    import sqlite3
+
+    import pytest
+
+    db_file = tmp_path / "future.db"
+    monkeypatch.setattr(settings, "db_path", db_file)
+    database.run_migrations()
+    # 伪造一个「未来版本号」写进 alembic_version，模拟旧程序遇到更新的库
+    con = sqlite3.connect(db_file)
+    try:
+        con.execute("UPDATE alembic_version SET version_num = 'zzzz_future_rev'")
+        con.commit()
+    finally:
+        con.close()
+    with pytest.raises(RuntimeError, match="高于本程序已知"):
+        database.run_migrations()
