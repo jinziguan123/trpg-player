@@ -654,14 +654,30 @@ def set_turn_confirm(db: Session, session_id: str, char_id: str, confirmed: bool
     db.commit()
 
 
-def turn_confirm_state(db: Session, session_id: str) -> dict:
-    """当前回合确认进度：{confirmed_ids, total, ready}。ready＝所有真人都已确认。"""
+def turn_confirm_state(
+    db: Session, session_id: str, online_tokens: set[str] | None = None
+) -> dict:
+    """当前回合确认进度：{confirmed_ids, total, ready}。ready＝所有「需确认」真人都已确认。
+
+    掉线豁免：给定 online_tokens 时，有归属但不在线的真人自动豁免——否则任一玩家关掉
+    浏览器就会让整局永久卡死。无归属席位（纯本机会话）一律计入（无法判在线，按在场处理）。
+    不给 online_tokens（旧调用/测试）时退化为「所有真人都需确认」的原行为。
+    """
     session = db.get(GameSession, session_id)
-    humans = human_character_ids(db, session_id)
+    humans = [
+        p for p in get_participants(db, session_id)
+        if p.role == "human" and p.character_id
+    ]
+    if online_tokens is not None:
+        humans = [
+            p for p in humans
+            if (not p.owner_token) or (p.owner_token in online_tokens)
+        ]
+    required_ids = {p.character_id for p in humans}
     tc = (session.world_state or {}).get("turn_confirm") if session else None
     tc = tc or {}
-    confirmed = sorted(cid for cid in humans if tc.get(cid))
-    total = len(humans)
+    confirmed = sorted(cid for cid in required_ids if tc.get(cid))
+    total = len(required_ids)
     return {
         "confirmed_ids": confirmed,
         "total": total,

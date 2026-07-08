@@ -677,6 +677,16 @@ export function GameSessionPage() {
     }
   }
 
+  // 房主强制推进：跳过未确认者（掉线/挂机），直接交 KP。掉线豁免的兜底出口。
+  const forceAdvance = async () => {
+    if (!currentSession || streaming) return
+    try {
+      await api.post(`/sessions/${currentSession.id}/force-advance`, {})
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : '强制推进失败')
+    }
+  }
+
   // 历史检索：输入防抖后查后端；结果点击可跳转到对应消息。
   const runSearch = (q: string) => {
     setSearchQ(q)
@@ -1337,6 +1347,16 @@ export function GameSessionPage() {
                 <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
                   已确认 {turnState.confirmed_ids.length}/{turnState.total}
                 </span>
+              )}
+              {isHost && turnState && turnState.total > 1 && turnState.confirmed_ids.length < turnState.total && (
+                <button
+                  onClick={forceAdvance}
+                  title="房主强制推进：跳过未确认者（掉线/挂机），直接交 KP"
+                  className="text-xs px-2 py-1 rounded transition-colors hover:opacity-80"
+                  style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
+                >
+                  强制推进
+                </button>
               )}
             </div>
             {messages.some((m) => m.type === 'narration') ? (

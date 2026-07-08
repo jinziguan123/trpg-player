@@ -247,15 +247,44 @@ async def advance(
         raise HTTPException(403, str(e))
 
     session_service.set_turn_confirm(db, session_id, actor.id, True)
-    state = session_service.turn_confirm_state(db, session_id)
+    # 掉线豁免：按在线 token 计算需确认者（并入本次确认者，防其 /live 恰好瞬断被漏算）。
+    online = room_hub.online_tokens(session_id) | ({token} if token else set())
+    state = session_service.turn_confirm_state(db, session_id, online)
     room_hub.broadcast(session_id, _make_chunk("turn_state", metadata=state))
 
     if state["ready"]:
-        # 所有真人已确认：暂存发言转正 + 清确认，然后触发一轮（队友回合 + KP）。
+        # 所有在线真人已确认：暂存发言转正 + 清确认，然后触发一轮（队友回合 + KP）。
         session_service.commit_turn(db, session_id)
         room_hub.broadcast(session_id, _make_chunk("generating"))
         generation_manager.start(session_id, run_chat_generation(session_id))
     return {"ok": True, "ready": state["ready"]}
+
+
+@router.post("/{session_id}/force-advance")
+async def force_advance(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """房主强制推进：跳过未确认者（掉线/挂机），直接把本回合暂存发言整批交 KP。
+
+    掉线豁免虽已让在线玩家能推进，但极端情形（有人挂机不点、或掉线判定滞后）仍可能卡住；
+    此端点给房主一个确定性的兜底出口。仅房主/纯本机会话可用。
+    """
+    game_session = db.get(GameSession, session_id)
+    if not game_session:
+        raise HTTPException(404, "会话不存在")
+    if game_session.status != "active":
+        raise HTTPException(400, "会话未处于活跃状态")
+    if not session_service.can_manage_session(db, session_id, token):
+        raise HTTPException(403, "只有房主可以强制推进")
+    if generation_manager.is_generating(session_id):
+        raise HTTPException(409, "KP 正在叙事，请稍候")
+    session_service.commit_turn(db, session_id)
+    room_hub.broadcast(session_id, _make_chunk("turn_state", metadata={"confirmed_ids": [], "total": 0, "ready": True}))
+    room_hub.broadcast(session_id, _make_chunk("generating"))
+    generation_manager.start(session_id, run_chat_generation(session_id))
+    return {"ok": True, "ready": True}
 
 
 @router.patch("/{session_id}/events/{event_id}")

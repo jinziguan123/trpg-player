@@ -415,6 +415,79 @@ def test_end_session_requires_host_and_reaches_growth(client):
     assert g.status_code == 200
 
 
+def test_offline_human_is_exempted_from_turn_confirm(client):
+    """掉线的有主真人自动豁免：只要在线真人都确认即 ready，不被离线者卡死。"""
+    from app.services import session_service
+
+    c, ids = client
+    host = {"X-Player-Token": "A"}
+    sid = c.post("/api/sessions", json={
+        "module_id": ids["module"],
+        "participants": [
+            {"character_id": ids["hero"], "role": "human", "is_primary": True},
+            {"character_id": ids["ally"], "role": "human"},
+        ],
+    }, headers=host).json()["id"]
+
+    gen = app.dependency_overrides[get_db]()
+    db = next(gen)
+    try:
+        # 把 ally 席位标记为归属玩家 B（模拟 B 曾入座后掉线）
+        seat = (
+            db.query(SessionParticipant)
+            .filter(SessionParticipant.session_id == sid,
+                    SessionParticipant.character_id == ids["ally"])
+            .first()
+        )
+        seat.owner_token = "B"
+        db.commit()
+
+        # 只有 A 在线：需确认者应只剩 hero（ally 属离线的 B → 豁免）
+        st = session_service.turn_confirm_state(db, sid, online_tokens={"A"})
+        assert st["total"] == 1
+        session_service.set_turn_confirm(db, sid, ids["hero"], True)
+        st2 = session_service.turn_confirm_state(db, sid, online_tokens={"A"})
+        assert st2["ready"] is True  # A 确认即可推进，不被离线的 B 卡死
+
+        # 不传 online（旧行为）：两名真人都需确认，仍未 ready
+        st3 = session_service.turn_confirm_state(db, sid)
+        assert st3["total"] == 2 and st3["ready"] is False
+    finally:
+        gen.close()
+
+
+def test_force_advance_host_only(client, monkeypatch):
+    """房主强制推进：跳过未确认者直接触发；非房主被拒。"""
+    import app.api.chat as chat_module
+
+    started = {"n": 0}
+
+    def fake_start(session_id, coro, prelude=None):
+        started["n"] += 1
+        coro.close()
+
+    monkeypatch.setattr(chat_module.generation_manager, "start", fake_start)
+
+    c, ids = client
+    host = {"X-Player-Token": "A"}
+    sid = c.post("/api/sessions", json={
+        "module_id": ids["module"],
+        "participants": [
+            {"character_id": ids["hero"], "role": "human", "is_primary": True},
+            {"character_id": ids["ally"], "role": "human"},
+        ],
+    }, headers=host).json()["id"]
+
+    # 非房主不能强推
+    assert c.post(f"/api/sessions/{sid}/force-advance",
+                  headers={"X-Player-Token": "guest"}).status_code == 403
+    assert started["n"] == 0
+    # 房主强推 → 直接触发（不等 ally 确认）
+    r = c.post(f"/api/sessions/{sid}/force-advance", headers=host)
+    assert r.status_code == 200 and r.json()["ready"] is True
+    assert started["n"] == 1
+
+
 def test_check_endpoint_intent_optional(client, monkeypatch):
     """不填 intent 仍应正常申请检定（向后兼容旧客户端）。"""
     import app.api.chat as chat_module
