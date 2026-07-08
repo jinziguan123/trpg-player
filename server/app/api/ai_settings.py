@@ -183,6 +183,22 @@ def load_ai_settings():
 
 # ---------- API 端点 ----------
 
+class AIStatus(BaseModel):
+    configured: bool
+    name: str | None = None
+
+
+@router.get("/ai/status", response_model=AIStatus)
+def ai_status():
+    """开局前置校验：是否存在可用的激活 AI 配置（有 api_key + model_name）。
+
+    前端在创建会话/开场前调用，未配置时引导用户去设置页，避免开场直接失败还无从下手。
+    """
+    p = load_active_profile()
+    ok = bool(p and p.api_key and p.model_name)
+    return AIStatus(configured=ok, name=p.name if p else None)
+
+
 @router.get("/ai/profiles", response_model=list[AIProfile])
 def list_profiles():
     """列出所有配置（api_key 掩码处理）"""

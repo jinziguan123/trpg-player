@@ -1167,6 +1167,23 @@ def _persist_error_notice(db: Session, session_id: str, text: str) -> None:
         logger.exception("落库生成中断提示失败: session=%s", session_id)
 
 
+def _classify_llm_error(exc: BaseException) -> str:
+    """把底层异常翻成对玩家可行动的一句话（鉴权/限流/网络）；无法归类返回空串。"""
+    import httpx
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code in (401, 403):
+            return "鉴权失败，请到设置页检查 API Key 是否正确并已激活"
+        if code == 429:
+            return "被限流或额度不足，请稍后重试或检查账户额度"
+        if code >= 500:
+            return "AI 服务端错误，通常稍后重试即可"
+    if isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout | httpx.ReadTimeout):
+        return "连接 AI 服务失败，请检查网络或设置页的 base_url"
+    return ""
+
+
 # 只由引号字符（±空白）组成的整行——KP 把闭引号写在台词/[SAY] 之外时留下的「孤立引号行」，
 # 渲染成旁白里孤零零的一个 ” / “（用户报的「双引号被分到旁白中」）。落库前整行剥除。
 _ORPHAN_QUOTE_LINE_RE = re.compile(r"(?m)^[ \t　]*[“”「」『』\"]+[ \t　]*(?:\n|$)")
@@ -2442,10 +2459,16 @@ async def run_opening_generation(session_id: str) -> None:
         )
     except asyncio.CancelledError:
         logger.info("开场生成被取消: session=%s", session_id)
-    except Exception:
+    except Exception as e:
         logger.exception("开场生成失败: session=%s", session_id)
-        # 落库系统提示（而非仅广播）：否则客户端收到 done 后 resync 会把它一并抹掉
-        _persist_error_notice(db, session_id, "（开场生成中断，请点重试或刷新）")
+        # 落库系统提示（而非仅广播）：否则客户端收到 done 后 resync 会把它一并抹掉。
+        # 能归类的错误给出可行动原因（如 401→检查 Key），否则回落通用文案。
+        hint = _classify_llm_error(e)
+        msg = (
+            f"（开场生成失败：{hint}。修好后点「重试开场」即可。）"
+            if hint else "（开场生成中断，请点「重试开场」或刷新。）"
+        )
+        _persist_error_notice(db, session_id, msg)
         room_hub.broadcast(session_id, _make_chunk("done"))
     finally:
         db.close()

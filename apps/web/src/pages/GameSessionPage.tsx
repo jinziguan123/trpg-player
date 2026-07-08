@@ -152,6 +152,8 @@ export function GameSessionPage() {
   const shownCharId = panelCharId ?? myCharId
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  // 开局前置校验：是否已配置可用 AI（null=未知/检查中）。未配置时提示去设置，避免开场直接失败。
+  const [aiConfigured, setAiConfigured] = useState<boolean | null>(null)
   // 生成已开始但还没吐出第一段内容（推理类模型先思考、此时无 token）→ 显示"KP 思考中"
   const [thinking, setThinking] = useState(false)
   // 历史检索：模糊搜索本局历史 + 跳转到对应消息
@@ -217,6 +219,16 @@ export function GameSessionPage() {
     for (const m of messages) if (m.sequence_num != null && m.sequence_num > maxSeqSeen.current) maxSeqSeen.current = m.sequence_num
     if (!firstBatchDone.current && messages.length > 0) firstBatchDone.current = true
   }, [messages])
+  // 开局前置校验：进页时查一次「是否已配置可用 AI」。未配置时前端给出引导，
+  // 不至于让玩家撞上开场直接失败还找不到原因。
+  useEffect(() => {
+    let alive = true
+    api.get<{ configured: boolean }>('/settings/ai/status')
+      .then((s) => { if (alive) setAiConfigured(!!s.configured) })
+      .catch(() => { if (alive) setAiConfigured(null) })
+    return () => { alive = false }
+  }, [])
+
   // 会话切换：重置动效追踪，新会话的首屏历史同样不逐条弹入。
   useEffect(() => {
     renderedIds.current = new Set()
@@ -581,6 +593,21 @@ export function GameSessionPage() {
       setStreaming(false)
       setThinking(false)
       toast.error(e instanceof Error ? e.message : '重新生成失败')
+    }
+  }
+
+  // 重试开场：开场生成失败（或刷新后 state 丢失、从未成功）时的重入口。POST /opening 幂等，
+  // 已有正式叙事则后端只收尾、不重复；输出经已开着的 /live 流推入。
+  const retryOpening = async () => {
+    if (!currentSession) return
+    try {
+      setStreaming(true)
+      setThinking(true)
+      await api.post(`/sessions/${currentSession.id}/opening`, {})
+    } catch (e: unknown) {
+      setStreaming(false)
+      setThinking(false)
+      toast.error(e instanceof Error ? e.message : '重试开场失败')
     }
   }
 
@@ -1210,6 +1237,24 @@ export function GameSessionPage() {
             {typingName} 正在输入…
           </div>
         )}
+        {aiConfigured === false && (
+          <div
+            className="mx-3 mb-1 flex items-center justify-between gap-2 rounded px-3 py-2 text-xs"
+            style={{
+              background: 'var(--color-bg-tertiary)',
+              border: '1px solid var(--color-border-strong)',
+              color: 'var(--color-text-secondary)',
+            }}
+          >
+            <span>尚未配置可用的 AI 模型，KP 开场与叙事将无法生成。</span>
+            <button
+              onClick={() => navigate('/settings')}
+              className="btn-secondary !px-2 !py-1"
+            >
+              去设置
+            </button>
+          </div>
+        )}
         {!streaming && (
           <div className="px-3 pb-1 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -1232,7 +1277,7 @@ export function GameSessionPage() {
                 </span>
               )}
             </div>
-            {messages.some((m) => m.type === 'narration') && (
+            {messages.some((m) => m.type === 'narration') ? (
               <ConfirmDialog
                 title="重新生成最新一轮"
                 description="将删除最新一轮 KP 的叙事（旁白与 NPC 台词），用本轮玩家与队友的既有输入重新生成；已投出的骰子结果会保留、不重掷。此操作会打断当前生成、可能明显改变剧情走向——仅在生成卡住或结果明显有问题时使用。"
@@ -1250,6 +1295,16 @@ export function GameSessionPage() {
                   </button>
                 )}
               </ConfirmDialog>
+            ) : (
+              // 尚无任何 KP 叙事（开场未成功 / 刷新后 state 丢失）→ 提供开场重入口
+              <button
+                onClick={retryOpening}
+                title="（重新）生成开场叙事"
+                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors hover:opacity-80"
+                style={{ color: 'var(--color-text-accent)' }}
+              >
+                <RotateCcw size={12} /> 重试开场
+              </button>
             )}
           </div>
         )}
