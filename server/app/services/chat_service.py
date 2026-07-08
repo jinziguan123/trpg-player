@@ -1346,6 +1346,8 @@ async def _maybe_roll_story_summary(db: Session, session_id: str, llm) -> None:
             for npc in ((module.npcs if module else None) or [])
             if npc.get("id")
         }
+        # 叙事主流已停但仍持锁做收尾：给前端一个可读状态，别让玩家对着无声脉冲点干等。
+        room_hub.broadcast(session_id, _make_chunk("housekeeping", "KP 正在整理笔记…"))
         result = await story_summarizer.summarize_and_extract(
             llm, ws.get("story_summary") or "", to_summ,
             world_memory.format_npc_memory_all_brief(ws, npc_names),
@@ -1441,6 +1443,9 @@ async def _maybe_run_backstage(db: Session, session_id: str, llm) -> None:
         messages = backstage_agent.build_backstage_messages(
             session, module, secret_npcs, since,
         )
+        # 幕后推演刻意不广播任何 chunk（含状态提示）——幕后是「仅 KP 可见」的隔离机制，
+        # 连「正在推演幕后」这类信号都不外泄（见 test_backstage 的广播禁令）。收尾期的可读
+        # 状态由 _maybe_roll_story_summary 的「整理笔记」承担；此处保持静默。
         agent = backstage_agent.BackstageAgent(llm)
         valid_ids = {n.get("id") for n in (module.npcs or []) if n.get("id")}
         bevents = await agent.infer(messages, valid_ids)

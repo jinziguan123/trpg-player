@@ -156,6 +156,10 @@ export function GameSessionPage() {
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null)
   // 生成已开始但还没吐出第一段内容（推理类模型先思考、此时无 token）→ 显示"KP 思考中"
   const [thinking, setThinking] = useState(false)
+  // 叙事主流已停、仍在持锁收尾（滚动摘要/幕后推演）时的可读状态，别让玩家对无声脉冲点干等。
+  const [tailNote, setTailNote] = useState('')
+  // 生成持续过久（>15s）时浮现「打断并重新生成」——后端 cancel 能力已齐备，纯前端入口。
+  const [showInterrupt, setShowInterrupt] = useState(false)
   // 历史检索：模糊搜索本局历史 + 跳转到对应消息
   const [showSearch, setShowSearch] = useState(false)
   const [searchQ, setSearchQ] = useState('')
@@ -228,6 +232,13 @@ export function GameSessionPage() {
       .catch(() => { if (alive) setAiConfigured(null) })
     return () => { alive = false }
   }, [])
+
+  // 生成超过 15s 才浮现「打断并重新生成」；生成结束即隐藏并复位。
+  useEffect(() => {
+    if (!streaming) { setShowInterrupt(false); return }
+    const timer = setTimeout(() => setShowInterrupt(true), 15000)
+    return () => clearTimeout(timer)
+  }, [streaming])
 
   // 会话切换：重置动效追踪，新会话的首屏历史同样不逐条弹入。
   useEffect(() => {
@@ -339,9 +350,14 @@ export function GameSessionPage() {
     if (t === 'turn_state') { setTurnState((chunk.metadata as { confirmed_ids: string[]; total: number; ready: boolean }) || null); return }
     if (t === 'event_delete') { if (chunk.id) removeMessage(chunk.id); return }
     if (t === 'event_update') { if (chunk.id) updateMessage(chunk.id, chunk.content || ''); return }
+    if (t === 'housekeeping') {
+      // 叙事已停但仍在收尾（摘要/幕后）：脉冲点旁给出可读文案，输入仍锁但不再无解释
+      setThinking(false); setTailNote(chunk.content || 'KP 正在整理笔记…')
+      return
+    }
     if (t === 'done') {
       endStream(); liveTypeRef.current = ''
-      setStreaming(false); setThinking(false); setRefreshTick((x) => x + 1)
+      setStreaming(false); setThinking(false); setTailNote(''); setRefreshTick((x) => x + 1)
       setTurnState(null)  // 新回合开始：确认进度归零
       setOptimisticPending(new Set())  // done 后 pending_checks 由 refetch 权威刷新，清乐观集
       // 生成结束后从 DB 对齐：用持久化的最终叙述替换流式拼接的内容，
@@ -378,7 +394,7 @@ export function GameSessionPage() {
       return
     }
     if (t === 'narration') {
-      setThinking(false)  // 第一段叙述 token 到达 → 不再是"思考中"
+      setThinking(false); setTailNote('')  // 有新叙述 token → 不再是"思考中/收尾中"
       // 分头行动按组生成时，narration chunk 带 metadata.group；切换分组要另起一条流式消息，
       // 否则多组叙述会被拼进同一条、实时分栏失效（done 后 resync 会再按落库分组对齐）。
       const grp = String((chunk.metadata as Record<string, unknown> | undefined)?.group || '')
@@ -1259,10 +1275,20 @@ export function GameSessionPage() {
           {streaming && (
             <div className="chat-loading flex items-center gap-2">
               <span className="dot-pulse" />
-              {thinking && (
+              {(thinking || tailNote) && (
                 <span className="text-xs italic" style={{ color: 'var(--color-text-secondary)' }}>
-                  KP 正在思考……
+                  {tailNote || 'KP 正在思考……'}
                 </span>
+              )}
+              {showInterrupt && messages.some((m) => m.type === 'action') && (
+                <button
+                  onClick={regenerate}
+                  title="打断当前生成并用本轮既有输入重新生成（生成卡住时用）"
+                  className="ml-2 inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded transition-colors hover:opacity-80"
+                  style={{ color: 'var(--color-danger)' }}
+                >
+                  <RotateCcw size={11} /> 打断并重新生成
+                </button>
               )}
             </div>
           )}
@@ -1368,8 +1394,9 @@ export function GameSessionPage() {
                 sendMessage()
               }
             }}
-            placeholder={'输入行动；用「」或""括住要说出口的台词，（圆括号）内为场外'}
-            disabled={streaming}
+            placeholder={streaming
+              ? 'KP 叙事中，可先打草稿，稍后发送…'
+              : '输入行动；用「」或""括住要说出口的台词，（圆括号）内为场外'}
             className="input flex-1"
             rows={1}
             style={{ resize: 'none' }}
