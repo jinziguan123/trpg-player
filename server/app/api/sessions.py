@@ -375,13 +375,31 @@ async def export_replay(
     return result
 
 
+_ALLOWED_STATUSES = {"setup", "active", "paused", "ended"}
+
+
 @router.put("/{session_id}/status", response_model=SessionRead)
 def update_status(
-    session_id: str, data: SessionStatusUpdate, db: Session = Depends(get_db)
+    session_id: str,
+    data: SessionStatusUpdate,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
 ):
+    if data.status not in _ALLOWED_STATUSES:
+        raise HTTPException(400, f"非法状态：{data.status}")
+    if not session_service.get_session(db, session_id):
+        raise HTTPException(404, "会话不存在")
+    if not session_service.can_manage_session(db, session_id, token):
+        raise HTTPException(403, "只有房主可以变更会话状态")
     session = session_service.update_session_status(db, session_id, data.status)
     if not session:
         raise HTTPException(404, "会话不存在")
+    # 结束模组：广播状态变更，各端刷新会话（成长结算入口据 status==ended 出现）。
+    if data.status == "ended":
+        room_hub.broadcast(
+            session_id,
+            _make_chunk("status", "（房主已结束本模组，可进行成长结算与最终战报。）", actor_name="系统"),
+        )
     return session
 
 

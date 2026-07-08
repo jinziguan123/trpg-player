@@ -778,17 +778,20 @@ def set_event_group(db: Session, event: EventLog, group: str) -> None:
     db.commit()
 
 
-def can_delete_session(db: Session, session_id: str, token: str | None) -> bool:
-    """谁可以删除会话：房主本人；或纯本机/旧会话（主角席无归属）时的本机用户。
-
-    此前 delete 端点零校验，同网段任何人都能 curl 删掉整场存档。有主会话现在只允许房主删。
-    """
+def can_manage_session(db: Session, session_id: str, token: str | None) -> bool:
+    """房主管理权（结束会话、删除等破坏性/房主操作）：房主本人；或纯本机/旧会话
+    （主角席无归属）时的本机用户。有主会话只允许房主，防同网段他人越权。"""
     seat = _primary_seat(db, session_id)
     if seat is None:
         return False
-    if not seat.owner_token:  # 纯本机/旧会话，无归属 → 本机可删（保持原体验）
+    if not seat.owner_token:  # 纯本机/旧会话，无归属 → 本机可管理（保持原体验）
         return True
     return bool(token and seat.owner_token == token)
+
+
+def can_delete_session(db: Session, session_id: str, token: str | None) -> bool:
+    """删除会话的鉴权，语义同 can_manage_session（房主或纯本机会话）。"""
+    return can_manage_session(db, session_id, token)
 
 
 def delete_session(db: Session, session_id: str) -> bool:

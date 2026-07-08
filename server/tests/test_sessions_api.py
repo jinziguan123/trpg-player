@@ -386,6 +386,35 @@ def test_resolve_actor_rejects_missing_token_on_owned_seat(client):
         gen.close()
 
 
+def test_end_session_requires_host_and_reaches_growth(client):
+    """房主可结束会话（status=ended）；非房主被拒；非法状态 400。"""
+    c, ids = client
+    host = {"X-Player-Token": "host-tok"}
+    sid = c.post(
+        "/api/sessions",
+        json={"module_id": ids["module"],
+              "participants": [{"character_id": ids["hero"], "is_primary": True}]},
+        headers=host,
+    ).json()["id"]
+
+    # 非房主不能改状态
+    assert c.put(
+        f"/api/sessions/{sid}/status", json={"status": "ended"},
+        headers={"X-Player-Token": "guest"},
+    ).status_code == 403
+    # 非法状态 400
+    assert c.put(
+        f"/api/sessions/{sid}/status", json={"status": "bogus"}, headers=host,
+    ).status_code == 400
+    # 房主结束 → ended
+    r = c.put(f"/api/sessions/{sid}/status", json={"status": "ended"}, headers=host)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "ended"
+    # 结束后 growth 端点可查（成长入口据此出现）
+    g = c.get(f"/api/sessions/{sid}/growth", params={"character_id": ids["hero"]})
+    assert g.status_code == 200
+
+
 def test_check_endpoint_intent_optional(client, monkeypatch):
     """不填 intent 仍应正常申请检定（向后兼容旧客户端）。"""
     import app.api.chat as chat_module

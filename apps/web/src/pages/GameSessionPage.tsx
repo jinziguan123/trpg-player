@@ -363,6 +363,12 @@ export function GameSessionPage() {
       refetchSession()
       return
     }
+    if (t === 'status') {
+      // 会话状态变更（如房主结束模组）：刷新会话，成长/最终战报入口据 status 出现
+      refetchSession()
+      if (chunk.content) addMessage({ id: '', type: 'system', content: chunk.content, actor_name: chunk.actor_name })
+      return
+    }
     if (t === 'typing') {
       if (chunk.actor_name && chunk.actor_name !== myNameRef.current) {
         setTypingName(chunk.actor_name)
@@ -611,6 +617,18 @@ export function GameSessionPage() {
     }
   }
 
+  // 房主结束本模组：置会话为 ended（后端广播 status，各端刷新）→ 成长结算与最终战报入口出现。
+  const endSession = async () => {
+    if (!currentSession) return
+    try {
+      const s = await api.put(`/sessions/${currentSession.id}/status`, { status: 'ended' })
+      setCurrentSession(s as never)
+      toast.success('本模组已结束，可进行成长结算')
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : '结束失败')
+    }
+  }
+
   // 删除自己本回合尚未推进的暂存发言。
   const deleteEvent = async (id: string) => {
     if (!currentSession) return
@@ -776,6 +794,24 @@ export function GameSessionPage() {
             >
               <GiScrollUnfurled size={13} /> 战报
             </button>
+            {isHost && currentSession.status !== 'ended' && (
+              <ConfirmDialog
+                title="结束本模组"
+                description="将把本局标记为已结束：之后可进行成长结算与最终战报，但不再继续跑团。确定结束吗？"
+                confirmLabel="结束本模组"
+                onConfirm={endSession}
+              >
+                {(open) => (
+                  <button
+                    onClick={open}
+                    className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
+                    title="结束本模组：结算成长、生成最终战报（房主）"
+                  >
+                    <GiUpgrade size={13} /> 结束模组
+                  </button>
+                )}
+              </ConfirmDialog>
+            )}
             {myCharId && currentSession.status === 'ended' && (
               <button
                 onClick={() => setShowGrowth(true)}
