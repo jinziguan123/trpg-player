@@ -29,6 +29,16 @@ def test_rulebook_sections_present():
         assert marker in s, f"裁定手册缺少分区：{marker}"
 
 
+def test_say_marker_is_mandatory_for_all_dialogue():
+    """台词归属治本（P2-1）：契约要求一切 NPC 台词都用 [SAY] 标记，把归属从『猜』变成
+    『读标记』，启发式降级为兜底。守住这条，防契约被改回「仅多说话人才标」。"""
+    s = KP_SYSTEM_PROMPT
+    assert "一律" in s and "[SAY: who=完整姓名]" in s
+    assert "不是可选项" in s
+    # 明确点出裸引号会被启发式误判（激励全量标记）
+    assert "启发式" in s and "猜" in s
+
+
 def test_characteristic_checks_and_proactive_guidance():
     """属性检定入册 + KP 主动推进指引：九维属性可作 [DICE_CHECK] 的 skill、
     典型用途映射在册；卡关/需专业知识时 KP 应主动发起灵感/教育检定，不干等玩家申请。"""
