@@ -191,7 +191,7 @@ def test_lookup_quota_shared_between_rule_and_module(db_factory):
     db = db_factory()
     session_id, session, module, hero = _seed(db)
     execute = chat_service._build_kp_tool_executor(
-        db, session_id, session, module, hero, [], llm=None,
+        db, session_id, session, module, hero, [], llm=None, result=["", "", [], [], []],
     )
 
     async def _go():
@@ -218,7 +218,7 @@ def test_requires_check_fallback_rolls_deterministically(db_factory):
     plan = TurnPlan(requires_check=True, check=CheckPlan(skill="侦查", difficulty="normal"))
     llm = _FakeToolLLM([[_text("你俯身叩击书桌侧板。")]])
     execute = chat_service._build_kp_tool_executor(
-        db, session_id, session, module, hero, [], llm=None,
+        db, session_id, session, module, hero, [], llm=None, result=["", "", [], [], []],
     )
 
     result = ["", "", [], [], []]
@@ -248,7 +248,7 @@ def test_requires_check_model_calls_tool_no_double_roll(db_factory):
         [_text("你凑近细看。"), _call("dice_check", {"skill": "侦查", "difficulty": "normal"})],
     ])
     execute = chat_service._build_kp_tool_executor(
-        db, session_id, session, module, hero, [], llm=None,
+        db, session_id, session, module, hero, [], llm=None, result=["", "", [], [], []],
     )
     result = ["", "", [], [], []]
 
@@ -292,7 +292,7 @@ def test_unknown_tool_returns_error_result_no_crash(db_factory):
     db = db_factory()
     session_id, session, module, hero = _seed(db)
     execute = chat_service._build_kp_tool_executor(
-        db, session_id, session, module, hero, [], llm=None,
+        db, session_id, session, module, hero, [], llm=None, result=["", "", [], [], []],
     )
     llm = _FakeToolLLM([
         [_call("bogus_tool", {"x": 1})],
@@ -380,20 +380,63 @@ def test_switch_on_uses_agent_loop(db_factory, monkeypatch):
     assert narrs and narrs[-1].content == "loop 路径叙事。"
 
 
+def test_say_tool_interleaves_dialogue_in_persist_order(db_factory):
+    """say() 工具：台词经 result 交错标记记录（不在 loop 中直接落库），_persist_narration
+    收尾时按偏移与旁白交错落库——resync 顺序为 旁白→台词→旁白，而非台词抢到旁白之前。"""
+    db = db_factory()
+    session_id, session, module, hero = _seed(db)
+    result = ["", "", [], [], []]
+    execute = chat_service._build_kp_tool_executor(
+        db, session_id, session, module, hero, [], llm=None, result=result,
+    )
+    llm = _FakeToolLLM([
+        [_text("门开了。"), _call("say", {"who": "管家", "text": "欢迎光临。"})],
+        [_text("他转身离去。")],
+    ])
+    chunks = asyncio.run(_collect_loop(llm, result, execute))
+
+    # 台词记入交错标记与 extracted（供世界记忆），偏移＝首段旁白长度；loop 内未直接落库
+    assert result[3] == [(len("门开了。"), "管家", "欢迎光临。")]
+    assert ("管家", "欢迎光临。") in result[2]
+    assert session_service.get_session_events(db, session_id) == []
+
+    # 落库后事件顺序正确交错
+    chat_service._persist_narration(db, session_id, result)
+    evs = [(e.event_type, e.content)
+           for e in session_service.get_session_events(db, session_id)]
+    assert evs == [
+        ("narration", "门开了。"),
+        ("dialogue", "欢迎光临。"),
+        ("narration", "他转身离去。"),
+    ]
+    # 广播里含 dialogue 气泡（实时也能看到）
+    kinds = [json.loads(c[len("data: "):])["type"] for c in chunks]
+    assert "dialogue" in kinds
+
+
+async def _collect_loop(llm, result, execute) -> list[str]:
+    return [
+        c async for c in chat_service._run_kp_agent_loop(
+            llm, [{"role": "system", "content": "KP"}], result, execute,
+        )
+    ]
+
+
 # ── 注册表完整性 ──────────────────────────────────────────────────────────
 
 
 def test_registry_covers_all_regex_commands():
-    """注册表收编全部终止型指令（SAY/GROUP 除外），且 schema 必填与正则解析一致。"""
+    """注册表收编全部终止型指令 + say（结构化对话工具）；GROUP 仍是纯文本标注不入表。"""
     tags = {spec.tag for spec in kp_tools.REGISTRY}
     assert tags == {
         "DICE_CHECK", "OPPOSED_CHECK", "SAN_CHECK", "HP_CHANGE", "NPC_ACT",
         "SCENE_CHANGE", "RULE_LOOKUP", "MODULE_LOOKUP", "SET_FLAG", "CLEAR_FLAG",
-        "HANDOUT",
+        "HANDOUT", "SAY",
     }
-    assert "SAY" not in tags and "GROUP" not in tags
+    assert "GROUP" not in tags
     required = {spec.name: spec.parameters["required"] for spec in kp_tools.REGISTRY}
     assert required["dice_check"] == ["skill"]
+    assert required["say"] == ["who", "text"]
     assert required["npc_act"] == ["npc_id", "trigger"]
     assert required["rule_lookup"] == ["query"]
     assert required["module_lookup"] == ["query"]

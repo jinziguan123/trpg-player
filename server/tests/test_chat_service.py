@@ -1285,3 +1285,40 @@ def test_multi_npc_with_say_tag_attributed_correctly():
         chat_service._stream_narration_filtered(_FakeKP(text), [], result, npcs=npcs)
     ))
     assert [name for name, _ in result[2]] == ["霍尔护士长"]
+
+
+async def _one(text: str):
+    """把整段文本作为单个 token 增量喂给 _filter_narration_stream。"""
+    yield text
+
+
+def test_guess_off_leaves_bare_quote_in_narration():
+    """guess_speakers=False（say() 工具路径）：无 [SAY] 的裸引号一律留旁白、绝不猜说话人。"""
+    text = "诺特站起身，走向门口。“交给我吧。”"
+    npcs = [{"name": "史蒂芬·诺特"}]
+    result = ["", "", [], [], []]
+    chunks = asyncio.run(_collect(
+        chat_service._filter_narration_stream(_one(text), result, npcs=npcs, guess_speakers=False)
+    ))
+    assert result[2] == []                                   # 未抽任何台词
+    assert result[3] == []                                   # 无对话交错标记
+    assert not any('"npc_dialogue"' in c for c in chunks)    # 未产出气泡
+    assert "交给我吧" in result[0]                            # 台词留在旁白正文里
+
+
+def test_guess_off_still_honors_explicit_say():
+    """guess_speakers=False 只关掉裸引号猜测；显式 [SAY] 标记仍确定性抽取为气泡。"""
+    text = "门口传来脚步声。[SAY: who=管家]请进。[/SAY]"
+    result = ["", "", [], [], []]
+    asyncio.run(_collect(
+        chat_service._filter_narration_stream(_one(text), result, guess_speakers=False)
+    ))
+    assert result[2] == [("管家", "请进。")]
+
+
+def test_inline_say_text_not_synthesized_as_tool_call():
+    """内联 [SAY] 文本由台词过滤器处理，_tool_call_from_text 绝不再合成 say() 调用（防重复气泡）。"""
+    assert chat_service._tool_call_from_text("[SAY: who=管家]请进。[/SAY]") is None
+    # 但真正的终止型指令仍会被合成
+    tc = chat_service._tool_call_from_text("[SET_FLAG: door_open]")
+    assert tc is not None and tc.name == "set_flag"

@@ -572,8 +572,13 @@ async def _filter_narration_stream(
     token_stream: AsyncIterator[str], result: list,
     npcs: list[dict] | None = None,
     group_label: str | None = None,
+    guess_speakers: bool = True,
 ) -> AsyncIterator[str]:
     """流式输出 KP 旁白，并把 NPC 台词抽成对话气泡。
+
+    ``guess_speakers=False``（结构化/say 工具路径）：**关闭裸引号的启发式说话人猜测**——
+    无 [SAY] 标记的引号一律留旁白，绝不猜。对话由 say() 工具承担干净的结构化出口，
+    故这里不再猜，从根上消灭「归错人」。[SAY] 显式标记仍照常识别（确定性、无歧义）。
 
     直接消费一个 token 流（与生成来源解耦）：旧路径喂 KPAgent.narrate 的输出，
     agent loop 路径喂 stream_chat 的文本增量——两条路径共用同一套台词抽取/
@@ -875,7 +880,12 @@ async def _filter_narration_stream(
                 adjacent = gap_since_quote.strip(_LIST_SEPS) == ""
                 if not adjacent:
                     written_run = False
-                if written_run and adjacent:
+                if not guess_speakers:
+                    # 结构化路径（say() 工具承担对话）：裸引号一律留旁白，绝不启发式猜说话人。
+                    pending_speaker, pending_weak, from_prefix = None, False, False
+                    quote_written = True
+                    written_run = True
+                elif written_run and adjacent:
                     # 续接书写标识串（如门牌列表）：整串都按书写内容留旁白，不抽台词。
                     pending_speaker, pending_weak, from_prefix = None, False, False
                     quote_written = True
@@ -1918,7 +1928,7 @@ async def _run_generation(
         if not module_rag_enabled:
             exclude.add("module_lookup")  # 原文索引未就绪：同上
         execute = _build_kp_tool_executor(
-            db, session_id, game_session, module, player_char, teammates, llm,
+            db, session_id, game_session, module, player_char, teammates, llm, result,
         )
         try:
             async for chunk in _run_kp_agent_loop(
@@ -3078,6 +3088,28 @@ async def _exec_npc_act(
     return chunks, npc_response
 
 
+def _exec_say(result: list, module: Module, who: str, text: str) -> list[str]:
+    """say() 工具：把一句 NPC 台词作为对话气泡广播，并**记入 result 的对话交错标记**——
+    落库交给收尾的 _persist_narration 按偏移与旁白交错持久化（复用旧路径的成熟机制），
+    从而在 resync 时与旁白保持正确先后顺序（不能在 loop 中直接落库，那会先于旁白）。
+
+    who 尽量归一到模组 NPC 的规范名；解析不到按临场龙套用原名。返回待广播的 chunks。
+    此路径不经台词过滤器的启发式猜测——对话直接由模型的结构化调用给出。
+    """
+    npc_name = who
+    for n in (module.npcs or []):
+        if n.get("id") == who or n.get("name") == who:
+            npc_name = n.get("name") or who
+            break
+    # 偏移＝此刻已累计旁白长度（本步旁白已并入 result[0]）→ 台词插在本步旁白之后、下步之前。
+    offset = len(result[0])
+    if len(result) > 3:
+        result[3].append((offset, npc_name, text))
+    if len(result) > 2:
+        result[2].append((npc_name, text))  # 供 _record_npc_say_memory 记入 NPC 互动史
+    return [_make_chunk("dialogue", text, actor_name=npc_name)]
+
+
 def _rule_lookup_passages(db: Session, query: str, rule_system: str) -> str:
     """检索规则书原文并拼成回灌片段；检索不到给降级文案（fail-open）。"""
     hits = rulebook_service.retrieve(db, query, rule_system, k=3)
@@ -3160,6 +3192,10 @@ def _tool_call_from_text(step_text: str) -> ToolCall | None:
     text = (step_text or "").replace("【", "[").replace("】", "]")
     for m in _TEXT_TAG_RE.finditer(text):
         tag, inner = m.group(1), (m.group(2) or "").strip()
+        # SAY/GROUP 是文本标注、不是动作：内联 [SAY] 由台词过滤器直接抽成气泡，
+        # 这里绝不能再合成一个 say() 工具调用，否则同一句台词会重复出气泡。
+        if tag in ("SAY", "GROUP"):
+            continue
         name = kp_tools.TAG_TO_TOOL.get(tag)
         if name is None:
             continue
@@ -3187,6 +3223,7 @@ def _plan_check_call(plan: turn_planner.TurnPlan) -> ToolCall:
 def _build_kp_tool_executor(
     db: Session, session_id: str, game_session: GameSession, module: Module,
     player_char: Character, teammates: list[Character] | None, llm,
+    result: list,
 ):
     """构建 loop 路径的工具执行器：把注册表工具名分发到上面的共用执行函数（不复制逻辑）。
 
@@ -3271,6 +3308,15 @@ def _build_kp_tool_executor(
                 return kp_tools.ToolOutcome(
                     KP_MODULE_CONTINUATION_PROMPT.format(query=query, passages=passages),
                     chunks=[_make_chunk("system", "守秘人翻阅模组手稿……")],
+                )
+            if name == "say":
+                who = kv.get("who", "").strip()
+                text = kv.get("text", "").strip().strip("“”\"「」『』")
+                if not who or not text:
+                    return kp_tools.ToolOutcome("参数缺失：who 与 text 均为必填。")
+                chunks = _exec_say(result, module, who, text)
+                return kp_tools.ToolOutcome(
+                    "台词已作为气泡展示给玩家（续写时不要复述这句话）。", chunks=chunks,
                 )
             if name == "npc_act":
                 npc_id = kv.get("npc_id", "").strip()
@@ -3373,6 +3419,7 @@ async def _run_kp_agent_loop(
         try:
             async for chunk in _filter_narration_stream(
                 _text_deltas(), step, npcs=npcs, group_label=group_label,
+                guess_speakers=False,  # 对话走 say() 工具；旁白里的裸引号一律留旁白、不猜
             ):
                 yield chunk
         except BaseException:
@@ -3441,6 +3488,7 @@ async def _run_kp_agent_loop(
         try:
             async for chunk in _filter_narration_stream(
                 _plain_deltas(), step, npcs=npcs, group_label=group_label,
+                guess_speakers=False,
             ):
                 yield chunk
         except BaseException:

@@ -164,6 +164,21 @@ REGISTRY: tuple[ToolSpec, ...] = (
         kind="state",
     ),
     ToolSpec(
+        name="say",
+        tag="SAY",
+        description=(
+            "让一个 NPC / 龙套说出一句台词（对话气泡）。**任何 NPC 开口说话都要调用本工具**，"
+            "不要把台词写进叙述文本里——写进文本的引号不会被识别为气泡。who 填说话人完整姓名，"
+            "text 只填这句话本身（不要带引号、不要带「谁说」等描述）。多句/多人轮流各自调用一次。"
+            "台词会直接展示给玩家，续写时不要复述。旁白（环境、动作、神态）仍照常写进叙述文本。"
+        ),
+        parameters=_params({
+            "who": {"type": "string", "description": "说话人完整姓名（NPC 或临场龙套）"},
+            "text": {"type": "string", "description": "台词内容本身，不含引号与「谁说」等描述"},
+        }, ["who", "text"]),
+        kind="npc",
+    ),
+    ToolSpec(
         name="npc_act",
         tag="NPC_ACT",
         description=(
@@ -291,7 +306,7 @@ def tool_mode_message() -> dict:
     """loop 路径追加的系统消息：把手写 prompt 里的方括号指令映射到工具调用。
 
     不重写手写指令说明段（各指令的时机与约束照旧生效），只声明表达形式的切换；
-    SAY/GROUP 是文本标注而非动作，明确保留文本形式。
+    对话改用 say() 工具（结构化出口，从根上取消台词的启发式解析）；GROUP 仍是文本标注。
     """
     return {
         "role": "system",
@@ -302,9 +317,11 @@ def tool_mode_message() -> dict:
             "[HANDOUT]）一律改为调用对应的同名工具（dice_check、opposed_check、"
             "san_check、hp_change、npc_act、scene_change、rule_lookup、module_lookup、"
             "set_flag、clear_flag、handout），不要把这些指令写成文本。"
+            "**NPC 台词一律改为调用 say(who, text) 工具**（每句一次，who 填说话人姓名、"
+            "text 只填这句话本身）——不要再把台词或 [SAY] 写进叙述文本，写进文本的引号不会"
+            "成为对话气泡。旁白（环境/动作/神态）仍照常写在叙述文本里。"
             "各指令的使用时机与行为约束（何时检定、何时暗投、不预测结果、不泄密等）完全不变。"
             "工具执行结果会回注给你，你据此继续叙述。发起检定（dice_check/opposed_check）后"
-            "请立即结束本段输出，等待结果回注。例外：[SAY: who=…]…[/SAY] 与 "
-            "[GROUP: scene=…] 是文本标注而非动作，照旧写在叙述文本里。"
+            "请立即结束本段输出，等待结果回注。例外：[GROUP: scene=…] 仍是文本标注、照旧写在叙述里。"
         ),
     }
