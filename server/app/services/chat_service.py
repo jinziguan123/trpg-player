@@ -556,14 +556,34 @@ def _narr_quote_span(open_q: str, buf: str, close_q: str) -> str:
     return open_q + buf.strip("\n") + close_q
 
 
+def _is_party_speaker(name: str, party_names: set[str] | None) -> bool:
+    """说话人是否属于玩家党（玩家 + AI 队友）——KP 绝不能用台词气泡替他们说话/行动。
+
+    容忍全名与名字片段互为子串（「伊芙琳」↔「伊芙琳·哈特」）；宁可偶尔挡下一个名字重叠的
+    NPC，也不放过「KP 替玩家发声」——后者是最伤的沉浸感杀手。
+    """
+    if not party_names:
+        return False
+    n = (name or "").strip()
+    if len(n) < 2:
+        return False
+    for pn in party_names:
+        pn = (pn or "").strip()
+        if pn and (n == pn or n in pn or pn in n):
+            return True
+    return False
+
+
 async def _stream_narration_filtered(
     kp: KPAgent, messages: list[dict], result: list,
     npcs: list[dict] | None = None,
     group_label: str | None = None,
+    party_names: set[str] | None = None,
 ) -> AsyncIterator[str]:
     """旧路径入口：KPAgent 流式生成 + 台词过滤（核心逻辑在 _filter_narration_stream）。"""
     async for chunk in _filter_narration_stream(
         kp.narrate(messages), result, npcs=npcs, group_label=group_label,
+        party_names=party_names,
     ):
         yield chunk
 
@@ -573,8 +593,12 @@ async def _filter_narration_stream(
     npcs: list[dict] | None = None,
     group_label: str | None = None,
     guess_speakers: bool = True,
+    party_names: set[str] | None = None,
 ) -> AsyncIterator[str]:
     """流式输出 KP 旁白，并把 NPC 台词抽成对话气泡。
+
+    ``party_names``（玩家 + AI 队友名）给定时，任何归到玩家党名下的台词都**不生成气泡**——
+    KP 绝不能替玩家/队友发声。这是显式 [SAY] 与后置说话人路径缺失的守卫（裸引号路径本就避让玩家党）。
 
     ``guess_speakers=False``（结构化/say 工具路径）：**关闭裸引号的启发式说话人猜测**——
     无 [SAY] 标记的引号一律留旁白，绝不猜。对话由 say() 工具承担干净的结构化出口，
@@ -784,6 +808,8 @@ async def _filter_narration_stream(
         say_buf = ""
         say_speaker = ""
         if text and speaker:
+            if _is_party_speaker(speaker, party_names):
+                return None  # 绝不用气泡替玩家/队友说话：KP 误用 [SAY] 代言 → 丢弃该气泡
             last_speaker = speaker
             extracted.append((speaker, text))
             dialogue_marks.append((len(narration), speaker, text))
@@ -802,6 +828,8 @@ async def _filter_narration_stream(
                     # 后置说话人同样压制「被台词内容点名」的张冠李戴（后置判定从不来自显式前缀）
                     if speaker and _speaker_named_in_text(speaker, text):
                         speaker = None
+                    if speaker and _is_party_speaker(speaker, party_names):
+                        speaker = None  # 不替玩家/队友发声
                     if speaker:
                         last_speaker = speaker
                         extracted.append((speaker, text))
@@ -914,6 +942,8 @@ async def _filter_narration_stream(
                 # 非显式前缀判定的说话人若被台词内容点名（修女谈论科比特→署名科比特），压制归属
                 if ok and not pending_from_prefix and _speaker_named_in_text(pending_speaker, text):
                     ok = False
+                if ok and _is_party_speaker(pending_speaker, party_names):
+                    ok = False  # 不替玩家/队友发声
                 if ok:
                     last_speaker = pending_speaker
                     extracted.append((pending_speaker, text))
@@ -1917,6 +1947,8 @@ async def _run_generation(
     if blind_message is not None:
         messages.append(blind_message)
 
+    # 玩家党名单（玩家 + AI 队友）：供台词归属守卫用——KP 绝不能用气泡替他们说话。
+    party_names = {player_char.name} | {t.name for t in (teammates or [])}
     result = ["", "", [], [], []]
     if _tool_loop_active(llm):
         # 新路径：agent loop（标准工具调用）。指令在 loop 内经执行器完成（含文本指令兜底），
@@ -1934,7 +1966,7 @@ async def _run_generation(
             async for chunk in _run_kp_agent_loop(
                 llm, messages, result, execute,
                 tools=kp_tools.openai_tool_schemas(exclude=exclude),
-                npcs=matcher_npcs, plan=plan,
+                npcs=matcher_npcs, plan=plan, party_names=party_names,
             ):
                 room_hub.broadcast(session_id, chunk)
         except BaseException:
@@ -1954,7 +1986,7 @@ async def _run_generation(
         # 否则客户端在收到 done 后 resync 会拉到空历史，造成「生成到一半聊天全部消失」。
         try:
             async for chunk in _stream_narration_filtered(
-                kp, messages, result, npcs=matcher_npcs,
+                kp, messages, result, npcs=matcher_npcs, party_names=party_names,
             ):
                 room_hub.broadcast(session_id, chunk)
         except BaseException:
@@ -3314,6 +3346,14 @@ def _build_kp_tool_executor(
                 text = kv.get("text", "").strip().strip("“”\"「」『』")
                 if not who or not text:
                     return kp_tools.ToolOutcome("参数缺失：who 与 text 均为必填。")
+                # 守卫：绝不用 say() 替玩家/队友说话或行动（他们的台词由本人给出）。
+                party = {player_char.name} | {t.name for t in (teammates or [])}
+                if _is_party_speaker(who, party):
+                    return kp_tools.ToolOutcome(
+                        f"拒绝：{who} 是玩家或队友角色，你不能替他们说话或行动。"
+                        "玩家与队友的言行只能由他们本人给出；你只叙述 NPC 与环境，"
+                        "把选择权留给他们。"
+                    )
                 chunks = _exec_say(result, module, who, text)
                 return kp_tools.ToolOutcome(
                     "台词已作为气泡展示给玩家（续写时不要复述这句话）。", chunks=chunks,
@@ -3382,6 +3422,7 @@ async def _run_kp_agent_loop(
     group_label: str | None = None,
     plan: turn_planner.TurnPlan | None = None,
     max_steps: int = MAX_TOOL_LOOP_STEPS,
+    party_names: set[str] | None = None,
 ) -> AsyncIterator[str]:
     """KP agent loop：与 _stream_narration_filtered 并列的新路径（use_tool_calls 开启时用）。
 
@@ -3420,6 +3461,7 @@ async def _run_kp_agent_loop(
             async for chunk in _filter_narration_stream(
                 _text_deltas(), step, npcs=npcs, group_label=group_label,
                 guess_speakers=False,  # 对话走 say() 工具；旁白里的裸引号一律留旁白、不猜
+                party_names=party_names,  # 内联 [SAY] 误代言玩家/队友也挡下
             ):
                 yield chunk
         except BaseException:
@@ -3488,7 +3530,7 @@ async def _run_kp_agent_loop(
         try:
             async for chunk in _filter_narration_stream(
                 _plain_deltas(), step, npcs=npcs, group_label=group_label,
-                guess_speakers=False,
+                guess_speakers=False, party_names=party_names,
             ):
                 yield chunk
         except BaseException:

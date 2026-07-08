@@ -414,6 +414,34 @@ def test_say_tool_interleaves_dialogue_in_persist_order(db_factory):
     assert "dialogue" in kinds
 
 
+def test_say_tool_refuses_to_voice_player_or_teammate(db_factory):
+    """守卫：say() 归到玩家/队友名下时驳回、不出气泡；对在场 NPC 正常出气泡。"""
+    db = db_factory()
+    session_id, session, module, hero = _seed(db)
+    ally = Character(name="亨利·卡特", rule_system="coc", is_player=False)
+    module.npcs = [{"id": "npc_knott", "name": "史蒂芬·诺特先生"}]
+    db.add(ally)
+    db.commit()
+    result = ["", "", [], [], []]
+    execute = chat_service._build_kp_tool_executor(
+        db, session_id, session, module, hero, [ally], llm=None, result=result,
+    )
+
+    async def _go():
+        rp = await execute(ToolCall(id="1", name="say",
+                                    arguments={"who": "伊芙琳·哈特", "text": "我们走吧。"}))
+        ra = await execute(ToolCall(id="2", name="say",
+                                    arguments={"who": "亨利", "text": "跟上。"}))
+        rn = await execute(ToolCall(id="3", name="say",
+                                    arguments={"who": "史蒂芬·诺特先生", "text": "欢迎光临。"}))
+        return rp, ra, rn
+
+    rp, ra, rn = asyncio.run(_go())
+    assert "拒绝" in rp.result_text and not rp.chunks       # 玩家：驳回、无气泡
+    assert "拒绝" in ra.result_text and not ra.chunks       # 队友（名字片段）：驳回
+    assert rn.chunks and result[3] == [(0, "史蒂芬·诺特先生", "欢迎光临。")]  # NPC：正常出气泡
+
+
 async def _collect_loop(llm, result, execute) -> list[str]:
     return [
         c async for c in chat_service._run_kp_agent_loop(

@@ -850,7 +850,7 @@ def test_generation_saves_on_interrupt(db_factory, monkeypatch):
     """流式被取消（硬取消生成 task）时，已生成内容仍应落库。"""
     _patch_runtime(monkeypatch, db_factory)
 
-    async def fake_stream(kp, messages, result, npcs=None):
+    async def fake_stream(kp, messages, result, npcs=None, **kwargs):
         result[0] = "KP 刚说到一半"
         yield chat_service._make_chunk("narration", "KP 刚说到一半", actor_name="KP")
         raise asyncio.CancelledError()
@@ -873,7 +873,7 @@ def test_opening_saves_partial_on_stream_error(db_factory, monkeypatch):
     """开场流式中途报错（供应商抖动断流）时，已生成片段应落库，避免客户端 resync 后聊天清空。"""
     _patch_runtime(monkeypatch, db_factory)
 
-    async def fake_stream(kp, messages, result, npcs=None):
+    async def fake_stream(kp, messages, result, npcs=None, **kwargs):
         result[0] = "雾气弥漫的码头，远处传来"
         yield chat_service._make_chunk("narration", "雾气弥漫的码头，远处传来", actor_name="KP")
         raise RuntimeError("provider stream dropped")
@@ -898,7 +898,7 @@ def test_generation_saves_once_on_success(db_factory, monkeypatch):
     """正常完成时落库一次且不重复。"""
     _patch_runtime(monkeypatch, db_factory)
 
-    async def fake_stream(kp, messages, result, npcs=None):
+    async def fake_stream(kp, messages, result, npcs=None, **kwargs):
         result[0] = "完整的开场叙事"
         yield chat_service._make_chunk("narration", "完整的开场叙事", actor_name="KP")
 
@@ -927,7 +927,7 @@ def test_generation_injects_turn_plan(db_factory, monkeypatch):
             safety=chat_service.turn_planner.SafetyPolicy(do_not_reveal=["管家的秘密"]),
         )
 
-    async def fake_stream(kp, messages, result, npcs=None):
+    async def fake_stream(kp, messages, result, npcs=None, **kwargs):
         captured["messages"] = messages
         result[0] = "你开始检查书桌。"
         yield chat_service._make_chunk("narration", "你开始检查书桌。", actor_name="KP")
@@ -962,7 +962,7 @@ def test_generation_patches_narration_when_validator_flags_violation(db_factory,
             safety=chat_service.turn_planner.SafetyPolicy(do_not_reveal=["管家的秘密"]),
         )
 
-    async def fake_stream(kp, messages, result, npcs=None):
+    async def fake_stream(kp, messages, result, npcs=None, **kwargs):
         result[0] = "【场景状态更新】\n- flag hint_x 仍需调查员获取管家的秘密。"
         result[1] = result[0]
         result[2] = [("管家", "别问我。")]
@@ -1161,7 +1161,7 @@ def test_opening_generation_skips_turn_planner(db_factory, monkeypatch):
         called["planner"] = True
         return None
 
-    async def fake_stream(kp, messages, result, npcs=None):
+    async def fake_stream(kp, messages, result, npcs=None, **kwargs):
         result[0] = "开场叙事"
         yield chat_service._make_chunk("narration", "开场叙事", actor_name="KP")
 
@@ -1182,7 +1182,7 @@ def test_opening_idempotent(db_factory, monkeypatch):
 
     triggered = {"gen": False}
 
-    async def fake_stream(kp, messages, result, npcs=None):
+    async def fake_stream(kp, messages, result, npcs=None, **kwargs):
         triggered["gen"] = True
         result[0] = "不该发生"
         yield chat_service._make_chunk("narration", "不该发生", actor_name="KP")
@@ -1314,6 +1314,36 @@ def test_guess_off_still_honors_explicit_say():
         chat_service._filter_narration_stream(_one(text), result, guess_speakers=False)
     ))
     assert result[2] == [("管家", "请进。")]
+
+
+def test_say_marker_for_player_or_teammate_produces_no_bubble():
+    """守卫：显式 [SAY] 归到玩家/队友名下时绝不生成气泡（KP 不得替玩家党发声）。"""
+    text = "伊芙琳皱起眉。[SAY: who=伊芙琳·哈特]我们直接去老房子吧。[/SAY]"
+    result = ["", "", [], [], []]
+    chunks = asyncio.run(_collect(
+        chat_service._filter_narration_stream(
+            _one(text), result, party_names={"伊芙琳·哈特", "亨利·卡特"},
+        )
+    ))
+    assert result[2] == []                                   # 玩家台词未抽成气泡
+    assert not any('"npc_dialogue"' in c for c in chunks)
+
+    # 对照：NPC 的 [SAY] 仍正常出气泡
+    result2 = ["", "", [], [], []]
+    asyncio.run(_collect(chat_service._filter_narration_stream(
+        _one("[SAY: who=管家]请进。[/SAY]"), result2, party_names={"伊芙琳·哈特"},
+    )))
+    assert result2[2] == [("管家", "请进。")]
+
+
+def test_is_party_speaker_matches_full_and_partial_names():
+    party = {"伊芙琳·哈特", "亨利·卡特"}
+    assert chat_service._is_party_speaker("伊芙琳·哈特", party)   # 全名
+    assert chat_service._is_party_speaker("伊芙琳", party)        # 名字片段
+    assert chat_service._is_party_speaker("亨利", party)
+    assert not chat_service._is_party_speaker("史蒂芬·诺特", party)  # NPC 不误伤
+    assert not chat_service._is_party_speaker("", party)
+    assert not chat_service._is_party_speaker("管家", None)       # 无名单时不挡
 
 
 def test_inline_say_text_not_synthesized_as_tool_call():
