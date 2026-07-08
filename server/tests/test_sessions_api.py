@@ -321,6 +321,71 @@ def test_regenerate_endpoint_cancels_and_restarts(client, monkeypatch):
     assert calls["cancel"] == 1 and calls["start"] == 1
 
 
+def test_delete_session_requires_host_token(client):
+    """有主会话只能房主删：无 token / 他人 token 一律 403，房主 token 才放行。
+
+    回归：此前 delete 端点零校验，同网段任何人都能删掉整场存档。
+    """
+    c, ids = client
+    host = {"X-Player-Token": "host-tok"}
+    sid = c.post(
+        "/api/sessions",
+        json={"module_id": ids["module"],
+              "participants": [{"character_id": ids["hero"], "is_primary": True}]},
+        headers=host,
+    ).json()["id"]
+
+    assert c.request("DELETE", f"/api/sessions/{sid}").status_code == 403  # 无 token
+    assert c.request(
+        "DELETE", f"/api/sessions/{sid}", headers={"X-Player-Token": "guest"}
+    ).status_code == 403  # 他人 token
+    assert c.request("DELETE", f"/api/sessions/{sid}", headers=host).status_code == 200
+
+
+def test_list_sessions_hides_others_private_sessions(client):
+    """列表按 token 过滤：房主的私有会话不出现在客人的『我的房间』里。"""
+    c, ids = client
+    host = {"X-Player-Token": "host-tok"}
+    sid = c.post(
+        "/api/sessions",
+        json={"module_id": ids["module"],
+              "participants": [{"character_id": ids["hero"], "is_primary": True}]},
+        headers=host,
+    ).json()["id"]
+
+    host_list = c.get("/api/sessions", headers=host).json()
+    assert sid in {s["id"] for s in host_list}  # 房主自己可见
+    guest_list = c.get("/api/sessions", headers={"X-Player-Token": "guest"}).json()
+    assert sid not in {s["id"] for s in guest_list}  # 客人不可见
+
+
+def test_resolve_actor_rejects_missing_token_on_owned_seat(client):
+    """席位有归属时，缺 token 或 token 不匹配都不能以该角色行动（不再『token 为空即放行』）。"""
+    from app.services import session_service
+
+    c, ids = client
+    host = {"X-Player-Token": "host-tok"}
+    sid = c.post(
+        "/api/sessions",
+        json={"module_id": ids["module"],
+              "participants": [{"character_id": ids["hero"], "is_primary": True}]},
+        headers=host,
+    ).json()["id"]
+
+    gen = app.dependency_overrides[get_db]()
+    db = next(gen)
+    try:
+        with pytest.raises(ValueError, match="无权"):
+            session_service.resolve_actor(db, sid, None, ids["hero"])  # 缺 token
+        with pytest.raises(ValueError, match="无权"):
+            session_service.resolve_actor(db, sid, "guest", ids["hero"])  # 他人 token
+        # 房主 token 放行
+        char = session_service.resolve_actor(db, sid, "host-tok", ids["hero"])
+        assert char.id == ids["hero"]
+    finally:
+        gen.close()
+
+
 def test_check_endpoint_intent_optional(client, monkeypatch):
     """不填 intent 仍应正常申请检定（向后兼容旧客户端）。"""
     import app.api.chat as chat_module

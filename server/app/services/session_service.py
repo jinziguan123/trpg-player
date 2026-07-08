@@ -356,8 +356,9 @@ def resolve_actor(
         raise ValueError("该角色不在本房间")
     if seat.role != "human":
         raise ValueError("只能以真人席位行动")
-    # 席位有归属时校验 token；无归属（旧本机会话）放行
-    if seat.owner_token and token and seat.owner_token != token:
+    # 席位有归属时必须校验 token：缺 token 或不匹配一律拒绝（此前『token 为空即放行』
+    # 会让攻击者不带 X-Player-Token 头就冒充任意有主席位）。无归属席位（纯本机旧会话）放行。
+    if seat.owner_token and seat.owner_token != (token or ""):
         raise ValueError("无权以该角色行动")
     char = db.get(Character, target_id)
     if not char:
@@ -530,6 +531,25 @@ def get_session(db: Session, session_id: str) -> GameSession | None:
 
 def list_sessions(db: Session) -> list[GameSession]:
     return db.query(GameSession).order_by(GameSession.created_at.desc()).all()
+
+
+def list_sessions_for_token(
+    db: Session, token: str | None
+) -> list[GameSession]:
+    """按 token 过滤为「我参与的会话」，避免客人连上主机后看到房主的全部私有存档。
+
+    可见规则：
+      - 会话内没有任何有主席位（纯本机/旧会话，无归属）→ 本机可见，保持原体验；
+      - 否则仅当 token 拥有其中某个席位时可见。
+    """
+    out: list[GameSession] = []
+    for s in list_sessions(db):
+        owner_tokens = {p.owner_token for p in s.participants if p.owner_token}
+        if not owner_tokens:
+            out.append(s)
+        elif token and token in owner_tokens:
+            out.append(s)
+    return out
 
 
 def update_session_status(db: Session, session_id: str, status: str) -> GameSession | None:
@@ -756,6 +776,19 @@ def set_event_group(db: Session, event: EventLog, group: str) -> None:
     flag_modified(event, "metadata_")  # JSON 列原地改字典不会被脏检测，需显式标记
     db.add(event)
     db.commit()
+
+
+def can_delete_session(db: Session, session_id: str, token: str | None) -> bool:
+    """谁可以删除会话：房主本人；或纯本机/旧会话（主角席无归属）时的本机用户。
+
+    此前 delete 端点零校验，同网段任何人都能 curl 删掉整场存档。有主会话现在只允许房主删。
+    """
+    seat = _primary_seat(db, session_id)
+    if seat is None:
+        return False
+    if not seat.owner_token:  # 纯本机/旧会话，无归属 → 本机可删（保持原体验）
+        return True
+    return bool(token and seat.owner_token == token)
 
 
 def delete_session(db: Session, session_id: str) -> bool:

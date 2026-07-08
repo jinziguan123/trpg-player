@@ -86,7 +86,7 @@ def create_session(
 def list_sessions(
     db: Session = Depends(get_db), token: str | None = Depends(player_token),
 ):
-    sessions = session_service.list_sessions(db)
+    sessions = session_service.list_sessions_for_token(db, token)
     module_ids = {s.module_id for s in sessions}
     modules_map = (
         {m.id: m.title for m in db.query(Module).filter(Module.id.in_(module_ids)).all()}
@@ -402,7 +402,15 @@ def get_events(
 
 
 @router.delete("/{session_id}")
-def delete_session(session_id: str, db: Session = Depends(get_db)):
+def delete_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    if not session_service.get_session(db, session_id):
+        raise HTTPException(404, "会话不存在")
+    if not session_service.can_delete_session(db, session_id, token):
+        raise HTTPException(403, "只有房主可以删除该会话")
     if not session_service.delete_session(db, session_id):
         raise HTTPException(404, "会话不存在")
     return {"ok": True}
