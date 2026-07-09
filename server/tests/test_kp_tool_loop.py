@@ -442,6 +442,55 @@ def test_say_tool_refuses_to_voice_player_or_teammate(db_factory):
     assert rn.chunks and result[3] == [(0, "史蒂芬·诺特先生", "欢迎光临。")]  # NPC：正常出气泡
 
 
+def test_reorder_turn_events_interleaves_by_broadcast_offset(db_factory):
+    """收尾重排：loop 内先落库的工具事件(小序号) + 旁白后落库(大序号)，按广播偏移重排后，
+    resync 顺序恢复为「旁白→骰子→旁白」的交错，而非「骰子→旁白→旁白」。"""
+    db = db_factory()
+    session_id, session, module, hero = _seed(db)
+    # 模拟落库时机：骰子先落（loop 内）、两段旁白后落（收尾）
+    e_dice = session_service.add_event(db, session_id, "dice", "聆听：失败", actor_name="系统")
+    e_n1 = session_service.add_event(db, session_id, "narration", "门厅一片死寂。", actor_name="KP")
+    e_n2 = session_service.add_event(db, session_id, "narration", "什么都没听见。", actor_name="KP")
+    base_seq = min(e_dice.sequence_num, e_n1.sequence_num, e_n2.sequence_num) - 1
+    # 广播偏移：旁白1(0) → 骰子(len 旁白1) → 旁白2(len 旁白1)；同偏移下骰子先于旁白2（loop 先追加）
+    off = len("门厅一片死寂。")
+    event_order = [(off, e_dice.id), (0, e_n1.id), (off, e_n2.id)]
+    chat_service._reorder_turn_events(db, session_id, event_order, base_seq)
+
+    ordered = [(e.event_type, e.content)
+               for e in session_service.get_session_events(db, session_id)]
+    assert ordered == [
+        ("narration", "门厅一片死寂。"),
+        ("dice", "聆听：失败"),
+        ("narration", "什么都没听见。"),
+    ]
+
+
+def test_tool_loop_end_to_end_interleaves_dice_and_narration(db_factory, monkeypatch):
+    """全链路：tool-loop 里「旁白 + 群检(自动掷、loop 内落库) + 旁白」，收尾重排后落库顺序
+    为 旁白→骰子→旁白（此前骰子会被甩到旁白前面/成堆）。"""
+    import app.api.ai_settings as ai_settings
+
+    llm = _FakeToolLLM([
+        [_text("门厅一片死寂。"), _call("dice_check", {"skill": "聆听", "chars": "在场"})],
+        [_text("什么都没听见。")],
+    ])
+    _patch_runtime(monkeypatch, db_factory, llm)
+    monkeypatch.setattr(ai_settings, "load_active_profile", lambda: _Profile(True))
+
+    db = db_factory()
+    session_id, session, module, hero = _seed(db)
+    session_service.add_event(db, session_id, "action", "我仔细听", actor_name="伊芙琳")
+    events = session_service.get_session_events(db, session_id)
+
+    asyncio.run(chat_service._run_generation(db, session_id, session, module, hero, events))
+
+    types = [e.event_type for e in session_service.get_session_events(db_factory(), session_id)
+             if e.event_type in ("narration", "dice")]
+    # 交错：旁白 → 骰子 → 旁白（骰子夹在两段旁白之间，而非抢到最前）
+    assert types == ["narration", "dice", "narration"]
+
+
 async def _collect_loop(llm, result, execute) -> list[str]:
     return [
         c async for c in chat_service._run_kp_agent_loop(

@@ -25,6 +25,7 @@ from app.ai.prompts.kp_system import (
 )
 from app.ai.provider import ToolCall
 from app.models.character import Character
+from app.models.event_log import EventLog
 from app.models.module import Module
 from app.models.session import GameSession
 from app.rules.registry import get_engine
@@ -1251,11 +1252,16 @@ def _strip_marked_lines(narration: str, marks: list | None, regex) -> tuple[str,
     return new_narr, [(_shift(o), spk, txt) for o, spk, txt in marks]
 
 
-def _persist_narration(db: Session, session_id: str, result: list) -> None:
+def _persist_narration(
+    db: Session, session_id: str, result: list, event_order: list | None = None,
+) -> None:
     """落库 KP 这一轮产物，保留旁白与对话的交错顺序（与流式渲染一致）。
 
     用 result[3] 里记录的「对话插入偏移」把整段旁白切开、与对话交错落库；
     没有偏移信息（旧调用）时回退为「旁白整段在前、对话在后」。
+
+    ``event_order``（tool-loop 传入）给定时，把每条新建事件的 (offset, id) 追加进去，
+    供收尾 _reorder_turn_events 把「loop 内即时落库的工具事件」与旁白按广播顺序重排。
     """
     narration = result[0]
     marks = result[3] if len(result) > 3 else None
@@ -1272,23 +1278,41 @@ def _persist_narration(db: Session, session_id: str, result: list) -> None:
                 break
         return g
 
+    def _record(ev, offset: int) -> None:
+        if event_order is not None and ev is not None:
+            event_order.append((offset, ev.id))
+
     def _add_narr(text: str, offset: int) -> None:
         t = text.rstrip()
         if t:
-            session_service.add_event(
+            ev = session_service.add_event(
                 db, session_id, "narration", t, actor_name="KP", group=_group_at(offset),
             )
+            _record(ev, offset)
 
-    if marks is not None:
+    # loop 事件的广播偏移（event_order 里此刻仅有的条目）也作为**切分点**——只切开旁白，
+    # 事件本身已在 loop 内落库，收尾重排会把它插回该偏移处；否则整段旁白不切、工具事件无处可插。
+    loop_cuts = {off for off, _id in (event_order or [])}
+
+    dialogue_at: dict[int, list[tuple[str, str]]] = {}
+    if marks:
+        for off, npc_name, dialogue_text in marks:
+            dialogue_at.setdefault(off, []).append((npc_name, dialogue_text))
+
+    if marks is not None or loop_cuts:
+        cuts = sorted(set(dialogue_at) | loop_cuts)
         pos = 0
-        for off, npc_name, dialogue_text in sorted(marks, key=lambda m: m[0]):
+        for off in cuts:
             off = max(pos, min(off, len(narration)))
-            _add_narr(narration[pos:off], pos)
-            if dialogue_text:
-                session_service.add_event(
-                    db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
-                    group=_group_at(off),
-                )
+            if off > pos:
+                _add_narr(narration[pos:off], pos)
+            for npc_name, dialogue_text in dialogue_at.get(off, []):
+                if dialogue_text:
+                    ev = session_service.add_event(
+                        db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
+                        group=_group_at(off),
+                    )
+                    _record(ev, off)
             pos = off
         _add_narr(narration[pos:], pos)
         return
@@ -1296,9 +1320,48 @@ def _persist_narration(db: Session, session_id: str, result: list) -> None:
     # 回退：无交错信息
     _add_narr(narration, 0)
     for npc_name, dialogue_text in result[2]:
-        session_service.add_event(
+        ev = session_service.add_event(
             db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
         )
+        _record(ev, len(narration))
+
+
+def _record_chunk_event(event_order: list, chunk: str, offset: int) -> None:
+    """把一条广播 chunk 对应的「已落库事件」记入重排清单：(此刻旁白长度作偏移, 事件 id)。
+    只记带 id 的持久事件（骰子/检定请求/NPC 台词/HP 变化等 loop 内即时落库的展示事件）。"""
+    try:
+        data = json.loads(chunk[len("data: "):]) if chunk.startswith("data: ") else None
+    except (ValueError, TypeError):
+        return
+    if data and data.get("id"):
+        event_order.append((offset, data["id"]))
+
+
+def _reorder_turn_events(
+    db: Session, session_id: str, event_order: list, base_seq: int
+) -> None:
+    """按广播顺序（偏移）重排本轮所有展示事件的 sequence_num，使 resync 顺序 == 直播顺序。
+
+    tool-loop 里工具事件（骰子/检定/NPC 台词…）在 loop 内即时落库、拿到较小序号，而旁白在收尾
+    才落库、序号更大——resync 后它们会被甩到旁白前面/成堆。本函数把本轮（seq > base_seq）的
+    这些事件按偏移稳定排序后，重写为连续序号，恢复「旁白→骰子→旁白→台词」的交错。
+    """
+    if not event_order:
+        return
+    # 稳定按偏移排序；同偏移保持捕获顺序（loop 内事件先于收尾旁白追加，≈广播先后）
+    order: list[str] = []
+    seen: set[str] = set()
+    for _off, eid in sorted(event_order, key=lambda m: m[0]):
+        if eid not in seen:
+            seen.add(eid)
+            order.append(eid)
+    seq = base_seq
+    for eid in order:
+        ev = db.get(EventLog, eid)
+        if ev is not None and (ev.sequence_num or 0) > base_seq:
+            seq += 1
+            ev.sequence_num = seq
+    db.commit()
 
 
 def _current_turn_events(events: list) -> list:
@@ -1733,14 +1796,19 @@ def _snap_offset(text: str, off: int) -> int:
     return off
 
 
-def _remap_marks_after_rewrite(result: list, old_narr: str) -> None:
-    """旁白被校验改写后，把 result[3]（对话交错偏移）/result[4]（分组偏移）按长度比例重映射
-    到新文本并吸附到句界——**保住交错顺序**，气泡仍插在对应旁白之后，而非全部堆到末尾。"""
+def _remap_marks_after_rewrite(
+    result: list, old_narr: str, event_order: list | None = None,
+) -> None:
+    """旁白被校验改写后，把 result[3]（对话交错偏移）/result[4]（分组偏移）及 event_order
+    （tool-loop 事件的广播偏移）按长度比例重映射到新文本并吸附到句界——**保住交错顺序**，
+    气泡/工具事件仍插在对应旁白之后，而非全部堆到末尾。"""
     new_narr = result[0]
     old_len = len(old_narr)
     if old_len <= 0:
         if len(result) > 3:
             del result[3:]
+        if event_order is not None:
+            event_order[:] = [(0, eid) for _o, eid in event_order]
         return
     scale = len(new_narr) / old_len
 
@@ -1751,10 +1819,13 @@ def _remap_marks_after_rewrite(result: list, old_narr: str) -> None:
         result[3] = [(_remap(o), spk, txt) for (o, spk, txt) in result[3]]
     if len(result) > 4 and result[4]:
         result[4] = [(_remap(o), label) for (o, label) in result[4]]
+    if event_order:
+        event_order[:] = [(_remap(o), eid) for (o, eid) in event_order]
 
 
 async def _validate_and_patch_narration(
     llm, plan: turn_planner.TurnPlan | None, result: list,
+    event_order: list | None = None,
 ) -> None:
     """校验本轮旁白是否违反裁定计划的硬约束（泄露 do_not_reveal / 汇报体+内部标识泄露），
     违反则用改写版本替换落库文本，防止违规内容永久留在会话记录里。
@@ -1773,7 +1844,7 @@ async def _validate_and_patch_narration(
     logger.warning("KP 回合校验发现违规，已改写落库版本：%s", validation.reason)
     old_narr = result[0]
     result[0] = validation.corrected_narration
-    _remap_marks_after_rewrite(result, old_narr)
+    _remap_marks_after_rewrite(result, old_narr, event_order)
 
 
 def _scene_title(module: Module, scene_id: str | None) -> str:
@@ -1998,19 +2069,26 @@ async def _run_generation(
         execute = _build_kp_tool_executor(
             db, session_id, game_session, module, player_char, teammates, llm, result,
         )
+        # 本轮基线序号 + 事件广播顺序清单：loop 内工具事件即时落库（较小序号），旁白收尾才落库，
+        # 直接 resync 会顺序错乱；收尾按广播偏移把本轮（seq>base_seq）事件重排回交错顺序。
+        base_seq = session_service.get_next_sequence_num(db, session_id) - 1
+        event_order: list = []
         try:
             async for chunk in _run_kp_agent_loop(
                 llm, messages, result, execute,
                 tools=kp_tools.openai_tool_schemas(exclude=exclude),
                 npcs=matcher_npcs, plan=plan, party_names=party_names,
+                event_order=event_order,
             ):
                 room_hub.broadcast(session_id, chunk)
         except BaseException:
-            _persist_narration(db, session_id, result)
+            _persist_narration(db, session_id, result, event_order)
+            _reorder_turn_events(db, session_id, event_order, base_seq)
             raise
         _record_turn_usage(db, game_session, llm, events)   # validator 前，趁 last_usage 仍是主叙事那次
-        await _validate_and_patch_narration(llm, plan, result)
-        _persist_narration(db, session_id, result)
+        await _validate_and_patch_narration(llm, plan, result, event_order)
+        _persist_narration(db, session_id, result, event_order)
+        _reorder_turn_events(db, session_id, event_order, base_seq)
         # 世界记忆钩子 c：本轮 NPC 台词记入其互动史（对全队说话）
         _record_npc_say_memory(
             db, session_id, game_session, module, result[2],
@@ -3459,6 +3537,7 @@ async def _run_kp_agent_loop(
     plan: turn_planner.TurnPlan | None = None,
     max_steps: int = MAX_TOOL_LOOP_STEPS,
     party_names: set[str] | None = None,
+    event_order: list | None = None,
 ) -> AsyncIterator[str]:
     """KP agent loop：与 _stream_narration_filtered 并列的新路径（use_tool_calls 开启时用）。
 
@@ -3538,6 +3617,9 @@ async def _run_kp_agent_loop(
                 did_check = True
             outcome = await execute_tool(tc)
             for chunk in outcome.chunks:
+                # 记录该工具事件在广播时的旁白偏移，供收尾把它重排回旁白中的正确位置
+                if event_order is not None:
+                    _record_chunk_event(event_order, chunk, len(result[0]))
                 yield chunk
             messages.append({
                 "role": "tool", "tool_call_id": tc.id, "content": outcome.result_text,
