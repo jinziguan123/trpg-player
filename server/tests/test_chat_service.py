@@ -953,8 +953,8 @@ def test_generation_injects_turn_plan(db_factory, monkeypatch):
 
 
 def test_generation_patches_narration_when_validator_flags_violation(db_factory, monkeypatch):
-    """回合校验器（阶段 2）判定违规时，落库版本应换成改写文本，不把汇报体/内部 flag id
-    永久留在会话记录里；对话仍要保留（交错偏移已失真，改走「整段旁白+对话追加」回退路径）。"""
+    """回合校验器判定违规时，落库版本换成改写文本（不把汇报体/内部 flag id 永久留在记录里）；
+    对话仍保留，且**交错顺序不丢**——偏移按比例重映射到改写文本，气泡仍插在对应旁白之后。"""
     _patch_runtime(monkeypatch, db_factory)
 
     async def fake_run_turn_planner(llm, messages):
@@ -963,15 +963,16 @@ def test_generation_patches_narration_when_validator_flags_violation(db_factory,
         )
 
     async def fake_stream(kp, messages, result, npcs=None, **kwargs):
-        result[0] = "【场景状态更新】\n- flag hint_x 仍需调查员获取管家的秘密。"
+        # 首句旁白之后插一句台词，再接一段会泄露的旁白
+        result[0] = "管家垂下眼。房间里 flag hint_x 需要调查员获取管家的秘密才会触发。"
         result[1] = result[0]
         result[2] = [("管家", "别问我。")]
-        result[3] = [(0, "管家", "别问我。")]
+        result[3] = [(len("管家垂下眼。"), "管家", "别问我。")]
         yield chat_service._make_chunk("narration", result[0], actor_name="KP")
 
     async def fake_validate(llm, plan, narration):
         return chat_service.turn_validator.TurnValidation(
-            violated=True, reason="汇报体+泄露", corrected_narration="房间陷入了短暂的沉默。",
+            violated=True, reason="泄露", corrected_narration="管家垂下眼。房间陷入了短暂的沉默。",
         )
 
     async def fake_process(*args, **kwargs):
@@ -990,11 +991,15 @@ def test_generation_patches_narration_when_validator_flags_violation(db_factory,
     asyncio.run(chat_service.run_chat_generation(session_id))
 
     evs = session_service.get_session_events(db_factory(), session_id)
-    narrations = [e.content for e in evs if e.event_type == "narration"]
-    dialogues = [e.content for e in evs if e.event_type == "dialogue"]
-    assert narrations == ["房间陷入了短暂的沉默。"]
-    assert "flag hint_x" not in "".join(narrations)
-    assert dialogues == ["别问我。"]  # 对话仍保留，不因改写而丢失
+    kp_evs = [(e.event_type, e.content) for e in evs if e.event_type in ("narration", "dialogue")]
+    assert "flag hint_x" not in "".join(c for _, c in kp_evs)      # 泄露内容不落库
+    assert ("dialogue", "别问我。") in kp_evs                       # 对话仍保留
+    # 交错顺序保住：台词夹在两段旁白之间，而非被甩到末尾
+    assert kp_evs == [
+        ("narration", "管家垂下眼。"),
+        ("dialogue", "别问我。"),
+        ("narration", "房间陷入了短暂的沉默。"),
+    ]
 
 
 def test_split_generation_injects_turn_plan_into_each_group(db_factory, monkeypatch):

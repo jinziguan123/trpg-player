@@ -1718,6 +1718,41 @@ def _record_npc_say_memory(
         )
 
 
+def _snap_offset(text: str, off: int) -> int:
+    """把偏移吸附到最近的句末/换行边界，避免在句子中间插入对话气泡（就近向后、再向前找）。"""
+    n = len(text)
+    off = max(0, min(off, n))
+    if off <= 0 or off >= n:
+        return off
+    for i in range(off, min(off + 40, n)):
+        if text[i] in "。！？…\n":
+            return i + 1
+    for i in range(off, max(off - 40, 0), -1):
+        if text[i] in "。！？…\n":
+            return i + 1
+    return off
+
+
+def _remap_marks_after_rewrite(result: list, old_narr: str) -> None:
+    """旁白被校验改写后，把 result[3]（对话交错偏移）/result[4]（分组偏移）按长度比例重映射
+    到新文本并吸附到句界——**保住交错顺序**，气泡仍插在对应旁白之后，而非全部堆到末尾。"""
+    new_narr = result[0]
+    old_len = len(old_narr)
+    if old_len <= 0:
+        if len(result) > 3:
+            del result[3:]
+        return
+    scale = len(new_narr) / old_len
+
+    def _remap(off: int) -> int:
+        return _snap_offset(new_narr, int(round(off * scale)))
+
+    if len(result) > 3 and result[3]:
+        result[3] = [(_remap(o), spk, txt) for (o, spk, txt) in result[3]]
+    if len(result) > 4 and result[4]:
+        result[4] = [(_remap(o), label) for (o, label) in result[4]]
+
+
 async def _validate_and_patch_narration(
     llm, plan: turn_planner.TurnPlan | None, result: list,
 ) -> None:
@@ -1726,8 +1761,9 @@ async def _validate_and_patch_narration(
 
     无法收回已经流式广播出去的内容，但能保证重连、其他玩家、复盘看到的是干净版本。
     只替换 result[0]（落库/展示用的旁白），result[1]（供 _process_commands 解析指令）不动。
-    改写后原文的「对话插入偏移」(result[3]) 已失真，落库改走 _persist_narration 的回退路径
-    （整段旁白 + 对话追加，牺牲交错顺序换正确性）。
+    改写会使 result[3]（对话交错偏移）相对原文失真——**不再直接丢弃**（那会让 _persist_narration
+    走「整段旁白 + 对话全部追加」的回退，旁白与气泡各自成堆、丢交错顺序，是用户可见的渲染 bug），
+    改为按长度比例重映射偏移，保住交错顺序。
     """
     if plan is None:
         return
@@ -1735,9 +1771,9 @@ async def _validate_and_patch_narration(
     if validation is None or not validation.violated:
         return
     logger.warning("KP 回合校验发现违规，已改写落库版本：%s", validation.reason)
+    old_narr = result[0]
     result[0] = validation.corrected_narration
-    if len(result) > 3:
-        del result[3:]
+    _remap_marks_after_rewrite(result, old_narr)
 
 
 def _scene_title(module: Module, scene_id: str | None) -> str:
