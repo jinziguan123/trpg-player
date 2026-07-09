@@ -28,8 +28,8 @@ _BASE = _data_base()
 
 
 class Settings(BaseSettings):
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com"
+    # AI 密钥/地址的唯一真源是设置页（ai_settings.json 的激活 profile）；此处不再放 AI 配置，
+    # 也不再从 .env 读取（旧的 DEEPSEEK_API_KEY/BASE_URL 回退已移除）。
     db_path: Path = _BASE / "trpg.db"
     debug: bool = True
     # SQL 回显独立于 debug：默认关闭，避免每次请求把整串 SELECT/INSERT 刷屏。

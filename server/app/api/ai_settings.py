@@ -162,25 +162,6 @@ def load_active_profile() -> AIProfile | None:
     return None
 
 
-# 向后兼容：旧代码可能仍调用 load_ai_settings()
-def load_ai_settings():
-    """向后兼容接口"""
-    profile = load_active_profile()
-    if profile:
-        return profile
-    # 回退到 .env 配置
-    from app.config import settings
-    return AIProfile(
-        id="env-fallback",
-        name="环境变量默认配置",
-        protocol="openai",
-        base_url=settings.deepseek_base_url,
-        model_name="deepseek-chat",
-        api_key=settings.deepseek_api_key,
-        is_active=True,
-    )
-
-
 # ---------- API 端点 ----------
 
 class AIStatus(BaseModel):

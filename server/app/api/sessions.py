@@ -477,7 +477,10 @@ async def live(session_id: str, token: str | None = Depends(player_token)):
     room_hub.broadcast(session_id, _make_chunk("presence"))
 
     async def gen():
-        yield _make_chunk("ready")
+        # ready 携带订阅后捕获的权威生成态：客户端据此同步 streaming，不再依赖独立的
+        # GET /generating（它与订阅之间有竞态：若生成恰在两者之间结束，done 会被漏收，
+        # 导致客户端 streaming 卡在 true、界面永远显示「整理笔记」且输入锁死，需刷新才恢复）。
+        yield _make_chunk("ready", metadata={"generating": generating})
         if generating:
             yield _make_chunk("generating")
         async for chunk in stream_room(session_id, q, token):

@@ -15,31 +15,26 @@ def get_llm() -> LLMProvider:
 
     - protocol="anthropic" -> AnthropicProvider
     - protocol="openai"（默认）-> OpenAICompatProvider（兼容 OpenAI API）
-    - 没有激活配置时，回退到 .env 环境变量
+
+    AI 配置的唯一真源是设置页（ai_settings.json 的激活 profile）；不再有 .env 回退。
+    没有激活配置时抛出可读错误，由生成路径兜成「请到设置页配置 AI」的提示。
     """
     from app.api.ai_settings import load_active_profile
 
     profile = load_active_profile()
+    if not profile:
+        raise ValueError("未配置可用的 AI 模型：请到设置页添加并激活一个 AI 配置。")
 
-    if profile:
-        if profile.protocol == "anthropic":
-            from app.ai.providers.anthropic import AnthropicProvider
-            return AnthropicProvider(
-                model=profile.model_name,
-                base_url=profile.base_url,
-                api_key=profile.api_key,
-            )
-        return OpenAICompatProvider(
+    if profile.protocol == "anthropic":
+        from app.ai.providers.anthropic import AnthropicProvider
+        return AnthropicProvider(
             model=profile.model_name,
             base_url=profile.base_url,
             api_key=profile.api_key,
-            vision=getattr(profile, "vision", False),
         )
-
-    # 没有激活配置，回退到 .env 配置
-    from app.config import settings
     return OpenAICompatProvider(
-        model="deepseek-chat",
-        base_url=settings.deepseek_base_url,
-        api_key=settings.deepseek_api_key,
+        model=profile.model_name,
+        base_url=profile.base_url,
+        api_key=profile.api_key,
+        vision=getattr(profile, "vision", False),
     )

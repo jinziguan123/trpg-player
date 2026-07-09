@@ -344,7 +344,15 @@ export function GameSessionPage() {
   // 处理一条房间实时事件（/live）。离散事件按 id 去重；叙述 token 流式拼接。
   const handleLiveChunk = useCallback((chunk: ChunkPayload) => {
     const t = chunk.type
-    if (t === 'ready') { setLiveConnected(true); return }
+    if (t === 'ready') {
+      setLiveConnected(true)
+      // 权威同步生成态：ready 由服务端在 subscribe 之后捕获，据此校正 streaming，
+      // 避免「生成在 GET /generating 与订阅之间结束 → 漏收 done → 卡在整理笔记、输入锁死」。
+      const gen = !!(chunk.metadata as { generating?: boolean } | undefined)?.generating
+      setStreaming(gen)
+      if (!gen) { setThinking(false); setTailNote('') }
+      return
+    }
     if (t === 'replay_done') return
     if (t === 'generating') { setStreaming(true); setThinking(true); return }
     if (t === 'turn_state') { setTurnState((chunk.metadata as { confirmed_ids: string[]; total: number; ready: boolean }) || null); return }
@@ -465,12 +473,7 @@ export function GameSessionPage() {
         try {
           await resyncHistory()
           if (cancelled) break
-          const { generating } = await api.get<{ generating: boolean }>(`/sessions/${sessionId}/generating`)
-          // 权威同步：每次（重）连按后端真实状态设定，避免重启/抖动后指示器卡在"生成中"不消失
-          if (!cancelled) {
-            setStreaming(generating)
-            if (!generating) setThinking(false)
-          }
+          // 生成态不再用独立 GET（与订阅有竞态）——由 /live 首个 ready 事件权威给出（见 handleLiveChunk）
           for await (const chunk of connectSSE(`/sessions/${sessionId}/live`, ac.signal)) {
             if (cancelled) break
             handleLiveChunk(chunk as ChunkPayload)
