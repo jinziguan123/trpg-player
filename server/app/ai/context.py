@@ -579,6 +579,24 @@ def _format_backstage_section(events: list[EventLog]) -> str:
     return "\n".join(lines)
 
 
+def _format_combat_result(result: dict) -> str:
+    """把刚结束的战斗/追逐结果摘要拼成注入段，供 KP 续写余波（只给结论，不重放逐轮血肉）。"""
+    label = {
+        "players_win": "调查员一方获胜", "players_defeated": "调查员一方落败",
+        "no_combatants": "战斗以两败/散场收场", "escaped": "成功脱身",
+        "caught": "被追上", "fled": "有人逃离",
+    }.get(result.get("outcome"), result.get("outcome") or "结束")
+    cas = "；".join(f"{c['name']}（{c['status']}）" for c in (result.get("casualties") or [])) or "无"
+    hp = "，".join(f"{n} HP {v}" for n, v in (result.get("hp_after") or {}).items())
+    return (
+        "\n\n## 刚结束的交战（续写余波用，勿重放逐轮细节）\n"
+        f"- 结果：{label}，共 {result.get('rounds', 1)} 轮。\n"
+        f"- 伤亡/失能：{cas}。\n"
+        + (f"- 各方生命：{hp}。\n" if hp else "")
+        + "请据此自然承接：交代战斗的直接后果与在场者状态，让幸存者可以继续行动，别再逐招复述打斗过程。"
+    )
+
+
 def build_kp_context(
     session: GameSession,
     module: Module,
@@ -716,6 +734,11 @@ def build_kp_context(
     # 队伍可能分头（有队友）时，广告 [GROUP] 分组标记，便于分头行动分栏展示。
     if not is_opening and teammates:
         system_content += GROUP_INSTRUCTION
+
+    # 刚结束的战斗/追逐：把结果摘要注入，供 KP 续写余波（读一次后由生成流程清除 combat_result）。
+    combat_result = (session.world_state or {}).get("combat_result")
+    if combat_result:
+        system_content += _format_combat_result(combat_result)
 
     # 手书（Handouts）：仅当模组尚有未发放的手书、且非开场时，广告 [HANDOUT] 发放能力，
     # 附「id｜类型｜标题｜发放条件」清单（正文不进上下文——发放时才由系统展开成卡片）。

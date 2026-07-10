@@ -14,6 +14,7 @@ import { RecapModal } from '../components/game/RecapModal'
 import { GrowthModal } from '../components/game/GrowthModal'
 import { InvestigationBoard } from '../components/game/InvestigationBoard'
 import { ImprovisedNpcModal } from '../components/game/ImprovisedNpcModal'
+import { CombatPanel, type CombatState } from '../components/game/CombatPanel'
 import { Modal } from '../components/ui/modal'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter } from 'react-icons/gi'
 import { Copy, Bot, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
@@ -145,6 +146,7 @@ export function GameSessionPage() {
   const [confirmTravel, setConfirmTravel] = useState<KnownLocation | null>(null)  // 前往二次确认
   const [splitView, setSplitView] = useState(true)            // 分头行动分栏（检测到多组时生效）
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set())  // 被收起的分组
+  const [combat, setCombat] = useState<CombatState | null>(null)  // 当前战斗态（非空时显示战斗面板）
 
   const primaryId = currentSession?.player_character_id ?? null
   // 多人：我在本房间认领的角色（无则回退到主角，兼容单人）
@@ -356,6 +358,8 @@ export function GameSessionPage() {
     if (t === 'replay_done') return
     if (t === 'generating') { setStreaming(true); setThinking(true); return }
     if (t === 'turn_state') { setTurnState((chunk.metadata as { confirmed_ids: string[]; total: number; ready: boolean }) || null); return }
+    if (t === 'combat_start' || t === 'combat_state') { setCombat((chunk.metadata as CombatState) || null); return }
+    if (t === 'combat_end') { setCombat(null); return }  // 结果那句话已由后端落库为消息，不额外处理
     if (t === 'event_delete') { if (chunk.id) removeMessage(chunk.id); return }
     if (t === 'event_update') { if (chunk.id) updateMessage(chunk.id, chunk.content || ''); return }
     if (t === 'housekeeping') {
@@ -460,6 +464,11 @@ export function GameSessionPage() {
       if (!session) { navigate('/game', { replace: true }); return }
       if (session.status === 'setup') { navigate(`/room/${sessionId}`, { replace: true }); return }
       setCurrentSession(session as never)
+
+      // 进页/重连恢复战斗态：active 时置入面板，否则清空（战斗中刷新页面不丢面板）。
+      api.get<{ active: boolean; round?: number; turn?: string | null; order?: unknown }>(`/sessions/${sessionId}/combat`)
+        .then((c) => { if (!cancelled) setCombat(c.active ? (c as unknown as CombatState) : null) })
+        .catch(() => { if (!cancelled) setCombat(null) })
 
       if (isNew && !openingTriggered.current) {
         openingTriggered.current = true
@@ -1307,6 +1316,9 @@ export function GameSessionPage() {
           )}
         </div>
 
+        {combat && (
+          <CombatPanel combat={combat} myCharId={myCharId} sessionId={currentSession.id} />
+        )}
         {typingName && (
           <div className="px-3 pb-1 text-xs italic" style={{ color: 'var(--color-text-secondary)' }}>
             {typingName} 正在输入…

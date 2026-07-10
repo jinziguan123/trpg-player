@@ -106,6 +106,24 @@ def test_combat_ends_when_enemy_down(db_factory, monkeypatch):
     assert any('"combat_end"' in c for c in chunks)
 
 
+def test_combat_result_folds_into_kp_context(db_factory):
+    """战斗结果摘要注入主 KP 上下文（只给结论、供续写余波）。"""
+    from app.ai.context import build_kp_context
+    db = db_factory()
+    sid, hero = _seed(db)
+    session = db.get(GameSession, sid)
+    module = db.get(Module, session.module_id)
+    ws = dict(session.world_state or {})
+    ws["combat_result"] = {"outcome": "players_win", "rounds": 3,
+                           "casualties": [{"name": "打手", "status": "dead"}],
+                           "hp_after": {"伊芙琳": 8}}
+    session.world_state = ws
+    db.commit()
+
+    sys = build_kp_context(session, module, hero, [])[0]["content"]
+    assert "刚结束的交战" in sys and "调查员一方获胜" in sys and "打手" in sys
+
+
 def test_key_npc_uses_agent_decision(db_factory, monkeypatch):
     """有性格的关键 NPC 走子代理决策：agent.decide 指定攻击目标即被采用。"""
     db = db_factory()

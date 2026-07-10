@@ -2049,6 +2049,12 @@ async def _run_generation(
         module_lookup_enabled=module_rag_enabled,
         rule_excerpts=rule_excerpts,
     )
+    # 战斗结果摘要已注入本轮上下文 → 清除，避免下一轮重复注入（读一次）。
+    if (game_session.world_state or {}).get("combat_result"):
+        ws = dict(game_session.world_state)
+        ws.pop("combat_result", None)
+        game_session.world_state = ws
+        db.commit()
     if plan is not None:
         messages.append(turn_planner.build_turn_plan_message(plan))
     if blind_message is not None:
