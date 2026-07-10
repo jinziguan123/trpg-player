@@ -56,31 +56,64 @@ class _FakeStreamCtx:
         return False
 
 
-def test_complete_retries_transient_drop_then_succeeds(monkeypatch):
-    """非流式补全遇到连接被中途掐断（RemoteProtocolError）应自动重试，下一次成功即返回。
-    对应模组解析报的 incomplete chunked read。"""
-    import httpx
+class _StreamCtx:
+    """模拟 httpx 的流式上下文管理器：__aenter__ 返回一个能 aiter_lines 的 resp。"""
+    def __init__(self, resp):
+        self._resp = resp
 
-    prov = OpenAICompatProvider(model="x", api_key="k")
-    calls = {"n": 0}
+    async def __aenter__(self):
+        return self._resp
 
-    class _Resp:
-        def raise_for_status(self):
-            pass
+    async def __aexit__(self, *a):
+        return False
 
-        def json(self):
-            return {"choices": [{"message": {"content": "解析结果"}}], "usage": {}}
 
-    async def flaky_post(*a, **k):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise httpx.RemoteProtocolError("peer closed connection")   # 首次瞬时中断
-        return _Resp()
+class _LinesResp:
+    def __init__(self, lines):
+        self._lines = lines
 
-    async def _nosleep(_):
+    def raise_for_status(self):
         pass
 
-    monkeypatch.setattr(prov._client, "post", flaky_post)
+    async def aiter_lines(self):
+        for ln in self._lines:
+            yield ln
+
+
+class _DropResp:
+    """流到一半连接被掐断（RemoteProtocolError）。"""
+    def raise_for_status(self):
+        pass
+
+    async def aiter_lines(self):
+        import httpx
+        raise httpx.RemoteProtocolError("peer closed connection")
+        yield  # unreachable
+
+
+class _401Resp:
+    def raise_for_status(self):
+        import httpx
+        raise httpx.HTTPStatusError("unauth", request=httpx.Request("POST", "http://x"),
+                                    response=httpx.Response(401))
+
+
+async def _nosleep(_):
+    pass
+
+
+def test_complete_retries_transient_drop_then_succeeds(monkeypatch):
+    """补全（内部流式）遇到连接被中途掐断（RemoteProtocolError）应自动重试，下一次成功即返回。
+    对应模组解析报的 incomplete chunked read。"""
+    prov = OpenAICompatProvider(model="x", api_key="k")
+    calls = {"n": 0}
+    good = ["data: " + json.dumps({"choices": [{"delta": {"content": "解析结果"}}]}), "data: [DONE]"]
+
+    def flaky_stream(*a, **k):
+        calls["n"] += 1
+        return _StreamCtx(_DropResp() if calls["n"] == 1 else _LinesResp(good))
+
+    monkeypatch.setattr(prov._client, "stream", flaky_stream)
     monkeypatch.setattr("app.ai.providers.openai_compat.asyncio.sleep", _nosleep)
 
     out = asyncio.run(prov.complete([{"role": "user", "content": "hi"}]))
@@ -94,18 +127,11 @@ def test_complete_4xx_not_retried(monkeypatch):
     prov = OpenAICompatProvider(model="x", api_key="k")
     calls = {"n": 0}
 
-    class _Resp:
-        status_code = 401
-
-        def raise_for_status(self):
-            raise httpx.HTTPStatusError("unauth", request=httpx.Request("POST", "http://x"),
-                                        response=httpx.Response(401))
-
-    async def post(*a, **k):
+    def stream(*a, **k):
         calls["n"] += 1
-        return _Resp()
+        return _StreamCtx(_401Resp())
 
-    monkeypatch.setattr(prov._client, "post", post)
+    monkeypatch.setattr(prov._client, "stream", stream)
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(prov.complete([{"role": "user", "content": "hi"}]))
     assert calls["n"] == 1   # 未重试

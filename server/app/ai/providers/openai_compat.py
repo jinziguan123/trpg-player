@@ -91,13 +91,16 @@ class OpenAICompatProvider(LLMProvider):
         max_tokens: int | None = None,
         response_format: dict | None = None,
     ) -> str:
+        # **内部走流式**再拼回完整字符串：长输出（如模组解析）用非流式常被 DeepSeek 等
+        # 中途掐断连接（RemoteProtocolError: incomplete chunked read）——流式增量下发能避免。
+        # 对外仍是「给完整结果」的语义。stream_options.include_usage 让流式收尾块带真实 usage。
         payload: dict = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
         }
-        # 不主动施加输出上限：max_tokens 为 None 时不下发，交由服务端默认/上限。
-        # 推理类模型的 reasoning 会占用输出预算，硬上限会让长局/复杂裁定后续无内容可生成。
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         if response_format:
@@ -107,22 +110,38 @@ class OpenAICompatProvider(LLMProvider):
         last_exc: Exception | None = None
         for attempt in range(3):
             try:
-                resp = await self._client.post(
-                    self._api_url, headers=self._headers(), json=payload,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                self.last_usage = data.get("usage")   # 非流式响应体本就带 usage
-                # content 可能为 null（推理模型只填 reasoning_content、内容被过滤等）→ 归一空串。
-                return data["choices"][0]["message"].get("content") or ""
+                parts: list[str] = []
+                async with self._client.stream(
+                    "POST", self._api_url, headers=self._headers(), json=payload,
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue   # 心跳/非 JSON 行
+                        if chunk.get("usage"):
+                            self.last_usage = chunk["usage"]
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        content = (choices[0].get("delta") or {}).get("content")
+                        if content:
+                            parts.append(content)
+                return "".join(parts)
             except _TRANSIENT_ERRORS as e:
                 last_exc = e
-                logger.warning("非流式补全传输中断，重试 %d/3：%s", attempt + 1, e)
+                logger.warning("补全传输中断，重试 %d/3：%s", attempt + 1, e)
             except httpx.HTTPStatusError as e:
                 if e.response.status_code < 500:
                     raise            # 4xx（鉴权/参数）不重试
                 last_exc = e
-                logger.warning("非流式补全 %s，重试 %d/3", e.response.status_code, attempt + 1)
+                logger.warning("补全 %s，重试 %d/3", e.response.status_code, attempt + 1)
             if attempt < 2:
                 await asyncio.sleep(0.6 * (attempt + 1))
         raise last_exc  # type: ignore[misc]
