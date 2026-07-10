@@ -1,5 +1,6 @@
 """OpenAI 兼容协议的 Provider（DeepSeek / OpenAI / 任意 OpenAI 兼容端点）。"""
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -9,6 +10,13 @@ import httpx
 from app.ai.provider import LLMProvider, StreamDelta, ToolCall
 
 logger = logging.getLogger(__name__)
+
+# 可重试的瞬时传输错误：连接被对端中途掐断/网络抖动/超时——非流式补全（模组解析、校验、
+# 转正等）遇到这类错误重试一次往往就成，避免整条请求裸 500。4xx（鉴权/参数）不重试。
+_TRANSIENT_ERRORS = (
+    httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.ConnectError,
+    httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout,
+)
 
 
 class ToolCallAggregator:
@@ -95,15 +103,29 @@ class OpenAICompatProvider(LLMProvider):
         if response_format:
             payload["response_format"] = response_format
 
-        resp = await self._client.post(
-            self._api_url, headers=self._headers(), json=payload,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        self.last_usage = data.get("usage")   # 非流式响应体本就带 usage
-        # content 可能为 null（推理模型只填 reasoning_content、内容被过滤等）→ 归一为空串，
-        # 免得下游把 None 当合法输出。
-        return data["choices"][0]["message"].get("content") or ""
+        # 瞬时传输错误（连接被中途掐断/抖动/超时）与 5xx 重试最多 3 次；4xx 立即抛。
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                resp = await self._client.post(
+                    self._api_url, headers=self._headers(), json=payload,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                self.last_usage = data.get("usage")   # 非流式响应体本就带 usage
+                # content 可能为 null（推理模型只填 reasoning_content、内容被过滤等）→ 归一空串。
+                return data["choices"][0]["message"].get("content") or ""
+            except _TRANSIENT_ERRORS as e:
+                last_exc = e
+                logger.warning("非流式补全传输中断，重试 %d/3：%s", attempt + 1, e)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code < 500:
+                    raise            # 4xx（鉴权/参数）不重试
+                last_exc = e
+                logger.warning("非流式补全 %s，重试 %d/3", e.response.status_code, attempt + 1)
+            if attempt < 2:
+                await asyncio.sleep(0.6 * (attempt + 1))
+        raise last_exc  # type: ignore[misc]
 
     # 视觉能力按模型名启发式判断（deepseek-chat 等纯文本模型返回 False）
     _VISION_HINTS = ("gpt-4o", "gpt-4.1", "gpt-4-vision", "o4", "vision", "claude",

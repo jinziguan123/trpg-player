@@ -1,5 +1,7 @@
+import json
 import logging
 
+import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
@@ -246,6 +248,13 @@ async def upload_module(
             parsed = await module_service.parse_module_images(images, rule_system, raw_text)
         else:
             parsed = await module_service.parse_module_text(raw_text, rule_system)
+    except json.JSONDecodeError:
+        # 模型返回被截断/非 JSON（常伴随连接中断）：回可读信息而非裸 500
+        raise HTTPException(502, "模型解析返回不完整（可能被截断），请重试；若反复失败可换更稳定的模型")
+    except httpx.HTTPError as e:
+        # 与模型的连接被中途掐断/超时/5xx（provider 已重试仍失败）：回可读信息而非裸 500
+        logger.warning("模组解析与模型连接失败：%s", e)
+        raise HTTPException(502, "与模型的连接中断，模组解析未完成，请重试")
     except ValueError as e:
         raise HTTPException(400, str(e))
     except RuntimeError as e:
