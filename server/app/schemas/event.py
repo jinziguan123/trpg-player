@@ -56,10 +56,15 @@ class EventEditRequest(BaseModel):
 
 
 class TravelRequest(BaseModel):
-    """玩家经大地图『前往』某已知地点（显式移动，确定性切换该角色所在场景）。"""
+    """玩家经大地图『前往』某已知地点（显式移动，确定性切换该角色所在场景）。
+
+    stash=True：把「前往」作为本回合暂存动作加入（与发言同批，等推进时随回合一起执行位置同步 +
+    叙述抵达），而非立即单独触发一次生成——这样表达「想去某处」不必再手动点图额外走一次生成。
+    """
 
     scene_id: str
     acting_character_id: str | None = None
+    stash: bool = False
 
 
 class StreamChunk(BaseModel):

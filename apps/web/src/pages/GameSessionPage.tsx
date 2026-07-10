@@ -525,8 +525,12 @@ export function GameSessionPage() {
   const travelTo = async (sceneId: string) => {
     if (!currentSession || streaming) return
     try {
-      await api.post(`/sessions/${currentSession.id}/travel`, { scene_id: sceneId, acting_character_id: myCharId })
+      // 暂存模式：把「前往」加入本回合（与发言同批），推进本回合时随之执行位置同步 + 抵达叙述，
+      // 不再单独触发一次生成、也不必先说一句再手动点图。
+      await api.post(`/sessions/${currentSession.id}/travel`,
+        { scene_id: sceneId, acting_character_id: myCharId, stash: true })
       setShowBigMap(false)
+      toast.success('已把「前往」加入本回合，点「推进本回合」后一起执行')
     } catch { /* 已在该地点 / 不可前往 等，由后端校验 */ }
     finally { setConfirmTravel(null) }
   }

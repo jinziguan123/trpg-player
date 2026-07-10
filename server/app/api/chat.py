@@ -419,6 +419,25 @@ async def travel(
     if session_service.get_char_location(game_session, actor.id) == scene_id:
         raise HTTPException(400, "你已身处该地点")
 
+    scene = next((s for s in (module.scenes or []) if s.get("id") == scene_id), None)
+    scene_name = (scene or {}).get("title") or (scene or {}).get("name") or scene_id
+
+    if data.stash:
+        # 暂存模式：把「前往」作为本回合暂存动作加入（与发言同批）。位置的确定性同步 + 抵达叙述
+        # 延到推进本回合时随 run_chat_generation 一起执行——不再单独触发一次生成、也不必手动点图。
+        ev = session_service.add_event(
+            db, session_id, "action", f"（前往：{scene_name}）",
+            actor_id=actor.id, actor_name=actor.name,
+            metadata={"pending_turn": True, "travel": True, "scene_id": scene_id},
+        )
+        room_hub.broadcast(session_id, event_to_chunk(ev))
+        session_service.set_turn_confirm(db, session_id, actor.id, False)
+        room_hub.broadcast(
+            session_id,
+            _make_chunk("turn_state", metadata=session_service.turn_confirm_state(db, session_id)),
+        )
+        return {"ok": True, "stashed": True}
+
     generation_manager.start(
         session_id, run_travel_generation(session_id, actor.id, scene_id),
     )

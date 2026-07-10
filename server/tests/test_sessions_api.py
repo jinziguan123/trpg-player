@@ -501,3 +501,88 @@ def test_check_endpoint_intent_optional(client, monkeypatch):
     sid = _make_session(c, ids)
     resp = c.post(f"/api/sessions/{sid}/check", json={"skill": "侦查"})
     assert resp.status_code == 200, resp.text
+
+
+def _client_with_scenes(tmp_path):
+    """自带带场景的模组 + 已访问两处的会话 + 无归属真人主席位——用于大地图前往。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import SessionParticipant
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'travel.db'}", connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    TS = sessionmaker(bind=engine)
+
+    def override_get_db():
+        db = TS()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    db = TS()
+    scenes = [{"id": "a", "title": "门厅"}, {"id": "b", "title": "图书馆"}]
+    module = Module(title="M", rule_system="coc", npcs=[], scenes=scenes)
+    hero = Character(name="主角", rule_system="coc", is_player=True)
+    db.add_all([module, hero]); db.flush()
+    session = GameSession(
+        module_id=module.id, player_character_id=hero.id, status="active",
+        current_scene_id="a", world_state={"visited_scenes": ["a", "b"]},
+    )
+    db.add(session); db.flush()
+    db.add(SessionParticipant(
+        session_id=session.id, character_id=hero.id, role="human",
+        is_primary=True, owner_token=None, claimed=True, ready=True,
+    ))
+    db.commit()
+    sid, hid = session.id, hero.id
+    db.close()
+    return TestClient(app), sid, hid
+
+
+def test_travel_stash_adds_pending_turn_and_commits_location(tmp_path, monkeypatch):
+    """暂存式前往：stash=True 只加一条 pending_turn 行动、不触发生成；推进本回合后
+    该行动转正并把角色位置确定性同步到目标场景（无需先说一句再手动点图）。"""
+    import app.api.chat as chat_module
+    from app.services import session_service
+
+    c, sid, hid = _client_with_scenes(tmp_path)
+    try:
+        started = {"n": 0}
+        monkeypatch.setattr(
+            chat_module.generation_manager, "start",
+            lambda session_id, coro, prelude=None: (started.__setitem__("n", started["n"] + 1), coro.close()),
+        )
+
+        r = c.post(f"/api/sessions/{sid}/travel", json={"scene_id": "b", "stash": True})
+        assert r.status_code == 200, r.text
+        assert r.json().get("stashed") is True
+        assert started["n"] == 0  # 暂存不触发生成
+
+        evs = c.get(f"/api/sessions/{sid}/events").json()["events"]
+        pend = [e for e in evs if (e.get("metadata_") or {}).get("travel")]
+        assert pend and pend[0]["metadata_"].get("pending_turn") is True
+        assert pend[0]["metadata_"].get("scene_id") == "b"
+
+        # 推进：暂存动作转正（pending_turn 清除，travel 元数据保留）
+        assert c.post(f"/api/sessions/{sid}/advance", json={}).json()["ready"] is True
+        evs2 = c.get(f"/api/sessions/{sid}/events").json()["events"]
+        trav = [e for e in evs2 if (e.get("metadata_") or {}).get("travel")]
+        assert trav and not trav[0]["metadata_"].get("pending_turn")  # 已转正
+
+        # run_chat_generation 建 KP 上下文前调用的位置同步逻辑（生成本体被 monkeypatch 吞掉，
+        # 故直接验证这段确定性副作用）：commit_pending_travel 把角色搬到目标场景。
+        from app.services import chat_service
+
+        sess = next(app.dependency_overrides[get_db]())
+        try:
+            chat_service.commit_pending_travel(sess, sid)
+            assert session_service.get_char_location(sess.get(GameSession, sid), hid) == "b"
+        finally:
+            sess.close()
+    finally:
+        app.dependency_overrides.clear()

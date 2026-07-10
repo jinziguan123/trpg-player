@@ -1373,6 +1373,20 @@ def _current_turn_events(events: list) -> list:
     return events[last_narr + 1:]
 
 
+def commit_pending_travel(db: Session, session_id: str, turn: list | None = None) -> None:
+    """把本回合已转正的『前往』动作落成确定性位置同步。
+
+    大地图暂存式前往（stash=True）只记一条带 ``travel``/``scene_id`` 元数据的 pending_turn 动作；
+    推进本回合后本函数在建 KP 上下文前把对应角色搬到目标场景，KP 随即以正确位置叙述抵达见闻。
+    """
+    if turn is None:
+        turn = _current_turn_events(session_service.get_session_events(db, session_id))
+    for ev in turn:
+        meta = ev.metadata_ or {}
+        if meta.get("travel") and meta.get("scene_id") and ev.actor_id:
+            session_service.set_char_location(db, session_id, ev.actor_id, meta["scene_id"])
+
+
 def _location_groups(
     game_session: GameSession, module: Module, player_char: Character,
     teammates: list[Character] | None,
@@ -2350,6 +2364,9 @@ async def run_chat_generation(session_id: str) -> None:
         # 意图分诊：玩家本轮是否在申请技能检定？是 → 直接走确定性检定裁定（避免被 KP 当叙事顺过去），
         # 不再跑队友回合与常规叙事。取本轮该玩家的行动/台词文本做判断。
         turn = _current_turn_events(session_service.get_session_events(db, session_id))
+        # 本轮暂存的「前往」动作（大地图前往加入本回合）已随推进转正 → 在建 KP 上下文前
+        # 确定性同步该角色所在场景，随后 KP 会以正确位置叙述抵达见闻（无需再单独走一次生成）。
+        commit_pending_travel(db, session_id, turn)
         actor_id = next(
             (e.actor_id for e in turn if e.event_type in ("action", "dialogue") and e.actor_id), None,
         )
