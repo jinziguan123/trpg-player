@@ -71,6 +71,9 @@ def _npc_participant(npc: dict, side: str = "enemy") -> dict:
         "weapon": weapon, "has_firearm": _weapon_is_firearm(weapon),
         "skills": npc.get("skills") or {}, "base_attributes": attrs, "system_data": {},
         "db": db, "combat_ai": npc.get("combat_ai"),
+        # 有性格/秘密的关键 NPC → 战斗中走子代理决策+叙述；杂兵走启发式
+        "is_key": bool(npc.get("personality") or npc.get("secrets")),
+        "personality": npc.get("personality"),
         "acted_this_round": False, "dodged_this_round": False,
     }
 
@@ -110,12 +113,12 @@ def start_combat(db: Session, session_id: str, player_side: list[dict], enemies:
     return state
 
 
-def start(db: Session, session_id: str, party: list[Character], enemies: list[dict],
-          human_ids: set[str], trigger: str = "") -> tuple[dict, list[str]]:
+async def start(db: Session, session_id: str, party: list[Character], enemies: list[dict],
+                human_ids: set[str], trigger: str = "", agent=None, scene_hint: str = "") -> tuple[dict, list[str]]:
     """高层入口：从角色/敌人 spec 建参战方、起战斗、自动跑到第一个真人回合。返回 (state, chunks)。
 
     party：玩家方角色（human_ids 里的算真人玩家=会停下等操作，其余算 AI 队友=自动）。
-    enemies：敌方 spec（含 attributes/skills/weapon/combat_ai）。
+    enemies：敌方 spec（含 attributes/skills/weapon/combat_ai/personality）。有 agent 时叙述开场交战。
     """
     player_side = [
         _char_participant(c, "player" if c.id in human_ids else "ally", c.id in human_ids)
@@ -124,8 +127,12 @@ def start(db: Session, session_id: str, party: list[Character], enemies: list[di
     enemy_side = [_npc_participant(n, "enemy") for n in enemies]
     state = start_combat(db, session_id, player_side, enemy_side, trigger)
     chunks = [_chunk("combat_start", trigger or "战斗爆发！", metadata=_combat_meta(state))]
-    chunks += drive_npcs(db, session_id, state)
-    return state, chunks
+    drive_chunks, beats = await drive_npcs(db, session_id, state, agent, scene_hint)
+    if agent and beats:
+        prose = await agent.narrate(state, beats, scene_hint)
+        if prose:
+            chunks.append(_combat_narration(db, session_id, prose))
+    return state, chunks + drive_chunks
 
 
 def _combat_meta(state: dict) -> dict:
@@ -191,11 +198,15 @@ def apply_damage(db: Session, state: dict, target: dict, amount: int, reason: st
     return lines
 
 
-def resolve_player_action(db: Session, session_id: str, actor_id: str, action: dict) -> list[str]:
+async def resolve_player_action(
+    db: Session, session_id: str, actor_id: str, action: dict,
+    agent=None, scene_hint: str = "",
+) -> list[str]:
     """结算当前玩家参战方的一个行动，返回广播 chunks。行动: {type, target_id?, weapon?}。
 
-    仅当 actor_id == 当前先攻行动者时有效（先攻队列强制）。结算后推进到下一行动者，
-    并自动跑完随后的 NPC 回合（P2 启发式），停在下一个玩家回合或战斗结束。
+    仅当 actor_id == 当前先攻行动者时有效（先攻队列强制）。结算后推进、自动跑随后的 NPC 回合
+    （关键 NPC 走 agent.decide，杂兵走启发式），停在下一个玩家回合或战斗结束。
+    有 agent 时把本轮交战整段交给战斗子代理叙述（一次调用），叙述 chunk 置于机械 chunk 之前。
     """
     session = db.get(GameSession, session_id)
     state = get_combat(session)
@@ -205,37 +216,46 @@ def resolve_player_action(db: Session, session_id: str, actor_id: str, action: d
     if not actor or actor.get("id") != actor_id:
         raise ValueError("现在不是你的先攻回合")
 
-    chunks = _apply_one_action(db, session_id, state, actor, action)
+    chunks, summary = _apply_one_action(db, session_id, state, actor, action)
+    beats = [summary] if summary else []
     actor["acted_this_round"] = True
     engine.advance_turn(state)
-    chunks += drive_npcs(db, session_id, state)
-    return chunks
+    drive_chunks, drive_beats = await drive_npcs(db, session_id, state, agent, scene_hint)
+    beats += drive_beats
+
+    out: list[str] = []
+    if agent and beats:
+        prose = await agent.narrate(state, beats, scene_hint)
+        if prose:
+            out.append(_combat_narration(db, session_id, prose))
+    return out + chunks + drive_chunks
 
 
-def _apply_one_action(db: Session, session_id: str, state: dict, actor: dict, action: dict) -> list[str]:
-    """结算某参战方的一个行动（玩家或 NPC 共用）。返回 chunks 并写 log。"""
+def _apply_one_action(db: Session, session_id: str, state: dict, actor: dict, action: dict) -> tuple[list[str], str]:
+    """结算某参战方的一个行动（玩家/NPC 共用）。返回 (chunks, 机械结算摘要行 供子代理叙述)。"""
     chunks: list[str] = []
     atype = action.get("type") or action.get("action") or "other"
 
     if atype == "flee":
         actor["status"] = "fled"
-        line = f"{actor['name']} 脱离战斗、转身逃走。"
+        summary = f"{actor['name']} 脱离战斗、转身逃走"
         state["log"].append({"round": state["round"], "actor": actor["name"], "action": "flee"})
-        chunks.append(_combat_line(db, session_id, line))
-        return chunks
+        chunks.append(_combat_line(db, session_id, summary + "。"))
+        return chunks, summary
 
     if atype in ("dodge", "wait", "other"):
-        line = {"dodge": f"{actor['name']} 摆出防御姿态。", "wait": f"{actor['name']} 按兵不动。"}.get(
-            atype, f"{actor['name']} 采取了行动。")
+        summary = {"dodge": f"{actor['name']} 摆出防御姿态", "wait": f"{actor['name']} 按兵不动"}.get(
+            atype, f"{actor['name']} 采取了行动")
         state["log"].append({"round": state["round"], "actor": actor["name"], "action": atype})
-        chunks.append(_combat_line(db, session_id, line))
-        return chunks
+        chunks.append(_combat_line(db, session_id, summary + "。"))
+        return chunks, summary
 
     # attack
     target = _find(state, action.get("target_id"))
     if target is None or not engine.is_active(target):
-        chunks.append(_combat_line(db, session_id, f"{actor['name']} 的目标已不在场。"))
-        return chunks
+        s = f"{actor['name']} 的目标已不在场"
+        chunks.append(_combat_line(db, session_id, s + "。"))
+        return chunks, s
     weapon = action.get("weapon") or actor.get("weapon") or "徒手格斗"
     ranged = _weapon_is_firearm(weapon)
     defense = None if ranged else (action.get("defense") or _default_defense(target))
@@ -243,19 +263,23 @@ def _apply_one_action(db: Session, session_id: str, state: dict, actor: dict, ac
         _char_data(actor), actor.get("db", "0"), weapon,
         defender_data=_char_data(target), defense=defense, ranged=ranged,
     )
-    # 对抗/命中骰播报
     chunks.append(_combat_dice(db, session_id, actor, target, weapon, res))
+    dmg_lines: list[str] = []
     if res["hit"] and res["damage"]:
         victim = target if res["damage_to"] == "defender" else actor
-        for line in apply_damage(db, state, victim, res["damage"]["total"],
-                                 reason=f"{actor['name']} 的 {weapon}"):
+        dmg_lines = apply_damage(db, state, victim, res["damage"]["total"],
+                                 reason=f"{actor['name']} 的 {weapon}")
+        for line in dmg_lines:
             chunks.append(_combat_line(db, session_id, line))
     state["log"].append({
         "round": state["round"], "actor": actor["name"], "action": "attack",
         "target": target["name"], "hit": res["hit"],
         "damage": (res["damage"] or {}).get("total") if res["hit"] else 0,
     })
-    return chunks
+    verb = "命中" if res["hit"] else "未命中/被防住"
+    summary = f"{actor['name']} 用 {weapon} 攻击 {target['name']}：{verb}" + (
+        "；" + "；".join(dmg_lines) if dmg_lines else "")
+    return chunks, summary
 
 
 def _default_defense(target: dict) -> str:
@@ -263,17 +287,16 @@ def _default_defense(target: dict) -> str:
     return "fight_back" if not target.get("acted_this_round") else "dodge"
 
 
-def drive_npcs(db: Session, session_id: str, state: dict) -> list[str]:
-    """从**当前行动者**起自动跑非真人回合（AI 队友 + 敌人，P2 启发式），停在真人回合或战斗结束。
-
-    start_combat 后与每次玩家行动后都调它，把控制权推进到下一个需要真人操作的点。返回广播 chunks。
-    """
+async def drive_npcs(db: Session, session_id: str, state: dict, agent=None, scene_hint: str = "") -> tuple[list[str], list[str]]:
+    """从**当前行动者**起自动跑非真人回合（关键 NPC 走 agent.decide，杂兵走启发式），停在真人回合
+    或战斗结束。返回 (chunks, 各回合摘要行)。"""
     chunks: list[str] = []
+    beats: list[str] = []
     for _ in range(64):  # 安全上限，防死循环
         end = engine.check_combat_end(state.get("initiative") or [])
         if end:
             chunks += _end_combat(db, session_id, state, end)
-            return chunks
+            return chunks, beats
         actor = current_actor(state)
         if actor is None:
             break
@@ -283,14 +306,35 @@ def drive_npcs(db: Session, session_id: str, state: dict) -> list[str]:
         _save_combat(db, session_id, state)
         chunks.append(_combat_state_chunk(state))
         if actor.get("is_human"):
-            return chunks   # 停下等真人操作
-        # AI 队友 / 敌：启发式自动行动
-        action = engine.heuristic_npc_action(state, actor)
-        chunks += _apply_one_action(db, session_id, state, actor, action)
+            return chunks, beats   # 停下等真人操作
+        # 关键 NPC 走子代理决策；失败/杂兵回落启发式
+        action = None
+        if agent and actor.get("is_key"):
+            action = _validate_npc_action(state, actor, await agent.decide(state, actor, scene_hint))
+        if action is None:
+            action = engine.heuristic_npc_action(state, actor)
+        c, s = _apply_one_action(db, session_id, state, actor, action)
+        chunks += c
+        if s:
+            beats.append(s)
         actor["acted_this_round"] = True
         engine.advance_turn(state)
     _save_combat(db, session_id, state)
-    return chunks
+    return chunks, beats
+
+
+def _validate_npc_action(state: dict, actor: dict, action: dict | None) -> dict | None:
+    """校正子代理给的行动：attack 目标须存活且属敌对方；非法则丢弃（回落启发式）。"""
+    if not action or action.get("action") not in ("attack", "flee", "dodge"):
+        return None
+    if action.get("action") != "attack":
+        return {"type": action["action"]}
+    target = _find(state, action.get("target_id"))
+    hostile = target and engine.is_active(target) and target.get("side") != actor.get("side")
+    if not hostile:
+        return None
+    return {"type": "attack", "target_id": action["target_id"],
+            "weapon": action.get("weapon") or actor.get("weapon") or "徒手格斗"}
 
 
 def add_combatant(db: Session, session_id: str, spec: dict, side: str = "enemy") -> dict:
@@ -335,6 +379,12 @@ def _end_combat(db: Session, session_id: str, state: dict, outcome: str) -> list
 def _combat_line(db: Session, session_id: str, text: str) -> str:
     ev = session_service.add_event(db, session_id, "system", text, actor_name="战斗")
     return _chunk("system", text, id=ev.id)
+
+
+def _combat_narration(db: Session, session_id: str, text: str) -> str:
+    """战斗子代理的一段叙述：落成 narration 事件（进历史/复盘），返回广播 chunk。"""
+    ev = session_service.add_event(db, session_id, "narration", text, actor_name="KP")
+    return _chunk("narration_full", text, id=ev.id, actor_name="KP")
 
 
 def _combat_dice(db: Session, session_id: str, actor: dict, target: dict, weapon: str, res: dict) -> str:

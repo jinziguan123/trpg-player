@@ -3234,13 +3234,14 @@ async def _exec_npc_act(
     return chunks, npc_response
 
 
-def _exec_start_combat(
+async def _exec_start_combat(
     db: Session, session_id: str, game_session: GameSession, module: Module,
-    player_char: Character, teammates: list[Character] | None,
+    player_char: Character, teammates: list[Character] | None, llm,
     enemies_str: str, trigger: str,
 ) -> list[str]:
     """start_combat 工具：按敌方名字解析模组 NPC，把玩家方（主角+队友）与敌方切入战斗态，
     自动推进到第一个真人回合。返回广播 chunks。名字匹配不到的敌方按临场杂兵建（默认属性）。"""
+    from app.ai.agents.combat_agent import CombatAgent
     from app.services import combat_service
 
     names = [n.strip() for n in re.split(r"[，,、]", enemies_str or "") if n.strip()]
@@ -3253,7 +3254,11 @@ def _exec_start_combat(
                                                 "skills": {"格斗(斗殴)": 45, "闪避": 25}, "weapon": "徒手格斗"})
     party = [player_char] + list(teammates or [])
     human_ids = session_service.human_character_ids(db, session_id) or {player_char.id}
-    _state, chunks = combat_service.start(db, session_id, party, enemies, human_ids, trigger)
+    scene_hint = _scene_title(module, game_session.current_scene_id)
+    _state, chunks = await combat_service.start(
+        db, session_id, party, enemies, human_ids, trigger,
+        agent=CombatAgent(llm), scene_hint=scene_hint,
+    )
     return chunks
 
 
@@ -3496,8 +3501,8 @@ def _build_kp_tool_executor(
                     "台词已作为气泡展示给玩家（续写时不要复述这句话）。", chunks=chunks,
                 )
             if name == "start_combat":
-                chunks = _exec_start_combat(
-                    db, session_id, game_session, module, player_char, teammates,
+                chunks = await _exec_start_combat(
+                    db, session_id, game_session, module, player_char, teammates, llm,
                     kv.get("enemies", ""), kv.get("trigger", ""),
                 )
                 return kp_tools.ToolOutcome(

@@ -37,7 +37,7 @@ def get_combat(session_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{session_id}/combat/action")
-def combat_action(
+async def combat_action(
     session_id: str,
     data: CombatActionRequest,
     db: Session = Depends(get_db),
@@ -53,11 +53,23 @@ def combat_action(
     if not actor_id:
         raise HTTPException(403, "无法确定行动角色")
     try:
-        chunks = combat_service.resolve_player_action(
+        agent = _combat_agent(db, session)
+        chunks = await combat_service.resolve_player_action(
             db, session_id, actor_id, data.model_dump(exclude_none=True),
+            agent=agent, scene_hint="",
         )
     except ValueError as e:
         raise HTTPException(409, str(e))
     for chunk in chunks:
         room_hub.broadcast(session_id, chunk)
     return {"ok": True}
+
+
+def _combat_agent(db: Session, session):
+    """构建战斗子代理（有可用 AI 配置时）；无则 None → 纯机械结算。"""
+    try:
+        from app.ai.agents.combat_agent import CombatAgent
+        from app.ai.llm_factory import get_llm
+        return CombatAgent(get_llm())
+    except Exception:
+        return None
