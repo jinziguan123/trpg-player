@@ -183,6 +183,21 @@ REGISTRY: tuple[ToolSpec, ...] = (
         kind="npc",
     ),
     ToolSpec(
+        name="start_combat",
+        tag="START_COMBAT",
+        description=(
+            "开打时调用：把当前场景切入**结构化战斗轮**（先攻队列、逐轮结算、引擎掷伤害）。"
+            "enemies 填参战的敌方名字（模组 NPC 名或临场敌，逗号分隔）；trigger 一句话说明因何开打。"
+            "调用后战斗由系统按先攻推进（真人轮到时前端提示其操作），你**本轮就此收束、不要再叙述战斗过程**——"
+            "战斗结束后系统会把结果摘要回灌给你，你再续写余波。仅在真正进入你死我活的交战时用。"
+        ),
+        parameters=_params({
+            "enemies": {"type": "string", "description": "参战敌方名字，逗号分隔（模组 NPC 名或临场敌）"},
+            "trigger": {"type": "string", "description": "因何开打的一句话"},
+        }, ["enemies"]),
+        kind="state",
+    ),
+    ToolSpec(
         name="npc_act",
         tag="NPC_ACT",
         description=(

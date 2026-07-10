@@ -3234,6 +3234,29 @@ async def _exec_npc_act(
     return chunks, npc_response
 
 
+def _exec_start_combat(
+    db: Session, session_id: str, game_session: GameSession, module: Module,
+    player_char: Character, teammates: list[Character] | None,
+    enemies_str: str, trigger: str,
+) -> list[str]:
+    """start_combat 工具：按敌方名字解析模组 NPC，把玩家方（主角+队友）与敌方切入战斗态，
+    自动推进到第一个真人回合。返回广播 chunks。名字匹配不到的敌方按临场杂兵建（默认属性）。"""
+    from app.services import combat_service
+
+    names = [n.strip() for n in re.split(r"[，,、]", enemies_str or "") if n.strip()]
+    npc_by = {n.get("name"): n for n in (module.npcs or [])}
+    npc_by_id = {n.get("id"): n for n in (module.npcs or [])}
+    enemies: list[dict] = []
+    for nm in names or ["敌人"]:
+        spec = npc_by.get(nm) or npc_by_id.get(nm)
+        enemies.append(dict(spec) if spec else {"name": nm, "attributes": {"DEX": 50, "CON": 50, "SIZ": 50},
+                                                "skills": {"格斗(斗殴)": 45, "闪避": 25}, "weapon": "徒手格斗"})
+    party = [player_char] + list(teammates or [])
+    human_ids = session_service.human_character_ids(db, session_id) or {player_char.id}
+    _state, chunks = combat_service.start(db, session_id, party, enemies, human_ids, trigger)
+    return chunks
+
+
 def _exec_say(result: list, module: Module, who: str, text: str) -> list[str]:
     """say() 工具：把一句 NPC 台词作为对话气泡广播，并**记入 result 的对话交错标记**——
     落库交给收尾的 _persist_narration 按偏移与旁白交错持久化（复用旧路径的成熟机制），
@@ -3471,6 +3494,15 @@ def _build_kp_tool_executor(
                 chunks = _exec_say(result, module, who, text)
                 return kp_tools.ToolOutcome(
                     "台词已作为气泡展示给玩家（续写时不要复述这句话）。", chunks=chunks,
+                )
+            if name == "start_combat":
+                chunks = _exec_start_combat(
+                    db, session_id, game_session, module, player_char, teammates,
+                    kv.get("enemies", ""), kv.get("trigger", ""),
+                )
+                return kp_tools.ToolOutcome(
+                    "已切入结构化战斗轮，交由系统按先攻推进；本轮就此收束，战斗结束后系统会回灌结果摘要。",
+                    chunks=chunks, suspend=True,
                 )
             if name == "npc_act":
                 npc_id = kv.get("npc_id", "").strip()

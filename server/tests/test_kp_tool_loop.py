@@ -508,7 +508,7 @@ def test_registry_covers_all_regex_commands():
     assert tags == {
         "DICE_CHECK", "OPPOSED_CHECK", "SAN_CHECK", "HP_CHANGE", "NPC_ACT",
         "SCENE_CHANGE", "RULE_LOOKUP", "MODULE_LOOKUP", "SET_FLAG", "CLEAR_FLAG",
-        "HANDOUT", "SAY",
+        "HANDOUT", "SAY", "START_COMBAT",
     }
     assert "GROUP" not in tags
     required = {spec.name: spec.parameters["required"] for spec in kp_tools.REGISTRY}
