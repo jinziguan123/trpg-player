@@ -15,6 +15,7 @@ import { GrowthModal } from '../components/game/GrowthModal'
 import { InvestigationBoard } from '../components/game/InvestigationBoard'
 import { ImprovisedNpcModal } from '../components/game/ImprovisedNpcModal'
 import { CombatPanel, type CombatState } from '../components/game/CombatPanel'
+import { ChasePanel, type ChaseState } from '../components/game/ChasePanel'
 import { Modal } from '../components/ui/modal'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter } from 'react-icons/gi'
 import { Copy, Bot, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
@@ -147,6 +148,7 @@ export function GameSessionPage() {
   const [splitView, setSplitView] = useState(true)            // 分头行动分栏（检测到多组时生效）
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set())  // 被收起的分组
   const [combat, setCombat] = useState<CombatState | null>(null)  // 当前战斗态（非空时显示战斗面板）
+  const [chase, setChase] = useState<ChaseState | null>(null)  // 当前追逐态（非空时显示追逐面板）
 
   const primaryId = currentSession?.player_character_id ?? null
   // 多人：我在本房间认领的角色（无则回退到主角，兼容单人）
@@ -360,6 +362,8 @@ export function GameSessionPage() {
     if (t === 'turn_state') { setTurnState((chunk.metadata as { confirmed_ids: string[]; total: number; ready: boolean }) || null); return }
     if (t === 'combat_start' || t === 'combat_state') { setCombat((chunk.metadata as CombatState) || null); return }
     if (t === 'combat_end') { setCombat(null); return }  // 结果那句话已由后端落库为消息，不额外处理
+    if (t === 'chase_start' || t === 'chase_state') { setChase((chunk.metadata as ChaseState) || null); return }
+    if (t === 'chase_end') { setChase(null); return }  // 结果那句话已由后端落库为消息，不额外处理
     if (t === 'event_delete') { if (chunk.id) removeMessage(chunk.id); return }
     if (t === 'event_update') { if (chunk.id) updateMessage(chunk.id, chunk.content || ''); return }
     if (t === 'housekeeping') {
@@ -469,6 +473,11 @@ export function GameSessionPage() {
       api.get<{ active: boolean; round?: number; turn?: string | null; order?: unknown }>(`/sessions/${sessionId}/combat`)
         .then((c) => { if (!cancelled) setCombat(c.active ? (c as unknown as CombatState) : null) })
         .catch(() => { if (!cancelled) setCombat(null) })
+
+      // 进页/重连恢复追逐态：active 时置入面板，否则清空。
+      api.get<{ active: boolean }>(`/sessions/${sessionId}/chase`)
+        .then((c) => { if (!cancelled) setChase(c.active ? (c as unknown as ChaseState) : null) })
+        .catch(() => { if (!cancelled) setChase(null) })
 
       if (isNew && !openingTriggered.current) {
         openingTriggered.current = true
@@ -1318,6 +1327,9 @@ export function GameSessionPage() {
 
         {combat && (
           <CombatPanel combat={combat} myCharId={myCharId} sessionId={currentSession.id} />
+        )}
+        {chase && (
+          <ChasePanel chase={chase} sessionId={currentSession.id} />
         )}
         {typingName && (
           <div className="px-3 pb-1 text-xs italic" style={{ color: 'var(--color-text-secondary)' }}>

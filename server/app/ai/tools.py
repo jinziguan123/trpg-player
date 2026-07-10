@@ -198,6 +198,20 @@ REGISTRY: tuple[ToolSpec, ...] = (
         kind="state",
     ),
     ToolSpec(
+        name="start_chase",
+        tag="START_CHASE",
+        description=(
+            "有人开始逃跑/被追时调用：切入**抽象距离轨追逐**。pursuer 填追方名字（模组 NPC 或临场），"
+            "玩家默认作逃方。调用后追逐由系统逐轮推进（真人点『奔逃』推进一轮，越阈值判脱身/被追上），"
+            "你**本轮就此收束**，追逐结束后系统回灌结果摘要，你再续写。"
+        ),
+        parameters=_params({
+            "pursuer": {"type": "string", "description": "追方名字（模组 NPC 名或临场追兵）"},
+            "trigger": {"type": "string", "description": "因何开始追逐的一句话"},
+        }, ["pursuer"]),
+        kind="state",
+    ),
+    ToolSpec(
         name="npc_act",
         tag="NPC_ACT",
         description=(

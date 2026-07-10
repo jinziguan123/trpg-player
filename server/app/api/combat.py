@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import player_token
 from app.database import get_db
-from app.schemas.combat import CombatActionRequest
-from app.services import combat_service, session_service
+from app.schemas.combat import ChaseActionRequest, CombatActionRequest
+from app.services import chase_service, combat_service, session_service
 from app.services.room_hub import room_hub
 
 router = APIRouter(prefix="/api/sessions", tags=["combat"])
@@ -73,3 +73,37 @@ def _combat_agent(db: Session, session):
         return CombatAgent(get_llm())
     except Exception:
         return None
+
+
+@router.get("/{session_id}/chase")
+def get_chase(session_id: str, db: Session = Depends(get_db)):
+    """当前追逐态（无则 {active:false}），供前端渲染距离轨与重连对齐。"""
+    session = session_service.get_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "会话不存在")
+    state = chase_service.get_chase(session)
+    if not state:
+        return {"active": False}
+    return chase_service._meta(state) | {"active": True}
+
+
+@router.post("/{session_id}/chase/action")
+async def chase_action(
+    session_id: str,
+    data: ChaseActionRequest,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """玩家推进一轮追逐（奔逃/闯障）。结算后广播 dice/chase/system chunks。"""
+    if not session_service.get_session(db, session_id):
+        raise HTTPException(404, "会话不存在")
+    try:
+        chunks = await chase_service.resolve_chase_round(
+            db, session_id, data.model_dump(exclude_none=True),
+            agent=_combat_agent(db, None), scene_hint="",
+        )
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    for chunk in chunks:
+        room_hub.broadcast(session_id, chunk)
+    return {"ok": True}

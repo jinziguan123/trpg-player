@@ -434,22 +434,21 @@ class TestJudgeParsing:
         assert "侦查" in joined
 
     def test_解析完整输出(self):
-        raw = (
-            '{"no_leak": {"pass": true, "reason": ""},'
-            '"plan_adherence": {"pass": false, "reason": "没发检定"},'
-            '"no_player_control": {"pass": true, "reason": ""},'
-            '"in_character": {"pass": true, "reason": ""},'
-            '"coherence": {"pass": true, "reason": ""},'
-            '"subject_fidelity": {"pass": true, "reason": ""},'
-            '"perception_isolation": {"pass": true, "reason": ""},'
-            '"improvised_containment": {"pass": true, "reason": ""}}'
-        )
-        parsed = _parse_judge_output(raw)
+        import json as _json
+
+        from evals.judge import RUBRIC
+        # 从 RUBRIC 动态构造全维度输出（对未来新增评分项稳健），把 plan_adherence 设失败
+        out = {k: {"pass": True, "reason": ""} for k in RUBRIC}
+        out["plan_adherence"] = {"pass": False, "reason": "没发检定"}
+        parsed = _parse_judge_output(_json.dumps(out))
         assert parsed and not parsed["plan_adherence"]["pass"]
 
     def test_解析带代码栅栏的输出(self):
-        raw = '```json\n{"no_leak": {"pass": true}, "plan_adherence": {"pass": true}, "no_player_control": {"pass": true}, "in_character": {"pass": true}, "coherence": {"pass": true}, "subject_fidelity": {"pass": true}, "perception_isolation": {"pass": true}, "improvised_containment": {"pass": true}}\n```'
-        assert _parse_judge_output(raw)
+        import json as _json
+
+        from evals.judge import RUBRIC
+        body = _json.dumps({k: {"pass": True} for k in RUBRIC})
+        assert _parse_judge_output(f"```json\n{body}\n```")
 
     def test_缺项返回None(self):
         assert _parse_judge_output('{"no_leak": {"pass": true}}') is None

@@ -3240,6 +3240,22 @@ async def _exec_npc_act(
     return chunks, npc_response
 
 
+def _exec_start_chase(
+    db: Session, session_id: str, module: Module, player_char: Character,
+    pursuer_str: str, trigger: str,
+) -> list[str]:
+    """start_chase 工具：玩家作逃方，pursuer 按名字解析模组 NPC（匹配不到按临场追兵建）。返回 chunks。"""
+    from app.services import chase_service
+
+    nm = (pursuer_str or "").strip() or "追兵"
+    spec = next((n for n in (module.npcs or []) if n.get("name") == nm or n.get("id") == nm), None)
+    pursuer = chase_service._pursuer_from_npc(
+        spec or {"name": nm, "attributes": {"DEX": 50, "CON": 50, "SIZ": 50}, "skills": {"运动": 45}})
+    quarry = chase_service._quarry_from_char(player_char)
+    _state, chunks = chase_service.start_chase(db, session_id, quarry, pursuer, trigger=trigger)
+    return chunks
+
+
 async def _exec_start_combat(
     db: Session, session_id: str, game_session: GameSession, module: Module,
     player_char: Character, teammates: list[Character] | None, llm,
@@ -3513,6 +3529,14 @@ def _build_kp_tool_executor(
                 )
                 return kp_tools.ToolOutcome(
                     "已切入结构化战斗轮，交由系统按先攻推进；本轮就此收束，战斗结束后系统会回灌结果摘要。",
+                    chunks=chunks, suspend=True,
+                )
+            if name == "start_chase":
+                chunks = _exec_start_chase(
+                    db, session_id, module, player_char, kv.get("pursuer", ""), kv.get("trigger", ""),
+                )
+                return kp_tools.ToolOutcome(
+                    "已切入追逐（抽象距离轨），交由系统逐轮推进；本轮就此收束，追逐结束后系统会回灌结果。",
                     chunks=chunks, suspend=True,
                 )
             if name == "npc_act":
