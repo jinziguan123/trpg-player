@@ -48,6 +48,7 @@ export function GamePage() {
   const [allies, setAllies] = useState<Character[]>([])
   const [moduleId, setModuleId] = useState('')
   const [seats, setSeats] = useState<Seat[]>([])
+  const [seatHints, setSeatHints] = useState<Record<number, string>>({})
   const [generatingSeat, setGeneratingSeat] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [joinCode, setJoinCode] = useState('')
@@ -147,7 +148,7 @@ export function GamePage() {
     try {
       const draft = await api.post<Record<string, unknown>>('/characters/ai-generate', {
         module_id: moduleId,
-        hint: '',
+        hint: (seatHints[i] || '').trim(),
         is_player: isPlayer,
       })
       const created = await api.post<Character>('/characters', {
@@ -164,6 +165,7 @@ export function GamePage() {
       if (isPlayer) setHeroes((h) => [created, ...h])
       else setAllies((a) => [created, ...a])
       assignSeat(i, created.id)
+      setSeatHints((h) => ({ ...h, [i]: '' }))
       toast.success(`AI 生成「${created.name}」并填入${i === 0 ? '房主' : `队友${i}`}席位`)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'AI 生成角色失败')
@@ -375,7 +377,8 @@ export function GamePage() {
               {seats.map((seat, i) => {
                 const emptyHuman = i > 0 && seat.role === 'human'
                 return (
-                  <div key={i} className="flex items-center gap-2 mb-2">
+                  <div key={i} className="mb-2">
+                  <div className="flex items-center gap-2">
                     <span
                       className="badge whitespace-nowrap inline-flex items-center gap-1"
                       style={i === 0 ? { borderColor: 'var(--color-accent)', color: 'var(--color-text-accent)' } : undefined}
@@ -416,6 +419,16 @@ export function GamePage() {
                         {generatingSeat === i ? '生成中…' : <><Sparkles size={11} /> 生成</>}
                       </button>
                     )}
+                  </div>
+                  {!emptyHuman && (
+                    <input
+                      value={seatHints[i] ?? ''}
+                      onChange={(e) => setSeatHints((h) => ({ ...h, [i]: e.target.value }))}
+                      placeholder="AI 生成提示（可选）：如 胆小的记者、退伍军医、通晓神秘学的教授"
+                      className="input w-full mt-1 !py-0.5 text-xs"
+                      style={{ color: 'var(--color-text-secondary)' }}
+                    />
+                  )}
                   </div>
                 )
               })}

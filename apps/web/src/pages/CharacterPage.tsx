@@ -14,7 +14,7 @@ import {
 } from '../components/character/CharacterExtraEditors'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
-import { GiDiceSixFacesSix, GiCharacter, GiReturnArrow, GiUpCard, GiPadlock } from 'react-icons/gi'
+import { GiDiceSixFacesSix, GiCharacter, GiReturnArrow, GiUpCard, GiPadlock, GiSave, GiScrollUnfurled } from 'react-icons/gi'
 import { ChevronRight } from 'lucide-react'
 
 interface Character {
@@ -64,6 +64,8 @@ const ATTR_RANGES: Record<string, { min: number; max: number }> = {
 }
 
 const POINT_POOL = 460
+
+const DRAFT_KEY = 'trpg_character_draft'
 
 const STEPS = ['基本信息', '属性设定', '职业选择', '技能加点', '背景故事', '随身物品'] as const
 type Step = (typeof STEPS)[number]
@@ -129,6 +131,8 @@ export function CharacterPage() {
   const [editingChar, setEditingChar] = useState<Character | null>(null)
   // 默认只展示列表；点「创建角色」进入创建流程
   const [inCreateFlow, setInCreateFlow] = useState(false)
+  // 草稿：localStorage 暂存的未完成创建。draftSavedAt 存在即显示恢复横幅
+  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null)
   const [charQuery, setCharQuery] = useState('')
   const [charPage, setCharPage] = useState(1)
   const CHAR_PAGE_SIZE = 8
@@ -449,6 +453,8 @@ export function CharacterPage() {
       })
       await loadCharacters()
       toast.success(`角色「${name}」创建成功`)
+      localStorage.removeItem(DRAFT_KEY)   // 创建成功 → 清除草稿，避免残留
+      setDraftSavedAt(null)
       resetForm()
       setInCreateFlow(false)   // 创建完成回到列表
     } catch {
@@ -629,6 +635,120 @@ export function CharacterPage() {
     }
   }
 
+  // ---- 草稿：暂存 / 恢复 / 丢弃（纯前端 localStorage，仅新建流程）----
+  const buildDraft = () => ({
+    savedAt: new Date().toISOString(),
+    step,
+    name, moduleId, age, gender, residence, birthplace,
+    useDice, customAttrs, attrSets, selectedAttrs,
+    luck, creditRating,
+    selectedOccId: selectedOcc?.name ?? null,
+    occPoints, intPoints, occSearch, occCat,
+    skillAlloc, extraSkills, specBaseVals,
+    equipText, weapons, assetsInfo, mythos, relations, moduleHistory,
+    personalDesc, ideologyBeliefs, significantPeople, meaningfulLocations,
+    treasuredPossessions, traits, scarsAndWounds, phobiasAndManias, investigatorHistory,
+    isImported, aiHint,
+  })
+  type DraftShape = ReturnType<typeof buildDraft>
+
+  const readDraft = (): DraftShape | null => {
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY)
+      return raw ? (JSON.parse(raw) as DraftShape) : null
+    } catch {
+      return null
+    }
+  }
+
+  const persistDraft = (silent = false) => {
+    try {
+      const draft = buildDraft()
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
+      setDraftSavedAt(draft.savedAt)
+      if (!silent) toast.success('草稿已暂存')
+    } catch {
+      if (!silent) toast.error('草稿暂存失败')
+    }
+  }
+
+  const restoreDraft = () => {
+    const d = readDraft()
+    if (!d) return
+    setStep(d.step)
+    setName(d.name)
+    setModuleId(d.moduleId)
+    setAge(d.age)
+    setGender(d.gender)
+    setResidence(d.residence)
+    setBirthplace(d.birthplace)
+    setUseDice(d.useDice)
+    setCustomAttrs(d.customAttrs)
+    setAttrSets(d.attrSets)
+    setSelectedAttrs(d.selectedAttrs)
+    setLuck(d.luck)
+    setCreditRating(d.creditRating)
+    setOccPoints(d.occPoints)
+    setIntPoints(d.intPoints)
+    setOccSearch(d.occSearch)
+    setOccCat(d.occCat)
+    setSkillAlloc(d.skillAlloc)
+    setExtraSkills(d.extraSkills)
+    setSpecBaseVals(d.specBaseVals)
+    setEquipText(d.equipText)
+    setWeapons(d.weapons)
+    setAssetsInfo(d.assetsInfo)
+    setMythos(d.mythos)
+    setRelations(d.relations)
+    setModuleHistory(d.moduleHistory)
+    setPersonalDesc(d.personalDesc)
+    setIdeologyBeliefs(d.ideologyBeliefs)
+    setSignificantPeople(d.significantPeople)
+    setMeaningfulLocations(d.meaningfulLocations)
+    setTreasuredPossessions(d.treasuredPossessions)
+    setTraits(d.traits)
+    setScarsAndWounds(d.scarsAndWounds)
+    setPhobiasAndManias(d.phobiasAndManias)
+    setInvestigatorHistory(d.investigatorHistory)
+    setIsImported(d.isImported)
+    setAiHint(d.aiHint)
+    // selectedOcc 只存了名字：occupations 到位则找回对象；否则留空，待列表加载后由 effect 补全
+    if (d.selectedOccId) {
+      const match = occupations.find((o) => o.name === d.selectedOccId)
+      if (match) setSelectedOcc(match)
+    }
+    setInCreateFlow(true)
+    setDraftSavedAt(null)
+    toast.success('草稿已恢复')
+  }
+
+  const discardDraft = () => {
+    localStorage.removeItem(DRAFT_KEY)
+    setDraftSavedAt(null)
+  }
+
+  // 挂载时检测已有草稿 → 显示恢复横幅
+  useEffect(() => {
+    const d = readDraft()
+    if (d) setDraftSavedAt(d.savedAt)
+  }, [])
+
+  // occupations 异步加载：若恢复后仍缺 selectedOcc，则在列表到位后按名字补全
+  useEffect(() => {
+    if (!inCreateFlow || selectedOcc || occupations.length === 0) return
+    const d = readDraft()
+    if (d?.selectedOccId) {
+      const match = occupations.find((o) => o.name === d.selectedOccId)
+      if (match) setSelectedOcc(match)
+    }
+  }, [inCreateFlow, occupations, selectedOcc])
+
+  const formatDraftTime = (iso: string | null) => {
+    if (!iso) return ''
+    const dt = new Date(iso)
+    return `${dt.getMonth() + 1}/${dt.getDate()} ${dt.getHours().toString().padStart(2, '0')}:${dt.getMinutes().toString().padStart(2, '0')}`
+  }
+
   const stepIndex = STEPS.indexOf(step)
 
   // 角色列表：条件查询（名/职业/规则）+ 分页
@@ -673,11 +793,37 @@ export function CharacterPage() {
             )}
           </div>
 
+          {/* 未完成草稿：非模态横幅，可恢复或丢弃 */}
+          {draftSavedAt && (
+            <div
+              className="card mb-6 flex flex-wrap items-center gap-3"
+              style={{ borderColor: 'var(--color-accent)', background: 'var(--color-bg-card)' }}
+            >
+              <GiScrollUnfurled className="text-lg flex-shrink-0" style={{ color: 'var(--color-text-accent)' }} />
+              <span className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+                检测到未完成的角色草稿（暂存于 {formatDraftTime(draftSavedAt)}），是否恢复？
+              </span>
+              <div className="flex items-center gap-2 ml-auto">
+                <button onClick={restoreDraft} className="btn-primary !px-3 !py-1 text-sm">恢复</button>
+                <button onClick={discardDraft} className="btn-secondary !px-3 !py-1 text-sm">丢弃</button>
+              </div>
+            </div>
+          )}
+
           {inCreateFlow && (
           <div className="card mb-8">
-            <h3 className="card-title flex items-center gap-2">
-              <GiCharacter /> 创建角色（CoC 七版）
-            </h3>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="card-title flex items-center gap-2 !mb-0">
+                <GiCharacter /> 创建角色（CoC 七版）
+              </h3>
+              <button
+                onClick={() => persistDraft(false)}
+                className="btn-secondary flex items-center gap-1 !px-2 !py-1 text-xs whitespace-nowrap"
+                title="把当前填写的内容暂存到本地，下次可恢复"
+              >
+                <GiSave /> 暂存草稿
+              </button>
+            </div>
 
             {/* 步骤指示器 */}
             <div className="flex items-center gap-1 mb-4 text-xs">
