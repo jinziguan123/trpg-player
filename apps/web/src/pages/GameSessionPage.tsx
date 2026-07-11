@@ -14,7 +14,7 @@ import { RecapModal } from '../components/game/RecapModal'
 import { GrowthModal } from '../components/game/GrowthModal'
 import { InvestigationBoard } from '../components/game/InvestigationBoard'
 import { ImprovisedNpcModal } from '../components/game/ImprovisedNpcModal'
-import { CombatPanel, type CombatState, type PendingReaction } from '../components/game/CombatPanel'
+import { CombatStage, type CombatState, type PendingReaction, type CombatLogEntry } from '../components/game/CombatStage'
 import { ChasePanel, type ChaseState } from '../components/game/ChasePanel'
 import { Modal } from '../components/ui/modal'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter } from 'react-icons/gi'
@@ -150,6 +150,9 @@ export function GameSessionPage() {
   const [combat, setCombat] = useState<CombatState | null>(null)  // 当前战斗态（非空时显示战斗面板）
   const [pendingReaction, setPendingReaction] = useState<PendingReaction | null>(null)  // 被 NPC 攻击时的反应提示
   const [chase, setChase] = useState<ChaseState | null>(null)  // 当前追逐态（非空时显示追逐面板）
+  // 战斗日志抽屉的起点序号：新一场战斗开打（combat_start）时抬到「当前最大 seq」，
+  // 抽屉只收本场（≥该序号）的 combat_log 行，避免上一场的机械结算窜进新面板。null=不设下限（重连恢复）。
+  const [combatLogSince, setCombatLogSince] = useState<number | null>(null)
 
   const primaryId = currentSession?.player_character_id ?? null
   // 多人：我在本房间认领的角色（无则回退到主角，兼容单人）
@@ -320,6 +323,20 @@ export function GameSessionPage() {
     return 'npc'
   }
 
+  // 战斗日志抽屉内容：从消息流里筛出带 combat_log 标记的机械结算行（dice/system），
+  // 按 combatLogSince 下限只留本场（重连时 since=null → 全收，与落库历史一致）。
+  // 派生自 messages，故实时/历史/重连三路统一，无需单独维护日志数组。
+  const combatLog = useMemo<CombatLogEntry[]>(() => {
+    const out: CombatLogEntry[] = []
+    for (const m of messages) {
+      if (m.metadata?.combat_log !== true) continue
+      if (combatLogSince != null && m.sequence_num != null && m.sequence_num <= combatLogSince) continue
+      if (!m.id) continue
+      out.push({ id: m.id, kind: m.type === 'dice' ? 'dice' : 'system', content: m.content })
+    }
+    return out
+  }, [messages, combatLogSince])
+
   const seenIds = useRef<Set<string>>(new Set())
   const liveTypeRef = useRef<string>('')
   const liveGroupRef = useRef<string>('')   // 当前流式 narration 所属分组（分头行动实时分栏）
@@ -361,7 +378,12 @@ export function GameSessionPage() {
     if (t === 'replay_done') return
     if (t === 'generating') { setStreaming(true); setThinking(true); return }
     if (t === 'turn_state') { setTurnState((chunk.metadata as { confirmed_ids: string[]; total: number; ready: boolean }) || null); return }
-    if (t === 'combat_start' || t === 'combat_state') { setCombat((chunk.metadata as CombatState) || null); setPendingReaction(null); return }  // 续跑广播新态 → 清反应提示
+    if (t === 'combat_start') {
+      // 新战斗：设日志下限为当前最大 seq → 抽屉只收本场机械结算，不掺上一场。
+      setCombat((chunk.metadata as CombatState) || null); setPendingReaction(null); setCombatLogSince(maxSeqSeen.current)
+      return
+    }
+    if (t === 'combat_state') { setCombat((chunk.metadata as CombatState) || null); setPendingReaction(null); return }  // 续跑广播新态 → 清反应提示
     if (t === 'combat_reaction_prompt') { setPendingReaction((chunk.metadata as PendingReaction) || null); return }  // NPC 攻击真人：弹反应按钮
     if (t === 'combat_end') { setCombat(null); setPendingReaction(null); return }  // 结果那句话已由后端落库为消息，不额外处理
     if (t === 'chase_start' || t === 'chase_state') { setChase((chunk.metadata as ChaseState) || null); return }
@@ -439,6 +461,8 @@ export function GameSessionPage() {
     } else if (t === 'narration_full') {
       addMessage({ id: chunk.id || '', type: 'narration', content: chunk.content || '', actor_name: 'KP' })
     } else if (t === 'dice' || t === 'system' || t === 'ooc') {
+      // 战斗机械结算（metadata.combat_log）不灌主聊天流——它进 CombatStage 的折叠战斗日志抽屉。
+      // 仍照常 addMessage（落库/复盘/重连一致），但渲染时按 combat_log 从主流剔除、只在抽屉里出现。
       addMessage({ id: chunk.id || '', type: t, content: chunk.content || '', actor_name: chunk.actor_name, metadata: chunk.metadata })
     } else if (t === 'check_request') {
       // 待定检定提示：作为系统消息存（metadata.check_request 携带 check_id），渲染时带「投骰」按钮
@@ -1281,12 +1305,14 @@ export function GameSessionPage() {
           // 按时间顺序把消息切成「主线段（全宽）」与「分栏段（连续的场景组并排）」，
           // 这样每个场景列＝该场景的「玩家行动 + KP 叙事」自成一体，主线穿插其间保序。
           const sceneOf = (m: ChatMessage) => String(m.metadata?.group || '').trim()
+          // 战斗机械结算（combat_log）不进主聊天流——它由 CombatStage 的日志抽屉展示。
+          const visibleMessages = messages.filter((m) => m.metadata?.combat_log !== true)
           if (!splitView || sceneGroups.length < 2) {
-            return messages.map(renderRow)
+            return visibleMessages.map(renderRow)
           }
           type Seg = { split: boolean; msgs: ChatMessage[] }
           const segments: Seg[] = []
-          for (const m of messages) {
+          for (const m of visibleMessages) {
             const isSplit = !!sceneOf(m)
             const last = segments[segments.length - 1]
             if (!last || last.split !== isSplit) segments.push({ split: isSplit, msgs: [m] })
@@ -1337,7 +1363,7 @@ export function GameSessionPage() {
         </div>
 
         {combat && (
-          <CombatPanel combat={combat} myCharId={myCharId} sessionId={currentSession.id} pendingReaction={pendingReaction} />
+          <CombatStage combat={combat} myCharId={myCharId} sessionId={currentSession.id} pendingReaction={pendingReaction} log={combatLog} />
         )}
         {chase && (
           <ChasePanel chase={chase} sessionId={currentSession.id} />
