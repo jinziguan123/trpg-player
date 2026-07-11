@@ -238,3 +238,148 @@ def test_tick_dying_noop_when_not_dying():
     from app.rules.coc import combat
     p = {"status": "ok"}
     assert combat.tick_dying(p) == []
+
+
+# ── P2：主动动作集（急救 / 观察 / 擒抱缴械 / grappled·disarmed / aim）──────
+
+def test_resolve_first_aid_success_heals_one(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    monkeypatch.setattr(checks, "roll_percentile", lambda: 10)   # 急救50 → 成功
+    medic = {"skills": {"急救": 50}, "base_attributes": {}, "system_data": {}}
+    r = combat.resolve_first_aid(medic)
+    assert r["success"] is True and r["heal"] == 1 and r["lines"]
+
+
+def test_resolve_first_aid_failure_heals_zero(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    monkeypatch.setattr(checks, "roll_percentile", lambda: 90)   # 急救50 → 失败
+    medic = {"skills": {"急救": 50}, "base_attributes": {}, "system_data": {}}
+    r = combat.resolve_first_aid(medic)
+    assert r["success"] is False and r["heal"] == 0 and r["lines"]
+
+
+def test_resolve_first_aid_custom_skill_medicine(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    monkeypatch.setattr(checks, "roll_percentile", lambda: 10)   # 医学40 → 成功
+    medic = {"skills": {"医学": 40}, "base_attributes": {}, "system_data": {}}
+    r = combat.resolve_first_aid(medic, skill="医学")
+    assert r["success"] is True and r["heal"] == 1
+
+
+def test_resolve_observe_success(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    monkeypatch.setattr(checks, "roll_percentile", lambda: 10)   # 侦查60 → 成功
+    obs = {"skills": {"侦查": 60}, "base_attributes": {}, "system_data": {}}
+    r = combat.resolve_observe(obs)
+    assert r["success"] is True and r["lines"]
+
+
+def test_resolve_observe_failure(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    monkeypatch.setattr(checks, "roll_percentile", lambda: 90)   # 侦查60 → 失败
+    obs = {"skills": {"侦查": 60}, "base_attributes": {}, "system_data": {}}
+    r = combat.resolve_observe(obs)
+    assert r["success"] is False and r["lines"]
+
+
+def test_resolve_maneuver_grapple_success(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    # 攻方掷 10（格斗60→成功）、守方掷 80（格斗50→失败）→ 攻方胜
+    monkeypatch.setattr(checks, "roll_percentile", _seq([10, 80]))
+    attacker = {"skills": {"格斗(斗殴)": 60}, "base_attributes": {}, "system_data": {}}
+    defender = {"skills": {"格斗(斗殴)": 50, "闪避": 40}, "base_attributes": {}, "system_data": {}}
+    r = combat.resolve_maneuver(attacker, defender, kind="grapple")
+    assert r["success"] is True and r["condition"] == "grappled" and r["lines"]
+
+
+def test_resolve_maneuver_disarm_success(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    monkeypatch.setattr(checks, "roll_percentile", _seq([10, 80]))
+    attacker = {"skills": {"格斗(斗殴)": 60}, "base_attributes": {}, "system_data": {}}
+    defender = {"skills": {"格斗(斗殴)": 50}, "base_attributes": {}, "system_data": {}}
+    r = combat.resolve_maneuver(attacker, defender, kind="disarm")
+    assert r["success"] is True and r["condition"] == "disarmed"
+
+
+def test_resolve_maneuver_failure_no_condition(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    # 攻方掷 80（失败）、守方掷 10（成功）→ 攻方败
+    monkeypatch.setattr(checks, "roll_percentile", _seq([80, 10]))
+    attacker = {"skills": {"格斗(斗殴)": 60}, "base_attributes": {}, "system_data": {}}
+    defender = {"skills": {"格斗(斗殴)": 50}, "base_attributes": {}, "system_data": {}}
+    r = combat.resolve_maneuver(attacker, defender, kind="grapple")
+    assert r["success"] is False and r["condition"] is None
+
+
+def test_resolve_maneuver_tie_is_failure(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    # 双方同骰值 → 同成功等级、同技能值 → compare_checks 平手 → 攻方未胜 → 失败
+    monkeypatch.setattr(checks, "roll_percentile", _seq([10, 10]))
+    attacker = {"skills": {"格斗(斗殴)": 60}, "base_attributes": {}, "system_data": {}}
+    defender = {"skills": {"格斗(斗殴)": 60}, "base_attributes": {}, "system_data": {}}
+    r = combat.resolve_maneuver(attacker, defender, kind="grapple")
+    assert r["success"] is False and r["condition"] is None
+
+
+def test_allowed_reactions_grappled_melee_only_fight_back():
+    from app.rules.coc.combat import allowed_reactions
+    # 被擒抱者近战只能反击（不能闪避/扑掩体）
+    assert allowed_reactions(is_firearm=False, defender_grappled=True) == ["fight_back"]
+
+
+def test_allowed_reactions_grappled_firearm_empty():
+    from app.rules.coc.combat import allowed_reactions
+    # 被擒抱者面对火器无从躲避
+    assert allowed_reactions(is_firearm=True, defender_grappled=True) == []
+
+
+def test_allowed_reactions_default_backward_compatible():
+    from app.rules.coc.combat import allowed_reactions
+    # 默认参数不变（向后兼容）
+    assert allowed_reactions(is_firearm=False) == ["fight_back", "dodge"]
+    assert allowed_reactions(is_firearm=True) == ["dodge", "cover"]
+
+
+def test_resolve_attack_disarmed_forces_unarmed(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    monkeypatch.setattr(checks, "roll_percentile", lambda: 10)   # 命中
+    _fix_randint(monkeypatch, 3)
+    attacker = {"skills": {"格斗(斗殴)": 60, "射击(手枪)": 70}, "base_attributes": {}, "system_data": {}}
+    # 缴械后即使拿枪也强制徒手格斗
+    r = combat.resolve_attack(attacker, "0", "手枪",
+                              defender_data={"skills": {}, "base_attributes": {}, "system_data": {}},
+                              defense=None, ranged=False, attacker_disarmed=True)
+    assert r["weapon"] == "徒手格斗"
+
+
+def test_resolve_attack_aim_bonus_helps_hit(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    # 射击(手枪)=50：base d100=95（失手）。奖励骰(bonus=1)额外掷一个十位。
+    # randint 统一钉死为 2 → 奖励骰十位=20，个位来自 base 95=5 → 合成 d100=25 ≤ 50 命中；
+    # 武器 1D8 同 randint=2 → 伤害 2（不影响命中判定）。
+    monkeypatch.setattr(checks, "roll_percentile", lambda: 95)
+    monkeypatch.setattr("app.rules.coc.checks.random.randint", lambda a, b: 2)
+    monkeypatch.setattr("app.rules.coc.combat.random.randint", lambda a, b: 2)
+    shooter = {"skills": {"射击(手枪)": 50}, "base_attributes": {}, "system_data": {}}
+    r = combat.resolve_attack(shooter, "0",
+                              {"name": "手枪", "dam": "1D8", "skill": "射击(手枪)", "tho": 0},
+                              ranged=True, bonus=1)
+    assert r["hit"] is True   # 奖励骰把 95 拉到 25 → 命中
+
+    # 对照：无奖励骰时 95 > 50 失手，确认是 aim 的功劳
+    monkeypatch.setattr(checks, "roll_percentile", lambda: 95)
+    r0 = combat.resolve_attack(shooter, "0",
+                               {"name": "手枪", "dam": "1D8", "skill": "射击(手枪)", "tho": 0},
+                               ranged=True)
+    assert r0["hit"] is False

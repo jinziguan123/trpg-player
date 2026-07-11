@@ -158,9 +158,68 @@ def _fight_skill_of(data: dict) -> str:
     return "格斗(斗殴)"
 
 
-def allowed_reactions(is_firearm: bool) -> list[str]:
-    """被攻击者可选的反应。火器不能反击（RAW），只能闪避/扑掩体。"""
+def allowed_reactions(is_firearm: bool, defender_grappled: bool = False) -> list[str]:
+    """被攻击者可选的反应。火器不能反击（RAW），只能闪避/扑掩体。
+
+    被擒抱（defender_grappled）者无法闪避/扑掩体：近战只剩反击，火器则无从躲避（空列表，命中即结算）。
+    defender_grappled 默认 False，保持向后兼容。
+    """
+    if defender_grappled:
+        return [] if is_firearm else ["fight_back"]
     return ["dodge", "cover"] if is_firearm else ["fight_back", "dodge"]
+
+
+def resolve_first_aid(medic_data: dict, skill: str = "急救") -> dict:
+    """一次急救/医学检定。返回 {success, heal, lines}：成功 heal=1（回 1 HP），失败 heal=0。
+
+    纯规则：只算成败与回血量。是否稳住濒死、写回角色卡、标记该处伤已急救，由 service 层决定。
+    """
+    chk = resolve_skill_check(medic_data, skill)
+    success = chk.outcome in ("critical_success", "hard_success", "success")
+    heal = 1 if success else 0
+    verb = "成功" if success else "失败"
+    lines = [f"{skill}检定{verb}（{chk.description}）" + ("，稳住伤势 +1 HP。" if success else "，未能处理伤势。")]
+    return {"success": success, "heal": heal, "lines": lines}
+
+
+def resolve_observe(observer_data: dict, skill: str = "侦查") -> dict:
+    """一次观察战场检定（侦查/心理学）。返回 {success, lines}。
+
+    成功不改数值，仅产一条「察觉到破绽/敌情」beat，交子代理据此叙述具体线索。
+    """
+    chk = resolve_skill_check(observer_data, skill)
+    success = chk.outcome in ("critical_success", "hard_success", "success")
+    if success:
+        lines = [f"{skill}检定成功（{chk.description}），观察到敌方的破绽/动向。"]
+    else:
+        lines = [f"{skill}检定失败（{chk.description}），未能看出更多。"]
+    return {"success": success, "lines": lines}
+
+
+def resolve_maneuver(attacker_data: dict, defender_data: dict, kind: str = "grapple") -> dict:
+    """对抗格斗机动（擒抱/缴械）。attacker 的格斗 对抗 defender 的格斗/闪避（取其一），
+    用 compare_checks 比成功等级。返回 {success, condition, lines}：
+
+    attacker 严格胜出 → success=True、condition = 'grappled'（擒抱）或 'disarmed'（缴械）；
+    平手/败 → success=False、condition=None。不造成伤害。
+    """
+    atk_skill = _fight_skill_of(attacker_data)
+    # 守方用更擅长的一项抵抗（格斗 or 闪避）
+    dfn_skill = _fight_skill_of(defender_data)
+    dfn_skills = defender_data.get("skills") or {}
+    if (dfn_skills.get("闪避") or 0) > (dfn_skills.get(dfn_skill) or 0):
+        dfn_skill = "闪避"
+    atk = resolve_skill_check(attacker_data, atk_skill)
+    dfn = resolve_skill_check(defender_data, dfn_skill)
+    won = compare_checks(atk, dfn) == "a" and atk.meets_difficulty
+    condition = None
+    kind_cn = "擒抱" if kind == "grapple" else "缴械"
+    if won:
+        condition = "grappled" if kind == "grapple" else "disarmed"
+        lines = [f"{kind_cn}对抗（{atk.description} vs {dfn.description}）→ 得手。"]
+    else:
+        lines = [f"{kind_cn}对抗（{atk.description} vs {dfn.description}）→ 未能得手。"]
+    return {"success": won, "condition": condition, "lines": lines}
 
 
 def resolve_attack(
@@ -172,6 +231,8 @@ def resolve_attack(
     defense: str | None = None,     # None(无反应) | 'dodge' | 'cover' | 'fight_back'
     ranged: bool = False,
     difficulty: str = "normal",
+    attacker_disarmed: bool = False,
+    bonus: int = 0,
 ) -> dict:
     """解析一次攻击。返回结构化结果（谁命中谁、伤害多少、各自检定）。**不改状态、不落库。**
 
@@ -180,10 +241,15 @@ def resolve_attack(
     - 远程 + defense=None：攻方射击检定，达到要求难度即命中。
     - 远程 + defense='dodge'/'cover'：射手转困难难度（扑向掩体）重掷，命中即伤、无反击。
     命中且为贯穿武器 + 极难/大成功 → 贯穿加伤。
+
+    attacker_disarmed=True：攻方已被缴械 → 武器强制回落徒手格斗。
+    bonus>0：给攻方命中检定加奖励骰（瞄准用，透传给 resolve_skill_check）。
     """
+    if attacker_disarmed:
+        weapon = _UNARMED
     w = resolve_weapon(weapon) if isinstance(weapon, str) else weapon
     atk_skill = w.get("skill") or "格斗(斗殴)"
-    atk = resolve_skill_check(attacker_data, atk_skill, difficulty)
+    atk = resolve_skill_check(attacker_data, atk_skill, difficulty, bonus=bonus)
 
     result: dict = {
         "weapon": w.get("name"), "attacker_check": atk, "defender_check": None,
@@ -197,7 +263,7 @@ def resolve_attack(
     # 远程：无反应 → 达标即命中；扑掩体/闪避 → 射手转困难难度（扑向掩体），无反击
     if ranged:
         if defense in ("dodge", "cover"):
-            atk = resolve_skill_check(attacker_data, atk_skill, "hard")
+            atk = resolve_skill_check(attacker_data, atk_skill, "hard", bonus=bonus)
             result["attacker_check"] = atk
         if atk.meets_difficulty:
             result["hit"] = True
