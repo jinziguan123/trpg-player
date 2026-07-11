@@ -194,6 +194,24 @@ class TestTurnPlanShapeTolerance:
             {"narration_brief": "描写敲击声"}
         ).narration_brief == ["描写敲击声"]
 
+    def test_子模型列表字段写成null不拖垮计划(self):
+        # 复现线上报错：npc_policy.speakers 是 null（default_factory 只在键缺失时生效，
+        # 显式 null 会撞 list schema）。速度检定等核心内容不该被这个次要字段连累丢弃。
+        plan = TurnPlan.model_validate({
+            "requires_check": True,
+            "check": {"skill": "侦查"},
+            "npc_policy": {"speakers": None, "reaction": "管家警觉", "needs_npc_act": False},
+            "clue_policy": {"candidate_clue_ids": None, "reveal_level": "hint"},
+            "scene_policy": {"set_flags": None, "clear_flags": None},
+            "safety": {"do_not_reveal": None},
+            "narration_brief": None,
+        })
+        assert plan.requires_check and plan.check.skill == "侦查"
+        assert plan.npc_policy.speakers == [] and plan.npc_policy.reaction == "管家警觉"
+        assert plan.clue_policy.candidate_clue_ids == [] and plan.clue_policy.reveal_level == "hint"
+        assert plan.scene_policy.set_flags == [] and plan.scene_policy.clear_flags == []
+        assert plan.safety.do_not_reveal == [] and plan.narration_brief == []
+
     def test_turn_kind非法值退mixed(self):
         assert TurnPlan.model_validate({"turn_kind": "探案"}).turn_kind == "mixed"
 

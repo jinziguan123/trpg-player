@@ -3,9 +3,16 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from app.ai import director_signals
 from app.ai.context import _active_flags, _resolve_state
@@ -26,6 +33,26 @@ TurnKind = Literal[
 ]
 
 
+def _coerce_str_list(v: Any) -> list[str]:
+    """把 LLM 常写错的列表字段就地归一成干净的 str 列表。
+
+    模型时常把列表字段写成 ``null``（default_factory 只在键缺失时生效，显式 null 会撞
+    schema）、一句话，或含空串/非字符串元素。统一收敛：None/无法识别→空列表，字符串→单元素，
+    列表→逐项 str 化去空。绝不因这类次要字段格式错误就让整份 TurnPlan 校验失败回退旧流程。"""
+    if v is None:
+        return []
+    if isinstance(v, str):
+        s = v.strip()
+        return [s] if s else []
+    if isinstance(v, (list, tuple)):
+        return [str(x).strip() for x in v if str(x).strip()]
+    return []
+
+
+# 所有「字符串列表」软字段统一用它承接 LLM 的脏输入，避免每个字段各写一遍归一逻辑。
+StrList = Annotated[list[str], BeforeValidator(_coerce_str_list)]
+
+
 class CheckPlan(BaseModel):
     skill: str = ""
     difficulty: str = "normal"
@@ -37,26 +64,26 @@ class CheckPlan(BaseModel):
 
 class CluePolicy(BaseModel):
     action_matches_clue: bool = False
-    candidate_clue_ids: list[str] = Field(default_factory=list)
+    candidate_clue_ids: StrList = Field(default_factory=list)
     reveal_level: str = "none"
     requires_inspiration: bool = False
     notes: str = ""
 
 
 class NpcPolicy(BaseModel):
-    speakers: list[str] = Field(default_factory=list)
+    speakers: StrList = Field(default_factory=list)
     reaction: str = ""
     needs_npc_act: bool = False
 
 
 class ScenePolicy(BaseModel):
     scene_change: str | None = None
-    set_flags: list[str] = Field(default_factory=list)
-    clear_flags: list[str] = Field(default_factory=list)
+    set_flags: StrList = Field(default_factory=list)
+    clear_flags: StrList = Field(default_factory=list)
 
 
 class SafetyPolicy(BaseModel):
-    do_not_reveal: list[str] = Field(default_factory=list)
+    do_not_reveal: StrList = Field(default_factory=list)
     do_not_control_players: bool = True
 
 
@@ -69,7 +96,7 @@ class DirectionPolicy(BaseModel):
     """
 
     pacing: Literal["hold", "tighten", "release"] = "hold"
-    spotlight: list[str] = Field(default_factory=list)  # 本轮应主动给戏份的角色名
+    spotlight: StrList = Field(default_factory=list)  # 本轮应主动给戏份的角色名
     nudge: str = ""  # 卡关时的推进手段（让线索更显眼/NPC 主动接触），不得直接判定检定成功
     foreshadow: str = ""  # 建议埋设或回收的悬念，一句话
 
@@ -88,18 +115,6 @@ class DirectionPolicy(BaseModel):
             return "release"
         return "hold"
 
-    @field_validator("spotlight", mode="before")
-    @classmethod
-    def _coerce_spotlight(cls, v):
-        if v is None:
-            return []
-        if isinstance(v, str):
-            s = v.strip()
-            return [s] if s else []
-        if isinstance(v, (list, tuple)):
-            return [str(x).strip() for x in v if str(x).strip()]
-        return []
-
     @field_validator("nudge", "foreshadow", mode="before")
     @classmethod
     def _coerce_text(cls, v):
@@ -113,7 +128,6 @@ class DirectionPolicy(BaseModel):
 # 各嵌套子模型字段：LLM 常把它们写成一句话（safety→「安全，无即时威胁」、check→「不需要」），
 # 形状错误只应让该字段退到默认，绝不能连累整份计划被丢弃回退旧流程。
 _SUBMODEL_FIELDS = ("check", "clue_policy", "npc_policy", "scene_policy", "safety", "direction")
-_LIST_FIELDS = ("narration_brief",)
 _TURN_KINDS = frozenset(
     ("investigate", "social", "move", "combat", "knowledge", "roleplay", "mixed")
 )
@@ -127,7 +141,7 @@ class TurnPlan(BaseModel):
     clue_policy: CluePolicy = Field(default_factory=CluePolicy)
     npc_policy: NpcPolicy = Field(default_factory=NpcPolicy)
     scene_policy: ScenePolicy = Field(default_factory=ScenePolicy)
-    narration_brief: list[str] = Field(default_factory=list)
+    narration_brief: StrList = Field(default_factory=list)
     safety: SafetyPolicy = Field(default_factory=SafetyPolicy)
     direction: DirectionPolicy = Field(default_factory=DirectionPolicy)
 
@@ -137,9 +151,10 @@ class TurnPlan(BaseModel):
         """把 LLM 写错形状的字段就地归一，保住整份计划不因次要字段格式错误被整体丢弃。
 
         - 嵌套子模型字段给了非 dict（一句话/标量）→ 换成 {}，走该子模型默认
-          （子模型自身的 field_validator，如 direction 的 pacing/spotlight 归一，仍会生效）；
-        - 列表字段给了字符串 → 包一层，其它非 list → 空列表；
+          （子模型自身的 field_validator，如 direction 的 pacing 归一，仍会生效）；
         - turn_kind 给了枚举外的值 → 退到 mixed。
+        字符串列表字段（speakers/candidate_clue_ids/narration_brief 等）写成 null/标量的情形，
+        交由字段级的 StrList（BeforeValidator）就地归一，这里不再重复处理。
         识别不了的一律退默认，绝不抛错。"""
         if not isinstance(data, dict):
             return data
@@ -148,10 +163,6 @@ class TurnPlan(BaseModel):
             # 放行 dict（来自 JSON）与子模型实例（来自直接构造）；只拦截标量/字符串/列表等错误形状
             if name in data and not isinstance(data[name], (dict, BaseModel)):
                 data[name] = {}
-        for name in _LIST_FIELDS:
-            if name in data and not isinstance(data[name], list):
-                v = data[name]
-                data[name] = [str(v).strip()] if isinstance(v, str) and v.strip() else []
         if data.get("turn_kind") not in _TURN_KINDS:
             data.pop("turn_kind", None)  # 交回默认 "mixed"
         return data
