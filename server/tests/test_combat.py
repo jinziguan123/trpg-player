@@ -182,7 +182,7 @@ def test_resolve_attack_firearm_cover_raises_difficulty(monkeypatch):
 
 def test_heuristic_defense_firearm_never_fight_back():
     from app.rules.coc.combat import heuristic_defense
-    assert heuristic_defense({"combat_ai": "aggressive"}, is_firearm=True) in ("dodge", "cover")
+    assert heuristic_defense({"combat_ai": "aggressive"}, is_firearm=True) == "dodge"
     assert heuristic_defense({"combat_ai": "aggressive"}, is_firearm=False) == "fight_back"
     assert heuristic_defense({"combat_ai": "cautious"}, is_firearm=False) == "dodge"
 

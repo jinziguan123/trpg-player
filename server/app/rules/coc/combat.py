@@ -251,11 +251,11 @@ def resolve_attack(
 def resolve_wound(hp: int, max_hp: int, damage: int, defender_data: dict) -> dict:
     """结算一次伤害的 HP 与状态迁移（纯规则，不碰 DB）。
     返回 {new_hp, status, lines}。重伤（单击≥半血）触发 CON 检定，失败则昏迷。"""
-    max_hp = max_hp or 1
+    max_hp = max(1, max_hp)   # 归一非正 max_hp，避免半血阈值/贯穿判定被负值扭曲
     raw = hp - damage
     new_hp = max(0, raw)
     lines = [f"受到 {damage} 点伤害（HP {hp}→{new_hp}）"]
-    major = damage >= max_hp // 2 and max_hp > 0
+    major = damage >= max_hp // 2
     if raw <= -max_hp:
         return {"new_hp": new_hp, "status": "dead", "lines": lines + ["当场毙命！"]}
     if new_hp <= 0:
