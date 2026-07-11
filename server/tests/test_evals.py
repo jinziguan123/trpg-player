@@ -120,9 +120,9 @@ class TestNarrationStyleVariety:
     def test_kp提示词含文风忌单一约束(self):
         from app.ai.prompts.kp_system import KP_SYSTEM_PROMPT
         p = KP_SYSTEM_PROMPT
-        assert "文风忌单一" in p
-        assert "否定式对比" in p and "而是" in p  # 点名了 tic
-        assert "至多一次" in p
+        assert "文风忌单一（硬规则）" in p          # 已提为顶层硬规则
+        assert "否定式对比" in p and "而是" in p    # 点名了 tic
+        assert "整轮叙述至多用一次" in p            # 硬性上限（此前是「至多一次」的软约束）
 
 
 class TestPlayerControl:

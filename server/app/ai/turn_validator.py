@@ -23,6 +23,22 @@ _REPORT_STYLE_RE = re.compile(r"【[^】\n]{1,12}】\s*\n(?:\s*[-•]\s*.+\n?){1
 # 内部标识特征：flag_xxx / flag xxx 这类技术性 token，正常叙事文本不会写出来。
 _INTERNAL_ID_RE = re.compile(r"\bflag[_ ][a-z0-9_]+", re.IGNORECASE)
 
+# 否定式对比句式（"不是X，是Y" / "不是X而是Y" / "与其说…不如说…" / "这不是…，这是…"）：
+# 各家 LLM 头号「显得文学」的口头禅，密集复用则空洞、审美疲劳。这是唯一真源——
+# evals 的文风探针与 KP 上下文的反 tic 反馈环 nudge 都从这里取，避免规则各写一份漂移。
+# 逗号前谓语段刻意排除逗号，避免「不是本地人，房子是租的」这类跨主语并列句误命中。
+_ANTITHESIS_RE = re.compile(
+    r"不是[^。！？；，\n]{1,30}?(?:而是|，(?:而是|却是|倒是|反倒是|反而是|才是|是))"
+    r"|并非[^。！？；，\n]{1,30}?而是"
+    r"|与其说[^。！？；\n]{1,30}?不如说"
+    r"|这不是[^。！？；\n]{1,30}?，[^。！？；\n]{0,4}?这(?:是|才是)"
+)
+
+
+def count_antithesis(text: str) -> int:
+    """统计一段文本里否定式对比句式的出现次数（文风单一化的量化指标）。"""
+    return len(_ANTITHESIS_RE.findall(text or ""))
+
 
 def _looks_suspicious(narration: str, plan: TurnPlan) -> bool:
     """零成本预筛：值不值得为这段旁白多花一次 LLM 校验调用。

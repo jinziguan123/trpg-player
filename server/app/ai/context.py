@@ -84,6 +84,10 @@ MODULE_EXCERPT_MAX_CHARS = 600
 RULE_EXCERPT_MAX_CHARS = 260
 # 「幕后动态」小节最多注入最近几条幕后事件（visibility=["kp"]，仅 KP 可见）
 MAX_BACKSTAGE_IN_CONTEXT = 5
+# 反 tic 反馈环阈值：最近历史旁白里「不是X，是Y」否定式对比句累计达此数，即在下一轮上下文
+# 末尾注入文风纠偏指令。KP 往轮旁白会作为 assistant 消息回灌，模型极易把自己的这个口头禅
+# 当成本故事既定文风并放大——静态系统提示压不过几十个现身说法的例子，故按密度动态施压。
+ANTITHESIS_NUDGE_THRESHOLD = 3
 
 
 def _estimate_tokens(text: str) -> int:
@@ -898,6 +902,26 @@ def build_kp_context(
                     "[格式提醒] NPC说话时必须写出台词原文，"
                     "用中文双引号（“”）包裹。"
                     "不要只描述NPC的声音、语气或动作而省略实际台词内容。"
+                ),
+            })
+
+        # 反 tic 反馈环：往轮旁白作为 assistant 消息回灌，模型极易把自己的「不是X，是Y」对比句
+        # 当成既定文风并放大（越滚越多）。测最近历史该句式密度，超阈值就在最终玩家输入前插一条
+        # 强指令，明说这是待纠正的坏习惯、非既定文风——只在真滥用时施压，不滥用不打扰。
+        from app.ai.turn_validator import count_antithesis
+
+        recent_narration = "\n".join(
+            e.content or "" for e in recent_pool if e.event_type == "narration"
+        )
+        tic_count = count_antithesis(recent_narration)
+        if tic_count >= ANTITHESIS_NUDGE_THRESHOLD and messages and messages[-1]["role"] == "user":
+            messages.insert(-1, {
+                "role": "system",
+                "content": (
+                    f"[文风纠偏] 前文你已用了约 {tic_count} 处「不是……，（而）是……」式的否定对比句。"
+                    "这是你自己滚出来的坏习惯，不是本故事的既定文风，须立刻纠正："
+                    "本轮起禁用该结构及其变体（「不是A是B」「与其说A不如说B」「这不是A，这是B」），"
+                    "改用直陈句，多给具体的感官与动作细节让读者自行体会，句子长短交错，别通篇对仗。"
                 ),
             })
 

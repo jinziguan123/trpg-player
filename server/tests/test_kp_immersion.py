@@ -245,6 +245,48 @@ def test_set_and_clear_flag_service(db_factory):
     assert "basement_flooded" not in session.world_state["flags"]
 
 
+# ---------- 反 tic 反馈环：文风纠偏 nudge ----------
+
+
+def _tic_narration_events(session_id, count_marker: str):
+    """构造历史事件：若干带否定对比 tic 的 KP 旁白 + 一条玩家行动收尾（使末条为 user 消息）。"""
+    narr = {
+        "heavy": "他撞开门。不是推，是砸。空气不是冷，而是黏。那东西不是站着，是悬着。",  # 3 处 tic
+        "light": "他撞开门。空气黏得发闷。那东西悬在半空，缓缓转过头来。不是推，是砸。",       # 1 处 tic
+    }[count_marker]
+    return [
+        EventLog(session_id=session_id, sequence_num=1, event_type="narration",
+                 content=narr, actor_name="KP"),
+        EventLog(session_id=session_id, sequence_num=2, event_type="action",
+                 content="我举起半截伞柄", actor_name="调查员"),
+    ]
+
+
+def _has_style_nudge(msgs) -> bool:
+    return any(m.get("role") == "system" and "文风纠偏" in (m.get("content") or "") for m in msgs)
+
+
+def test_antithesis_nudge_injected_when_history_tic_dense(db_factory):
+    """历史旁白里否定对比句累计超阈值 → 下一轮上下文在玩家输入前插入「文风纠偏」强指令。"""
+    db = db_factory()
+    module, hero, session = _seed(db, scenes=[{"id": "hall", "name": "门厅", "description": "门厅"}])
+    events = _tic_narration_events(session.id, "heavy")
+    msgs = ctx.build_kp_context(session, module, hero, events)
+    assert _has_style_nudge(msgs)
+    # 纠偏指令须紧贴最终玩家输入之前（位置靠后=分量重）
+    assert msgs[-1]["role"] == "user"
+    assert "文风纠偏" in msgs[-2]["content"]
+
+
+def test_antithesis_nudge_absent_when_history_clean(db_factory):
+    """历史里该句式很少（未超阈值）→ 不注入，行为不变、不打扰。"""
+    db = db_factory()
+    module, hero, session = _seed(db, scenes=[{"id": "hall", "name": "门厅", "description": "门厅"}])
+    events = _tic_narration_events(session.id, "light")
+    msgs = ctx.build_kp_context(session, module, hero, events)
+    assert not _has_style_nudge(msgs)
+
+
 def test_flag_tag_regexes():
     """[SET_FLAG]/[CLEAR_FLAG] 正则正确抽取标志名。"""
     from app.services.chat_service import SET_FLAG_RE, CLEAR_FLAG_RE
