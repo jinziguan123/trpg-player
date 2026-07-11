@@ -96,3 +96,33 @@ async def test_validate_falls_back_to_original_when_corrected_missing():
     result = await turn_validator.validate_turn_narration(llm, plan, "原始旁白内容")
     assert result.violated is True
     assert result.corrected_narration == "原始旁白内容"
+
+
+@pytest.mark.asyncio
+async def test_validate_parses_markdown_fenced_json():
+    """模型常无视 json_object、把结果裹进 ```json 围栏——稳健抠取应能解析。"""
+    plan = TurnPlan(safety=SafetyPolicy(do_not_reveal=["秘密"]))
+    llm = _FakeLLM(resp='```json\n{"violated": false}\n```')
+    result = await turn_validator.validate_turn_narration(llm, plan, "管家看起来有些紧张。")
+    assert result is not None
+    assert result.violated is False
+
+
+@pytest.mark.asyncio
+async def test_validate_accepts_minimal_not_violated_shape():
+    """新契约：不违规时只回 {"violated": false}，不回填旁白也应校验通过。"""
+    plan = TurnPlan(safety=SafetyPolicy(do_not_reveal=["秘密"]))
+    llm = _FakeLLM(resp='{"violated": false}')
+    result = await turn_validator.validate_turn_narration(llm, plan, "旁白内容")
+    assert result is not None
+    assert result.violated is False
+    assert result.corrected_narration == ""
+
+
+@pytest.mark.asyncio
+async def test_validate_fails_open_on_truncated_json():
+    """复现线上 bug：输出被截成半截字符串（Unterminated string）→ 抠不出完整 JSON → 放行。"""
+    plan = TurnPlan(safety=SafetyPolicy(do_not_reveal=["秘密"]))
+    llm = _FakeLLM(resp='{"violated": true, "reason": "泄露了秘密的具体内容但这段话还没写完')
+    result = await turn_validator.validate_turn_narration(llm, plan, "旁白内容")
+    assert result is None  # 截断无法解析，按放行处理，不阻塞跑团

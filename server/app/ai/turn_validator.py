@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from app.ai.turn_planner import TurnPlan
+from app.ai.turn_planner import TurnPlan, _extract_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +59,10 @@ def build_validator_messages(plan: TurnPlan, narration: str) -> list[dict]:
                 "1. 用【标题】加项目符号列表的「汇报体」总结本回合状态/进展/待触发条件，而非自然叙事；\n"
                 "2. 旁白里出现了 flag 名、线索/NPC 的内部 id、JSON 字段名等技术性标识。\n\n"
                 f"待检查的旁白：\n{narration}\n\n"
-                '返回 {"violated": bool, "reason": "简述违规之处，不违规则留空", '
-                '"corrected_narration": "若违规，给出改写后的旁白——去掉违规部分，'
-                '尽量保留其余内容与叙事风格、少改动；不违规则原样返回旁白"}\n'
+                '不违规时只返回 {"violated": false}，不要回填旁白；\n'
+                '违规时返回 {"violated": true, "reason": "简述违规之处", '
+                '"corrected_narration": "改写后的旁白——去掉违规部分，'
+                '尽量保留其余内容与叙事风格、少改动"}\n'
                 "只输出 JSON。"
             ),
         },
@@ -84,18 +85,26 @@ async def validate_turn_narration(
 
     messages = build_validator_messages(plan, narration)
     try:
+        # 不设 max_tokens 硬上限：推理类模型的 reasoning 会占输出预算，硬上限会把 JSON 截成半截
+        # 字符串（线上「Unterminated string」正是如此）。交服务端默认上限，complete 已内部流式。
         raw = await llm.complete(
             messages,
             temperature=0,
-            max_tokens=len(narration) + 400,
             response_format={"type": "json_object"},
         )
-        result = TurnValidation.model_validate(json.loads(raw))
-    except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
-        logger.warning("KP 回合校验器输出无法解析，按放行处理：%s", exc)
-        return None
     except Exception:
         logger.exception("KP 回合校验器调用失败，按放行处理")
+        return None
+
+    # 稳健抠 JSON（剥围栏 / 夹带文字 / 已是 dict），比裸 json.loads 抗造；抠不出按放行处理。
+    data = _extract_json_object(raw)
+    if data is None:
+        logger.warning("KP 回合校验器输出无法解析，按放行处理：%s", str(raw)[:200])
+        return None
+    try:
+        result = TurnValidation.model_validate(data)
+    except ValidationError as exc:
+        logger.warning("KP 回合校验器输出不符合 schema，按放行处理：%s", exc)
         return None
 
     if result.violated and not result.corrected_narration.strip():
