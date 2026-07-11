@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from app.ai import usage_tracker
 from app.services.room_hub import room_hub
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,9 @@ class GenerationManager:
         # 从而进入 in-flight buffer：断线重连时可被重放，避免玩家消息「被吞」。
         for chunk in (prelude or []):
             room_hub.broadcast(room_id, chunk)
-        task = asyncio.create_task(coro)
+        # 用 usage_tracker 包一层：本次生成里所有 LLM 子调用（planner/主叙事/validator/
+        # 队友/子代理/战斗…）的服务端 usage 按 task 累加，结束时累进本局 session_usage。
+        task = asyncio.create_task(usage_tracker.tracked(room_id, coro))
         self._tasks[room_id] = task
         task.add_done_callback(lambda _: self._on_done(room_id))
         return task

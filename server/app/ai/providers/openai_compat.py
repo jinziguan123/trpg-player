@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from app.ai import usage_tracker
 from app.ai.provider import LLMProvider, StreamDelta, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,7 @@ class OpenAICompatProvider(LLMProvider):
                             continue   # 心跳/非 JSON 行
                         if chunk.get("usage"):
                             self.last_usage = chunk["usage"]
+                            usage_tracker.add(chunk["usage"])
                         choices = chunk.get("choices") or []
                         if not choices:
                             continue
@@ -170,7 +172,11 @@ class OpenAICompatProvider(LLMProvider):
             # 把服务端返回体带上，便于定位（如图片格式/数量/尺寸被拒），并给出可读错误
             body = (resp.text or "")[:500]
             raise RuntimeError(f"视觉接口返回 {resp.status_code}：{body}")
-        return resp.json()["choices"][0]["message"]["content"]
+        data = resp.json()
+        if data.get("usage"):
+            self.last_usage = data["usage"]
+            usage_tracker.add(data["usage"])
+        return data["choices"][0]["message"]["content"]
 
     def supports_tools(self) -> bool:
         return True  # OpenAI 兼容协议均有 tools 字段；个别端点不支持时由配置层关闭
@@ -244,6 +250,7 @@ class OpenAICompatProvider(LLMProvider):
             # 见到 usage 就抓，别只认 choices 为空。
             if chunk.get("usage"):
                 self.last_usage = chunk["usage"]
+                usage_tracker.add(chunk["usage"])
             choices = chunk.get("choices") or []
             if not choices:
                 continue
@@ -285,6 +292,7 @@ class OpenAICompatProvider(LLMProvider):
         async for chunk in self._iter_stream_chunks(payload, produced):
             if chunk.get("usage"):
                 self.last_usage = chunk["usage"]
+                usage_tracker.add(chunk["usage"])
             # 有些 OpenAI 兼容服务会发 choices=[] 的块（usage 统计 / 内容过滤 /
             # keep-alive），不能用 choices[0] 硬取，否则 IndexError 整段断流。
             choices = chunk.get("choices") or []

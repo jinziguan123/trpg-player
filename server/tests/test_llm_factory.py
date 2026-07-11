@@ -198,6 +198,28 @@ def test_stream_chat_no_retry_after_first_token(monkeypatch):
     assert calls["n"] == 1   # 未重试
 
 
+def test_complete_tracks_usage_into_accumulator(monkeypatch):
+    """服务端 usage 会被累进当前任务的 usage_tracker 累加器（供本局累计 token 消耗）。"""
+    from app.ai import usage_tracker
+
+    prov = OpenAICompatProvider(model="x", api_key="k")
+    lines = [
+        "data: " + json.dumps({"choices": [{"delta": {"content": "hi"}}]}),
+        "data: " + json.dumps({"choices": [], "usage": {
+            "prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}}),
+        "data: [DONE]",
+    ]
+    monkeypatch.setattr(prov._client, "stream", lambda *a, **k: _StreamCtx(_LinesResp(lines)))
+
+    async def run():
+        usage_tracker._acc.set(usage_tracker._zero())
+        await prov.complete([{"role": "user", "content": "hi"}])
+        return usage_tracker.snapshot()
+
+    snap = asyncio.run(run())
+    assert snap["total_tokens"] == 12 and snap["calls"] == 1
+
+
 def test_stream_skips_empty_choices(monkeypatch):
     prov = OpenAICompatProvider(model="x", api_key="k")
     lines = [

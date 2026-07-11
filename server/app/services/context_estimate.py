@@ -122,6 +122,12 @@ def estimate_session_context(db: Session, session_id: str) -> dict | None:
         },
         "usage_ratio": ratio,                       # (有效输入+输出预留)/窗口
         "status": _status(ratio),
+        # 本局累计 token 消耗（单调累增）：含本局每一次 LLM 调用（planner/主叙事/validator/
+        # 队友/子代理/战斗…）的服务端 usage 合计。与上面「本回合占用」是两个维度——占用会随
+        # 摘要压缩起伏，这个只增不减，对应真实 API 花费的趋势。
+        "session_usage": ws.get("session_usage") or {
+            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0,
+        },
         # 说明：估算口径未计入按需检索的规则/模组原文摘录；实测口径（measured）已含一切。
         "excludes_rag_excerpts": True,
     }
