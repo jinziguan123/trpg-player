@@ -19,6 +19,7 @@ from app.ai.context import build_kp_context, build_npc_context, build_team_conte
 from app.ai.llm_factory import get_llm
 from app.ai.prompts.kp_system import (
     CHECK_REQUEST_PROMPT,
+    COMBAT_AFTERMATH_PROMPT,
     KP_DICE_CONTINUATION_PROMPT,
     KP_MODULE_CONTINUATION_PROMPT,
     KP_RULE_CONTINUATION_PROMPT,
@@ -2517,6 +2518,47 @@ async def run_check_request_generation(
     except Exception:
         logger.exception("检定申请生成失败: session=%s", session_id)
         room_hub.broadcast(session_id, _make_chunk("system", "生成出错，请重试"))
+        room_hub.broadcast(session_id, _make_chunk("done"))
+    finally:
+        db.close()
+
+
+async def run_combat_aftermath_generation(session_id: str) -> None:
+    """战斗/追逐结束后**主动**生成余波叙述——无需玩家先开口。
+
+    复用既有「combat_result 折回主 KP」通道：build_kp_context 会把结果摘要注入本轮上下文，
+    KP 承接直接后果、交代在场者状态、把主动权交还调查员。读一次即清 combat_result，
+    避免玩家下一次行动时 _run_generation 再注入一遍余波。无结果摘要 / 无 LLM 则安静收场。
+    """
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        game_session = db.get(GameSession, session_id)
+        if not game_session or not (game_session.world_state or {}).get("combat_result"):
+            room_hub.broadcast(session_id, _make_chunk("done"))
+            return
+        module = db.get(Module, game_session.module_id)
+        player_char = db.get(Character, game_session.player_character_id)
+        party_others = session_service.get_party_members(
+            db, session_id, exclude_id=game_session.player_character_id,
+        )
+        await _run_kp_turn(
+            db, session_id, game_session, module, player_char, party_others,
+            COMBAT_AFTERMATH_PROMPT,
+        )
+        # 读一次即清：_run_kp_turn 走 build_kp_context 注入了 combat_result 但不清除
+        # （只有 _run_generation 会清），这里补清，避免下一次玩家回合重复注入余波。
+        db.refresh(game_session)
+        if (game_session.world_state or {}).get("combat_result"):
+            ws = dict(game_session.world_state)
+            ws.pop("combat_result", None)
+            game_session.world_state = ws
+            db.commit()
+    except asyncio.CancelledError:
+        logger.info("战斗余波生成被取消: session=%s", session_id)
+    except Exception:
+        logger.exception("战斗余波生成失败: session=%s", session_id)
         room_hub.broadcast(session_id, _make_chunk("done"))
     finally:
         db.close()

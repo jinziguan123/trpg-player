@@ -894,6 +894,68 @@ def test_opening_saves_partial_on_stream_error(db_factory, monkeypatch):
     assert any("中断" in (e.content or "") for e in systems)
 
 
+def test_combat_aftermath_runs_kp_and_clears_result(db_factory, monkeypatch):
+    """战斗结束后主动生成余波：读 combat_result 跑一轮 KP（喂余波提示），读一次即清。"""
+    _patch_runtime(monkeypatch, db_factory)
+    seen = {}
+
+    async def fake_kp_turn(db, session_id, gs, module, pc, party, prompt, **kw):
+        seen["prompt"] = prompt
+
+    monkeypatch.setattr(chat_service, "_run_kp_turn", fake_kp_turn)
+
+    db = db_factory()
+    session_id = _seed_session(db)
+    gs = db.get(GameSession, session_id)
+    gs.world_state = {"combat_result": {"outcome": "players_win", "rounds": 2,
+                                        "casualties": [{"name": "打手", "status": "dead"}], "hp_after": {}}}
+    db.commit()
+
+    asyncio.run(chat_service.run_combat_aftermath_generation(session_id))
+
+    assert seen.get("prompt") == chat_service.COMBAT_AFTERMATH_PROMPT   # 喂了余波提示
+    after = (db_factory().get(GameSession, session_id).world_state or {})
+    assert "combat_result" not in after                                # 读一次即清
+
+
+def test_combat_aftermath_noop_without_result(db_factory, monkeypatch):
+    """没有 combat_result（未发生战斗/已被消费）→ 不跑 KP，安静收场。"""
+    _patch_runtime(monkeypatch, db_factory)
+    calls = {"n": 0}
+
+    async def fake_kp_turn(*a, **k):
+        calls["n"] += 1
+
+    monkeypatch.setattr(chat_service, "_run_kp_turn", fake_kp_turn)
+    db = db_factory()
+    session_id = _seed_session(db)   # world_state 无 combat_result
+    asyncio.run(chat_service.run_combat_aftermath_generation(session_id))
+    assert calls["n"] == 0
+
+
+def test_schedule_aftermath_detects_combat_end(monkeypatch):
+    """combat 端点：本次行动使战斗结束（chunks 含 combat_end）→ 调度余波生成；否则不调度。"""
+    from app.api import combat as combat_api
+
+    scheduled = []
+
+    class _GM:
+        def is_generating(self, sid):
+            return False
+
+        def start(self, sid, coro):
+            coro.close()          # 关掉协程避免「未 await」警告
+            scheduled.append(sid)
+
+    monkeypatch.setattr("app.services.generation_manager.generation_manager", _GM())
+
+    combat_api._schedule_aftermath_if_ended(
+        "s1", ['data: {"type": "combat_end", "content": "战斗结束"}\n\n'])
+    combat_api._schedule_aftermath_if_ended(
+        "s2", ['data: {"type": "dice", "content": "命中"}\n\n'])   # 无 combat_end
+    assert scheduled == ["s1"]
+
+
 def test_generation_saves_once_on_success(db_factory, monkeypatch):
     """正常完成时落库一次且不重复。"""
     _patch_runtime(monkeypatch, db_factory)
