@@ -137,6 +137,67 @@ def test_complete_4xx_not_retried(monkeypatch):
     assert calls["n"] == 1   # 未重试
 
 
+class _PartialThenDropResp:
+    """先正常吐一个内容块，随后连接被掐断——已产出可见 token，不该重试。"""
+    def __init__(self, lines):
+        self._lines = lines
+
+    def raise_for_status(self):
+        pass
+
+    async def aiter_lines(self):
+        import httpx
+        for ln in self._lines:
+            yield ln
+        raise httpx.RemoteProtocolError("peer closed mid-stream")
+
+
+def test_stream_chat_retries_drop_before_first_token(monkeypatch):
+    """流式工具路径：首个可见 token 之前连接被掐断（Server disconnected）应自动重试并成功。
+    复现线上「重新生成失败：RemoteProtocolError: Server disconnected without sending a response」。"""
+    prov = OpenAICompatProvider(model="x", api_key="k")
+    calls = {"n": 0}
+    good = [
+        "data: " + json.dumps({"choices": [{"delta": {"content": "续写"}}]}),
+        "data: [DONE]",
+    ]
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        return _StreamCtx(_DropResp() if calls["n"] == 1 else _LinesResp(good))
+
+    monkeypatch.setattr(prov._client, "stream", flaky)
+    monkeypatch.setattr("app.ai.providers.openai_compat.asyncio.sleep", _nosleep)
+
+    async def collect():
+        return [d.text async for d in prov.stream_chat([{"role": "user", "content": "hi"}])]
+
+    assert asyncio.run(collect()) == ["续写"] and calls["n"] == 2  # 重试一次后成功
+
+
+def test_stream_chat_no_retry_after_first_token(monkeypatch):
+    """已吐出可见 token 后再断连：绝不重试（重试会重复已下发内容），原样抛。"""
+    import httpx
+
+    prov = OpenAICompatProvider(model="x", api_key="k")
+    calls = {"n": 0}
+    partial = ["data: " + json.dumps({"choices": [{"delta": {"content": "开头"}}]})]
+
+    def stream(*a, **k):
+        calls["n"] += 1
+        return _StreamCtx(_PartialThenDropResp(partial))
+
+    monkeypatch.setattr(prov._client, "stream", stream)
+    monkeypatch.setattr("app.ai.providers.openai_compat.asyncio.sleep", _nosleep)
+
+    async def collect():
+        return [d.text async for d in prov.stream_chat([{"role": "user", "content": "hi"}])]
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        asyncio.run(collect())
+    assert calls["n"] == 1   # 未重试
+
+
 def test_stream_skips_empty_choices(monkeypatch):
     prov = OpenAICompatProvider(model="x", api_key="k")
     lines = [

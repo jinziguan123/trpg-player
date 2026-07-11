@@ -175,6 +175,49 @@ class OpenAICompatProvider(LLMProvider):
     def supports_tools(self) -> bool:
         return True  # OpenAI 兼容协议均有 tools 字段；个别端点不支持时由配置层关闭
 
+    async def _iter_stream_chunks(
+        self, payload: dict, produced: list[bool],
+    ) -> AsyncIterator[dict]:
+        """流式打开请求并逐行解析出 JSON chunk（[DONE] 收流、坏 JSON/心跳跳过）。
+
+        **首个可见输出之前**遇瞬时传输错误/5xx 自动重试（最多 3 次）——对应上游「响应头都没发
+        就断连」（httpx.RemoteProtocolError: Server disconnected）。一旦调用方已 yield 过可见
+        token/工具调用（``produced[0]`` 置真），就绝不重试、原样抛：重试会把已下发的内容重复一遍。
+        4xx（鉴权/参数）不重试。调用方在 yield 可见内容后须把 produced[0] 置真。
+        """
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                async with self._client.stream(
+                    "POST", self._api_url, headers=self._headers(), json=payload,
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            return
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue  # 心跳/非 JSON 行
+                        yield chunk
+                return
+            except _TRANSIENT_ERRORS as e:
+                if produced[0]:
+                    raise            # 已下发可见内容 → 不能重试（会重复）
+                last_exc = e
+                logger.warning("流式建连/传输中断（未产出可见内容），重试 %d/3：%s", attempt + 1, e)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code < 500 or produced[0]:
+                    raise            # 4xx 或已产出 → 不重试
+                last_exc = e
+                logger.warning("流式 %s（未产出可见内容），重试 %d/3", e.response.status_code, attempt + 1)
+            if attempt < 2:
+                await asyncio.sleep(0.6 * (attempt + 1))
+        raise last_exc  # type: ignore[misc]
+
     async def stream_chat(
         self,
         messages: list[dict],
@@ -195,40 +238,31 @@ class OpenAICompatProvider(LLMProvider):
             payload["max_tokens"] = max_tokens
 
         aggregator = ToolCallAggregator()
-        async with self._client.stream(
-            "POST", self._api_url, headers=self._headers(), json=payload,
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-                # usage 可能挂在收尾内容块上（DeepSeek）或单独的 choices=[] 块（标准 OpenAI）——
-                # 见到 usage 就抓，别只认 choices 为空。
-                if chunk.get("usage"):
-                    self.last_usage = chunk["usage"]
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                content = delta.get("content")
-                if content:
-                    yield StreamDelta(kind="text", text=content)
-                if delta.get("tool_calls"):
-                    aggregator.add(delta["tool_calls"])
-                # finish_reason=tool_calls 时该轮调用分片已齐；等到此处才 flush，
-                # 保证参数字符串完整（分片乱序/中途 flush 都会产出半截 JSON）。
-                if choices[0].get("finish_reason"):
-                    for call in aggregator.flush():
-                        yield StreamDelta(kind="tool_call", tool_call=call)
+        produced = [False]
+        async for chunk in self._iter_stream_chunks(payload, produced):
+            # usage 可能挂在收尾内容块上（DeepSeek）或单独的 choices=[] 块（标准 OpenAI）——
+            # 见到 usage 就抓，别只认 choices 为空。
+            if chunk.get("usage"):
+                self.last_usage = chunk["usage"]
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            content = delta.get("content")
+            if content:
+                produced[0] = True
+                yield StreamDelta(kind="text", text=content)
+            if delta.get("tool_calls"):
+                aggregator.add(delta["tool_calls"])
+            # finish_reason=tool_calls 时该轮调用分片已齐；等到此处才 flush，
+            # 保证参数字符串完整（分片乱序/中途 flush 都会产出半截 JSON）。
+            if choices[0].get("finish_reason"):
+                for call in aggregator.flush():
+                    produced[0] = True
+                    yield StreamDelta(kind="tool_call", tool_call=call)
         # 兜底：个别端点不发 finish_reason 直接 [DONE]
         for call in aggregator.flush():
+            produced[0] = True
             yield StreamDelta(kind="tool_call", tool_call=call)
 
     async def stream(
@@ -247,28 +281,17 @@ class OpenAICompatProvider(LLMProvider):
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
 
-        async with self._client.stream(
-            "POST", self._api_url, headers=self._headers(), json=payload,
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue  # 忽略心跳/非 JSON 行
-                if chunk.get("usage"):
-                    self.last_usage = chunk["usage"]
-                # 有些 OpenAI 兼容服务会发 choices=[] 的块（usage 统计 / 内容过滤 /
-                # keep-alive），不能用 choices[0] 硬取，否则 IndexError 整段断流。
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                content = delta.get("content")
-                if content:
-                    yield content
+        produced = [False]
+        async for chunk in self._iter_stream_chunks(payload, produced):
+            if chunk.get("usage"):
+                self.last_usage = chunk["usage"]
+            # 有些 OpenAI 兼容服务会发 choices=[] 的块（usage 统计 / 内容过滤 /
+            # keep-alive），不能用 choices[0] 硬取，否则 IndexError 整段断流。
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            content = delta.get("content")
+            if content:
+                produced[0] = True
+                yield content
