@@ -269,6 +269,20 @@ def resolve_wound(hp: int, max_hp: int, damage: int, defender_data: dict) -> dic
     return {"new_hp": new_hp, "status": "ok", "lines": lines}
 
 
+def tick_dying(participant: dict) -> list[str]:
+    """濒死者每轮开始的 CON 检定：失败则死亡。非濒死者 no-op。原地改 participant。"""
+    if participant.get("status") != "dying":
+        return []
+    data = {"skills": participant.get("skills") or {},
+            "base_attributes": participant.get("base_attributes") or {},
+            "system_data": participant.get("system_data") or {}}
+    con = resolve_skill_check(data, "体质", "normal")
+    if con.outcome in ("failure", "fumble"):
+        participant["status"] = "dead"
+        return [f"{participant.get('name', '')}｜濒死体质检定失败（{con.description}），气绝身亡。"]
+    return [f"{participant.get('name', '')}｜濒死体质检定{con.description}，暂时挺住。"]
+
+
 # ── 参战方存活 / 结束判定 / 回合推进 / 启发式 ──────────────────────────
 
 _DOWN_STATUS = {"dead", "dying", "fled"}

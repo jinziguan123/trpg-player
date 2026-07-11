@@ -214,3 +214,27 @@ def test_resolve_wound_overkill_is_dead():
     from app.rules.coc import combat
     r = combat.resolve_wound(hp=1, max_hp=13, damage=99, defender_data={})
     assert r["status"] == "dead"
+
+
+def test_tick_dying_con_fail_dies(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    monkeypatch.setattr(checks, "roll_percentile", lambda: 99)
+    p = {"status": "dying", "base_attributes": {"CON": 50}, "skills": {}, "system_data": {}}
+    lines = combat.tick_dying(p)
+    assert p["status"] == "dead" and lines
+
+
+def test_tick_dying_con_pass_holds(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    monkeypatch.setattr(checks, "roll_percentile", lambda: 1)
+    p = {"status": "dying", "base_attributes": {"CON": 50}, "skills": {}, "system_data": {}}
+    combat.tick_dying(p)
+    assert p["status"] == "dying"
+
+
+def test_tick_dying_noop_when_not_dying():
+    from app.rules.coc import combat
+    p = {"status": "ok"}
+    assert combat.tick_dying(p) == []
