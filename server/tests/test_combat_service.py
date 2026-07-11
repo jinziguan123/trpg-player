@@ -65,6 +65,27 @@ def test_mechanical_chunks_carry_combat_log_flag(db_factory):
     assert ndata["type"] == "narration_full" and "combat_log" not in ndata.get("metadata", {})
 
 
+def test_combat_meta_order_carries_conditions_and_aim(db_factory):
+    """_combat_meta 的 order 投影要透传 conditions 与 aim，供前端 HUD 渲染被擒/缴械/瞄准徽标。"""
+    db = db_factory()
+    sid, hero = _seed(db)
+    enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 40, "CON": 50, "SIZ": 60},
+             "skills": {"格斗(斗殴)": 30}, "weapon": "徒手格斗"}
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True)],
+        [combat_service._npc_participant(enemy, "enemy")])
+    thug = combat_service._find(state, "npc_thug")
+    thug["conditions"] = ["grappled", "disarmed"]
+    hero_p = combat_service._find(state, hero.id)
+    hero_p["aim"] = True
+    meta = combat_service._combat_meta(state)
+    by_id = {o["id"]: o for o in meta["order"]}
+    assert by_id["npc_thug"]["conditions"] == ["grappled", "disarmed"]
+    assert by_id["npc_thug"]["aim"] is False
+    assert by_id[hero.id]["aim"] is True
+    assert by_id[hero.id]["conditions"] == []
+
+
 def test_start_pauses_at_human_and_broadcasts_state(db_factory):
     db = db_factory()
     sid, hero = _seed(db)

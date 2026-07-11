@@ -144,7 +144,9 @@ def _combat_meta(state: dict) -> dict:
         "round": state.get("round"),
         "turn": actor.get("id") if actor else None,
         "order": [{"id": p["id"], "name": p["name"], "side": p["side"], "is_human": p.get("is_human", False),
-                   "hp": p["hp"], "max_hp": p["max_hp"], "status": p["status"]}
+                   "hp": p["hp"], "max_hp": p["max_hp"], "status": p["status"],
+                   # P2 正交条件（grappled/disarmed）与瞄准态 → 前端 HUD 徽标（被擒/缴械/瞄准中）
+                   "conditions": list(p.get("conditions") or []), "aim": bool(p.get("aim"))}
                   for p in state.get("initiative") or []],
         # 断线重连恢复：若正等某真人反应，带上 pending_reaction 让前端重弹反应提示。
         "pending_reaction": state.get("pending_reaction"),
