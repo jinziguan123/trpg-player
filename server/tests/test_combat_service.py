@@ -65,12 +65,12 @@ def test_mechanical_chunks_carry_combat_log_flag(db_factory):
     assert ndata["type"] == "narration_full" and "combat_log" not in ndata.get("metadata", {})
 
 
-def test_combat_meta_order_carries_conditions_and_aim(db_factory):
-    """_combat_meta 的 order 投影要透传 conditions 与 aim，供前端 HUD 渲染被擒/缴械/瞄准徽标。"""
+def test_combat_meta_order_carries_conditions_aim_weapon(db_factory):
+    """_combat_meta 的 order 投影要透传 conditions/aim/weapon，供前端 HUD 渲染徽标与武器名。"""
     db = db_factory()
     sid, hero = _seed(db)
     enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 40, "CON": 50, "SIZ": 60},
-             "skills": {"格斗(斗殴)": 30}, "weapon": "徒手格斗"}
+             "skills": {"格斗(斗殴)": 30}, "weapon": "大棒(棒球棒、拨火棍)"}
     state = combat_service.start_combat(
         db, sid, [combat_service._char_participant(hero, "player", is_human=True)],
         [combat_service._npc_participant(enemy, "enemy")])
@@ -82,8 +82,35 @@ def test_combat_meta_order_carries_conditions_and_aim(db_factory):
     by_id = {o["id"]: o for o in meta["order"]}
     assert by_id["npc_thug"]["conditions"] == ["grappled", "disarmed"]
     assert by_id["npc_thug"]["aim"] is False
+    assert by_id["npc_thug"]["weapon"] == "大棒(棒球棒、拨火棍)"   # 武器名随 order 透传，卡片才能显示
     assert by_id[hero.id]["aim"] is True
     assert by_id[hero.id]["conditions"] == []
+    assert by_id[hero.id]["weapon"]   # 玩家武器非空（默认徒手格斗）
+
+
+def test_combat_meta_carries_started_seq_boundary(db_factory):
+    """start_combat 记本场起点 seq，_combat_meta 透传——重连让日志抽屉只收本场（seq>started_seq）。
+
+    同一会话第 2 场战斗的 started_seq 必须 > 第 1 场，否则重连时抽屉会掺上一场结算行。
+    """
+    db = db_factory()
+    sid, hero = _seed(db)
+    hero_p = [combat_service._char_participant(hero, "player", is_human=True)]
+
+    state1 = combat_service.start_combat(db, sid, hero_p, [])
+    seq1 = state1["started_seq"]
+    assert isinstance(seq1, int)
+    assert combat_service._combat_meta(state1)["started_seq"] == seq1
+
+    # 第 1 场落几条机械结算行（推高会话 seq），结束后再起第 2 场。
+    combat_service._combat_line(db, sid, "打手 受到 3 点伤害（HP 8→5）")
+    combat_service._combat_line(db, sid, "打手 倒地不起")
+    combat_service._save_combat(db, sid, None)   # combat_end：pop 战斗态
+
+    state2 = combat_service.start_combat(db, sid, hero_p, [])
+    seq2 = state2["started_seq"]
+    assert seq2 > seq1   # 第 2 场起点在第 1 场结算行之后 → 抽屉过滤掉第 1 场
+    assert combat_service._combat_meta(state2)["started_seq"] == seq2
 
 
 def test_start_pauses_at_human_and_broadcasts_state(db_factory):

@@ -108,9 +108,13 @@ def start_combat(db: Session, session_id: str, player_side: list[dict], enemies:
     """建立战斗态：合并双方为参战方、排先攻、round=1。player_side/enemies 已是参战方 dict。"""
     participants = list(player_side) + list(enemies)
     order = engine.roll_initiative(participants)
+    # 本场起点：开打前会话最大事件 seq（= 下一个 seq - 1）。一个会话可有多场战斗，落库的
+    # combat_log 事件本身无场次边界；前端据此让日志抽屉只收本场（seq > started_seq）的结算行，
+    # 重连（走 GET /combat 恢复、不经 combat_start 分支）也能拿到边界、不掺上一场。
+    started_seq = session_service.get_next_sequence_num(db, session_id) - 1
     state = {
         "active": True, "round": 1, "turn_index": 0, "initiative": order,
-        "log": [], "trigger": trigger, "flee_to_chase": None,
+        "log": [], "trigger": trigger, "flee_to_chase": None, "started_seq": started_seq,
     }
     _save_combat(db, session_id, state)
     return state
@@ -144,12 +148,14 @@ def _combat_meta(state: dict) -> dict:
         "round": state.get("round"),
         "turn": actor.get("id") if actor else None,
         "order": [{"id": p["id"], "name": p["name"], "side": p["side"], "is_human": p.get("is_human", False),
-                   "hp": p["hp"], "max_hp": p["max_hp"], "status": p["status"],
+                   "hp": p["hp"], "max_hp": p["max_hp"], "status": p["status"], "weapon": p.get("weapon"),
                    # P2 正交条件（grappled/disarmed）与瞄准态 → 前端 HUD 徽标（被擒/缴械/瞄准中）
                    "conditions": list(p.get("conditions") or []), "aim": bool(p.get("aim"))}
                   for p in state.get("initiative") or []],
         # 断线重连恢复：若正等某真人反应，带上 pending_reaction 让前端重弹反应提示。
         "pending_reaction": state.get("pending_reaction"),
+        # 本场战斗日志起点 seq：前端据此让日志抽屉只收本场结算行（重连也能拿到边界，防掺上一场）。
+        "started_seq": state.get("started_seq"),
     }
 
 
