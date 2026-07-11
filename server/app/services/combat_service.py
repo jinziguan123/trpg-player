@@ -568,8 +568,9 @@ def _end_combat(db: Session, session_id: str, state: dict, outcome: str) -> list
 # ── 落库 + 广播小工具 ────────────────────────────────────────────────
 
 def _combat_line(db: Session, session_id: str, text: str) -> str:
+    # combat_log 标记：前端据此把机械结算行归入折叠战斗日志抽屉，不灌主聊天流（KP 叙述不打此标记）。
     ev = session_service.add_event(db, session_id, "system", text, actor_name="战斗")
-    return _chunk("system", text, id=ev.id)
+    return _chunk("system", text, id=ev.id, metadata={"combat_log": True})
 
 
 def _combat_narration(db: Session, session_id: str, text: str) -> str:
@@ -588,7 +589,7 @@ def _combat_dice(db: Session, session_id: str, actor: dict, target: dict, weapon
         content = f"{actor['name']}（{weapon}）{atk.description} → {'命中' if res['hit'] else '未命中'}"
     ev = session_service.add_event(db, session_id, "dice", content, actor_name="战斗",
                                    metadata={"combat_attack": True, "hit": res["hit"]})
-    return _chunk("dice", content, id=ev.id)
+    return _chunk("dice", content, id=ev.id, metadata={"combat_log": True, "combat_attack": True, "hit": res["hit"]})
 
 
 def _combat_state_chunk(state: dict) -> str:

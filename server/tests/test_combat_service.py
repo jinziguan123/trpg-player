@@ -52,6 +52,19 @@ def _act(db, sid, actor_id, action):
     return asyncio.run(combat_service.resolve_player_action(db, sid, actor_id, action))
 
 
+def test_mechanical_chunks_carry_combat_log_flag(db_factory):
+    """机械结算行（system）带 combat_log 供前端归入折叠日志抽屉；KP 叙述（narration_full）不带。"""
+    import json
+    db = db_factory()
+    sid, _ = _seed(db)
+    line = combat_service._combat_line(db, sid, "打手 受到 3 点伤害（HP 8→5）")
+    ldata = json.loads(line.removeprefix("data: "))
+    assert ldata["type"] == "system" and ldata["metadata"]["combat_log"] is True
+    narr = combat_service._combat_narration(db, sid, "拳风掠过，血光四溅。")
+    ndata = json.loads(narr.removeprefix("data: "))
+    assert ndata["type"] == "narration_full" and "combat_log" not in ndata.get("metadata", {})
+
+
 def test_start_pauses_at_human_and_broadcasts_state(db_factory):
     db = db_factory()
     sid, hero = _seed(db)
