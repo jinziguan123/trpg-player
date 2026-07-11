@@ -93,6 +93,8 @@ def test_get_combat_carries_pending_reaction(env):
     pr = body["pending_reaction"]
     assert pr and pr["defender_id"] == hero_id and pr["attacker_id"] == "npc_thug"
     assert pr["allowed"] == ["fight_back", "dodge"]
+    # 重连恢复也要带上名字，否则前端提示渲染成「undefined 用 X 攻击你」
+    assert pr["attacker_name"] and pr["defender_name"]
 
 
 def test_post_reaction_resolves_and_clears_pending(env, monkeypatch):

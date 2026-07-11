@@ -359,16 +359,16 @@ async def drive_npcs(db: Session, session_id: str, state: dict, agent=None, scen
             if target and engine.is_active(target) and target.get("is_human"):
                 weapon = action.get("weapon") or actor.get("weapon") or "徒手格斗"
                 is_fire = _weapon_is_firearm(weapon)
+                # 名字一并落进 pending_reaction：广播与断线重连（_combat_meta 透传）都要用它渲染
+                # 提示文案，否则重连回来缺 *_name 会显示「undefined 用 X 攻击你」。
                 state["pending_reaction"] = {
                     "attacker_id": actor["id"], "defender_id": target["id"],
+                    "attacker_name": actor["name"], "defender_name": target["name"],
                     "weapon": weapon, "ranged": is_fire,
                     "allowed": engine.allowed_reactions(is_fire),
                 }
                 _save_combat(db, session_id, state)
-                chunks.append(_chunk("combat_reaction_prompt", metadata={
-                    **state["pending_reaction"],
-                    "attacker_name": actor["name"], "defender_name": target["name"],
-                }))
+                chunks.append(_chunk("combat_reaction_prompt", metadata=state["pending_reaction"]))
                 return chunks, beats   # 暂停驱动，不结算、不推进
         c, s = _apply_one_action(db, session_id, state, actor, action)
         chunks += c
