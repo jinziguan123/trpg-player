@@ -130,6 +130,17 @@ def test_locations_endpoint_smoke(client):
     assert "locations" in r.json()
 
 
+def test_rag_stats_endpoint_smoke(client):
+    """RAG 统计端点：新会话返回零值汇总（不 500）。"""
+    c, ids = client
+    sid = _make_session(c, ids)
+    r = c.get(f"/api/sessions/{sid}/rag-stats")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["totals"]["calls"] == 0
+    assert body["by_kind_mode"] == {} and body["recent"] == []
+
+
 def test_travel_unknown_scene_rejected(client):
     """前往未知地点应 400（回归：此前 travel 端点漏了 scene_id 定义会 500）。"""
     c, ids = client

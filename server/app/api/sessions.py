@@ -6,6 +6,7 @@ from app.api.deps import player_token
 from app.database import get_db
 from app.models.character import Character
 from app.models.module import Module
+from app.models.session import GameSession
 from app.schemas.event import EventRead
 from app.schemas.session import (
     ClaimSeatRequest,
@@ -249,6 +250,21 @@ def get_context_estimate(
     if result is None:
         raise HTTPException(404, "会话不存在或缺少模组/角色")
     return result
+
+
+@router.get("/{session_id}/rag-stats")
+def get_rag_stats(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """本局 RAG（规则书/模组原文检索）用量与命中质量统计——评估检索对跑团的实际帮助。"""
+    from app.services import rag_stats
+
+    session = db.get(GameSession, session_id)
+    if session is None:
+        raise HTTPException(404, "会话不存在")
+    return rag_stats.summarize(session.world_state or {})
 
 
 @router.get("/{session_id}/recaps")

@@ -32,6 +32,7 @@ from app.models.session import GameSession
 from app.rules.registry import get_engine
 from app.services import (
     module_rag_service,
+    rag_stats,
     rulebook_service,
     session_service,
     world_memory,
@@ -1907,7 +1908,9 @@ def _module_excerpts_for_context(
     if not query:
         return None
     try:
-        return module_rag_service.retrieve(db, module.id, query, k=3, scene_id=sid) or None
+        hits = module_rag_service.retrieve(db, module.id, query, k=3, scene_id=sid)
+        _record_rag(db, game_session, kind="module", mode="passive", query=query, hits=hits)
+        return hits or None
     except Exception:  # noqa: BLE001 — 检索失败不得阻塞生成主流程
         logger.exception("模组原文检索失败（已降级）：module=%s", module.id)
         return None
@@ -1943,6 +1946,7 @@ def _rule_excerpts_for_context(
     module: Module,
     plan: turn_planner.TurnPlan | None,
     events: list,
+    game_session: GameSession | None = None,
 ) -> list[dict] | None:
     """被动注入用的规则书要点：按本轮 plan.turn_kind 组规则术语 query，检索 top-2。
 
@@ -1962,10 +1966,33 @@ def _rule_excerpts_for_context(
     try:
         if not rulebook_service.has_rulebook(db, module.rule_system):
             return None
-        return rulebook_service.retrieve(db, query, module.rule_system, k=2) or None
+        hits = rulebook_service.retrieve(db, query, module.rule_system, k=2)
+        _record_rag(db, game_session, kind="rule", mode="passive", query=query, hits=hits)
+        return hits or None
     except Exception:  # noqa: BLE001 — 检索失败不得阻塞生成主流程
         logger.exception("规则书被动检索失败（已降级）：rule_system=%s", module.rule_system)
         return None
+
+
+def _record_rag(
+    db: Session, game_session: GameSession | None, *,
+    kind: str, mode: str, query: str, hits: list | None,
+) -> None:
+    """把一次 RAG 检索并入本局 world_state.rag_stats（供后台评估 RAG 用量/命中质量）。
+
+    fail-open：无会话或异常都静默跳过，绝不影响生成主流程。空命中也记（看「查了没查到」比例）。
+    """
+    if game_session is None:
+        return
+    try:
+        game_session.world_state = rag_stats.record(
+            dict(game_session.world_state or {}),
+            kind=kind, mode=mode, query=query, hits=hits or [],
+        )
+        db.commit()
+    except Exception:
+        logger.exception("落库 RAG 统计失败（忽略）")
+        db.rollback()
 
 
 def _record_turn_usage(db: Session, game_session: GameSession, llm, events: list) -> None:
@@ -2043,7 +2070,7 @@ async def _run_generation(
 
     # 规则书要点被动注入：按本轮 plan.turn_kind 预取规则条文（与 [RULE_LOOKUP] 主动查互补）。
     # 规则片段不依赖场景，分头行动时各分组共用同一份检索结果（与模组摘录「分头也注入」对齐）。
-    rule_excerpts = _rule_excerpts_for_context(db, module, plan, events)
+    rule_excerpts = _rule_excerpts_for_context(db, module, plan, events, game_session)
 
     if len(scene_groups) >= 2:
         # 分头行动 v1 仍走旧正则路径（与 use_tool_calls 开关无关）：多分组编排与
@@ -3365,9 +3392,12 @@ def _exec_say(result: list, module: Module, who: str, text: str) -> list[str]:
     return [_make_chunk("dialogue", text, actor_name=npc_name)]
 
 
-def _rule_lookup_passages(db: Session, query: str, rule_system: str) -> str:
+def _rule_lookup_passages(
+    db: Session, query: str, rule_system: str, game_session: GameSession | None = None,
+) -> str:
     """检索规则书原文并拼成回灌片段；检索不到给降级文案（fail-open）。"""
     hits = rulebook_service.retrieve(db, query, rule_system, k=3)
+    _record_rag(db, game_session, kind="rule", mode="active", query=query, hits=hits)
     if hits:
         return "\n\n".join(f"[第 {h['page']} 页] {h['text']}" for h in hits)
     return "（未在规则书中找到直接匹配的内容，请依据《裁定手册》与你的经验处理。）"
@@ -3384,6 +3414,7 @@ def _module_lookup_passages(
     except Exception:  # noqa: BLE001 — 检索失败降级为无命中
         logger.exception("模组原文检索失败（已降级）：module=%s", module.id)
         hits = []
+    _record_rag(db, game_session, kind="module", mode="active", query=query, hits=hits)
     if hits:
         return "\n\n".join(
             f"[片段 {i}] {h['text']}" for i, h in enumerate(hits, start=1)
@@ -3554,7 +3585,7 @@ def _build_kp_tool_executor(
                     return kp_tools.ToolOutcome("参数缺失：query 为必填。")
                 lookup_used += 1
                 if name == "rule_lookup":
-                    passages = _rule_lookup_passages(db, query, module.rule_system)
+                    passages = _rule_lookup_passages(db, query, module.rule_system, game_session)
                     return kp_tools.ToolOutcome(
                         KP_RULE_CONTINUATION_PROMPT.format(query=query, passages=passages),
                         chunks=[_make_chunk("system", "守秘人翻阅规则书……")],
@@ -3955,7 +3986,7 @@ async def _handle_rule_lookup(
     """
     yield _make_chunk("system", "守秘人翻阅规则书……")
 
-    passages = _rule_lookup_passages(db, query, module.rule_system)
+    passages = _rule_lookup_passages(db, query, module.rule_system, game_session)
     continuation = KP_RULE_CONTINUATION_PROMPT.format(query=query, passages=passages)
     events = session_service.get_session_events(db, session_id)
     messages = build_kp_context(
