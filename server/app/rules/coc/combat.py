@@ -158,6 +158,11 @@ def _fight_skill_of(data: dict) -> str:
     return "格斗(斗殴)"
 
 
+def allowed_reactions(is_firearm: bool) -> list[str]:
+    """被攻击者可选的反应。火器不能反击（RAW），只能闪避/扑掩体。"""
+    return ["dodge", "cover"] if is_firearm else ["fight_back", "dodge"]
+
+
 def resolve_attack(
     attacker_data: dict,
     attacker_db: str,

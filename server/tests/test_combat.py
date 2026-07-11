@@ -158,3 +158,11 @@ def test_heuristic_cautious_flees_when_low():
     act = combat.heuristic_npc_action(state, {"id": "m", "side": "enemy", "hp": 1,
                                               "max_hp": 10, "status": "ok", "combat_ai": "cautious"})
     assert act["action"] == "flee"
+
+
+# ── P1：反应许可 / 扑掩体 / NPC 防御 / 伤害结算 / 濒死 tick ────────────
+
+def test_allowed_reactions_firearm_excludes_fight_back():
+    from app.rules.coc.combat import allowed_reactions
+    assert allowed_reactions(is_firearm=False) == ["fight_back", "dodge"]
+    assert allowed_reactions(is_firearm=True) == ["dodge", "cover"]
