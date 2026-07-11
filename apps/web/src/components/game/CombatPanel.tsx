@@ -1,7 +1,7 @@
 import { useMemo, useState, type CSSProperties } from 'react'
 import { toast } from 'sonner'
 import { api } from '../../api/client'
-import { GiCrossedSwords, GiShield, GiRun } from 'react-icons/gi'
+import { GiCrossedSwords, GiShield, GiRun, GiBrickWall } from 'react-icons/gi'
 
 // 参战方状态：与后端枚举对齐。
 type CombatStatus = 'ok' | 'major_wound' | 'dying' | 'unconscious' | 'dead' | 'fled'
@@ -22,6 +22,25 @@ export interface CombatState {
   order: Combatant[]
 }
 
+// 反应提示：NPC 攻击某真人时后端暂停并广播 combat_reaction_prompt 的 metadata。
+// allowed 为 ['fight_back','dodge']（近战）或 ['dodge','cover']（火器）。
+export interface PendingReaction {
+  attacker_id: string
+  defender_id: string
+  weapon: string
+  ranged: boolean
+  allowed: string[]
+  attacker_name: string
+  defender_name: string
+}
+
+// 反应按钮：图标全走 react-icons/gi（game-icons 风格），禁 emoji。
+const REACTION_META: Record<string, { label: string; Icon: typeof GiCrossedSwords }> = {
+  fight_back: { label: '反击', Icon: GiCrossedSwords },
+  dodge: { label: '闪避', Icon: GiShield },
+  cover: { label: '扑掩体', Icon: GiBrickWall },
+}
+
 // 状态徽标：正常（ok）不显示；其余各给中文标签与语义色。
 const STATUS_META: Record<Exclude<CombatStatus, 'ok'>, { label: string; color: string }> = {
   major_wound: { label: '重伤', color: 'var(--color-danger)' },
@@ -40,7 +59,7 @@ function isOut(c: Combatant): boolean {
   return c.status === 'dead' || c.status === 'fled'
 }
 
-export function CombatPanel({ combat, myCharId, sessionId }: { combat: CombatState; myCharId: string | null; sessionId: string }) {
+export function CombatPanel({ combat, myCharId, sessionId, pendingReaction }: { combat: CombatState; myCharId: string | null; sessionId: string; pendingReaction?: PendingReaction | null }) {
   // 目标：存活敌方（非死亡/逃离）。默认选第一个。
   const enemies = useMemo(() => combat.order.filter((c) => c.side === 'enemy' && !isOut(c)), [combat.order])
   const [targetId, setTargetId] = useState<string>('')
@@ -75,6 +94,21 @@ export function CombatPanel({ combat, myCharId, sessionId }: { combat: CombatSta
     const weapon = weaponSel === WEAPON_OTHER ? weaponCustom.trim() : weaponSel
     if (!weapon) { toast.error('请填写武器'); return }
     void submit({ type: 'attack', target_id: effectiveTarget, weapon })
+  }
+
+  // 反应提示：NPC 攻击我时，提交 fight_back/dodge/cover。复用 submit 的防连点/错误提示模式。
+  const reactionForMe = !!(pendingReaction && myCharId && pendingReaction.defender_id === myCharId)
+  const reactAs = async (choice: string) => {
+    if (submitting) return
+    setSubmitting(true)
+    try {
+      await api.post(`/sessions/${sessionId}/combat/reaction`, { choice })
+      // 成功后不手动刷新——后端 resolve_reaction 续跑会经 /live 广播新 combat_state。
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : '反应提交失败')
+    } finally {
+      setTimeout(() => setSubmitting(false), 600)
+    }
   }
 
   return (
@@ -127,9 +161,39 @@ export function CombatPanel({ combat, myCharId, sessionId }: { combat: CombatSta
         })}
       </div>
 
-      {/* 底部：行动控件（仅轮到我时）或等待提示 */}
+      {/* 底部：反应提示（被攻击时优先）/ 行动控件（仅轮到我时）/ 等待提示 */}
       <div className="mt-2 pt-2" style={{ borderTop: '1px solid var(--color-border)' }}>
-        {myTurn ? (
+        {pendingReaction ? (
+          reactionForMe ? (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs" style={{ color: 'var(--color-text-primary)' }}>
+                {pendingReaction.attacker_name} 用 {pendingReaction.weapon} 攻击你，如何应对？
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                {pendingReaction.allowed.map((choice) => {
+                  const meta = REACTION_META[choice]
+                  if (!meta) return null
+                  const { label, Icon } = meta
+                  return (
+                    <button
+                      key={choice}
+                      onClick={() => void reactAs(choice)}
+                      disabled={submitting}
+                      className={`${choice === 'fight_back' ? 'btn-primary' : 'btn-secondary'} text-xs !px-2.5 !py-1 flex items-center gap-1`}
+                      style={submitting ? { opacity: 0.5 } : undefined}
+                    >
+                      <Icon size={13} /> {label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+              等待 {pendingReaction.defender_name} 反应…
+            </div>
+          )
+        ) : myTurn ? (
           <div className="flex flex-wrap items-end gap-2">
             <label className="flex flex-col gap-0.5">
               <span className="text-[10px]" style={{ color: 'var(--color-text-secondary)' }}>目标</span>

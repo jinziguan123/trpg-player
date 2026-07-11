@@ -14,7 +14,7 @@ import { RecapModal } from '../components/game/RecapModal'
 import { GrowthModal } from '../components/game/GrowthModal'
 import { InvestigationBoard } from '../components/game/InvestigationBoard'
 import { ImprovisedNpcModal } from '../components/game/ImprovisedNpcModal'
-import { CombatPanel, type CombatState } from '../components/game/CombatPanel'
+import { CombatPanel, type CombatState, type PendingReaction } from '../components/game/CombatPanel'
 import { ChasePanel, type ChaseState } from '../components/game/ChasePanel'
 import { Modal } from '../components/ui/modal'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter } from 'react-icons/gi'
@@ -148,6 +148,7 @@ export function GameSessionPage() {
   const [splitView, setSplitView] = useState(true)            // 分头行动分栏（检测到多组时生效）
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set())  // 被收起的分组
   const [combat, setCombat] = useState<CombatState | null>(null)  // 当前战斗态（非空时显示战斗面板）
+  const [pendingReaction, setPendingReaction] = useState<PendingReaction | null>(null)  // 被 NPC 攻击时的反应提示
   const [chase, setChase] = useState<ChaseState | null>(null)  // 当前追逐态（非空时显示追逐面板）
 
   const primaryId = currentSession?.player_character_id ?? null
@@ -360,8 +361,9 @@ export function GameSessionPage() {
     if (t === 'replay_done') return
     if (t === 'generating') { setStreaming(true); setThinking(true); return }
     if (t === 'turn_state') { setTurnState((chunk.metadata as { confirmed_ids: string[]; total: number; ready: boolean }) || null); return }
-    if (t === 'combat_start' || t === 'combat_state') { setCombat((chunk.metadata as CombatState) || null); return }
-    if (t === 'combat_end') { setCombat(null); return }  // 结果那句话已由后端落库为消息，不额外处理
+    if (t === 'combat_start' || t === 'combat_state') { setCombat((chunk.metadata as CombatState) || null); setPendingReaction(null); return }  // 续跑广播新态 → 清反应提示
+    if (t === 'combat_reaction_prompt') { setPendingReaction((chunk.metadata as PendingReaction) || null); return }  // NPC 攻击真人：弹反应按钮
+    if (t === 'combat_end') { setCombat(null); setPendingReaction(null); return }  // 结果那句话已由后端落库为消息，不额外处理
     if (t === 'chase_start' || t === 'chase_state') { setChase((chunk.metadata as ChaseState) || null); return }
     if (t === 'chase_end') { setChase(null); return }  // 结果那句话已由后端落库为消息，不额外处理
     if (t === 'event_delete') { if (chunk.id) removeMessage(chunk.id); return }
@@ -470,9 +472,14 @@ export function GameSessionPage() {
       setCurrentSession(session as never)
 
       // 进页/重连恢复战斗态：active 时置入面板，否则清空（战斗中刷新页面不丢面板）。
-      api.get<{ active: boolean; round?: number; turn?: string | null; order?: unknown }>(`/sessions/${sessionId}/combat`)
-        .then((c) => { if (!cancelled) setCombat(c.active ? (c as unknown as CombatState) : null) })
-        .catch(() => { if (!cancelled) setCombat(null) })
+      // 同时恢复 pending_reaction：断线时若正等我反应，重连后仍弹反应提示。
+      api.get<{ active: boolean; round?: number; turn?: string | null; order?: unknown; pending_reaction?: PendingReaction | null }>(`/sessions/${sessionId}/combat`)
+        .then((c) => {
+          if (cancelled) return
+          setCombat(c.active ? (c as unknown as CombatState) : null)
+          setPendingReaction(c.active ? (c.pending_reaction ?? null) : null)
+        })
+        .catch(() => { if (!cancelled) { setCombat(null); setPendingReaction(null) } })
 
       // 进页/重连恢复追逐态：active 时置入面板，否则清空。
       api.get<{ active: boolean }>(`/sessions/${sessionId}/chase`)
@@ -1330,7 +1337,7 @@ export function GameSessionPage() {
         </div>
 
         {combat && (
-          <CombatPanel combat={combat} myCharId={myCharId} sessionId={currentSession.id} />
+          <CombatPanel combat={combat} myCharId={myCharId} sessionId={currentSession.id} pendingReaction={pendingReaction} />
         )}
         {chase && (
           <ChasePanel chase={chase} sessionId={currentSession.id} />
