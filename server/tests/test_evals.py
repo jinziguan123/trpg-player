@@ -89,6 +89,42 @@ class TestEventEcho:
         assert not self._errs("你俯身细听。[DICE_CHECK: skill=聆听]")
 
 
+class TestAntithesisTic:
+    """否定式对比句式（不是X是Y）过度复用探针：只测密集复用，单次与普通否定不报。"""
+
+    def test_密集否定对比给警告(self):
+        text = ("墙上的划痕不是随意的，而是某种刻意的排列。"
+                "那不是装饰，是警告。")
+        findings = checks.check_antithesis_tic(text)
+        assert findings and all(f.severity == "warn" for f in findings)
+        assert "2" in findings[0].detail  # detail 带出复用次数，供 scorecard 量化
+
+    def test_单次点睛不报(self):
+        assert not checks.check_antithesis_tic("那不是脚步声，而是某种更沉的东西从楼板下传来。")
+
+    def test_普通否定与跨主语并列不误报(self):
+        # 「这不是钥匙」是普通否定；「不是本地人，房子是租的」是跨主语并列，均非对比 tic。
+        assert not checks.check_antithesis_tic("这不是钥匙。他不是本地人，房子是租的。")
+
+    def test_与其说不如说及这不是这是计入(self):
+        text = "与其说这是巧合，不如说是宿命。这不是结束，这是开始。"
+        assert checks.check_antithesis_tic(text)
+
+    def test_指令内文本不参与统计(self):
+        # tic 统计前先剥离方括号指令，避免指令参数里的字符干扰。
+        text = "他递上纸条。[DICE_CHECK: skill=侦查]"
+        assert not checks.check_antithesis_tic(text)
+
+
+class TestNarrationStyleVariety:
+    def test_kp提示词含文风忌单一约束(self):
+        from app.ai.prompts.kp_system import KP_SYSTEM_PROMPT
+        p = KP_SYSTEM_PROMPT
+        assert "文风忌单一" in p
+        assert "否定式对比" in p and "而是" in p  # 点名了 tic
+        assert "至多一次" in p
+
+
 class TestPlayerControl:
     NAMES = ["亨利·卡特"]
 
