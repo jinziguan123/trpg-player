@@ -269,3 +269,195 @@ def test_dying_participant_ticks_each_round(db_factory, monkeypatch):
     dp = combat_service._find(state, "npc_dying")
     assert dp["status"] == "dead"                                      # 濒死体质检定失败 → 气绝
     assert any("濒死体质检定" in c for c in chunks)                      # 广播了濒死检定行
+
+
+# ── P2：主动动作集（状态机分发 / apply_heal / 条件落库 / aim 消费）──────
+
+def _seed_medic_hero(db):
+    """建一个带急救/侦查/擒抱技能的英雄会话，返回 (sid, hero)。"""
+    module = Module(title="M", rule_system="coc", npcs=[], scenes=[])
+    hero = Character(
+        name="医师", rule_system="coc", is_player=True,
+        base_attributes={"DEX": 70, "CON": 60, "SIZ": 50},
+        skills={"格斗(斗殴)": 60, "闪避": 35, "急救": 70, "侦查": 70, "射击(手枪)": 70},
+        system_data={"hitPoints": {"current": 11, "max": 11}, "damageBonus": "0"},
+    )
+    db.add_all([module, hero]); db.flush()
+    s = GameSession(module_id=module.id, player_character_id=hero.id, status="active", world_state={})
+    db.add(s); db.commit()
+    return s.id, hero
+
+
+def test_apply_heal_writes_back_and_caps(db_factory):
+    db = db_factory()
+    sid, hero = _seed(db)
+    enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 40, "CON": 50, "SIZ": 60},
+             "skills": {"格斗(斗殴)": 45}, "weapon": "徒手格斗"}
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True)],
+        [combat_service._npc_participant(enemy, "enemy")])
+    hp = combat_service._find(state, hero.id)
+    hp["hp"] = 5   # 受伤
+    # 回血 3 → 8
+    combat_service.apply_heal(db, state, hp, 3)
+    assert hp["hp"] == 8
+    db.refresh(hero)
+    assert hero.system_data["hitPoints"]["current"] == 8   # 写回角色卡
+    # 回血封顶：max_hp=11，再回 99 只到 11
+    combat_service.apply_heal(db, state, hp, 99)
+    assert hp["hp"] == 11
+    db.refresh(hero)
+    assert hero.system_data["hitPoints"]["current"] == 11
+
+
+def test_first_aid_heals_wounded_ally(db_factory, monkeypatch):
+    db = db_factory()
+    sid, hero = _seed_medic_hero(db)
+    ally = {"id": "npc_ally", "name": "同伴", "attributes": {"DEX": 30, "CON": 50, "SIZ": 50},
+            "skills": {}, "weapon": "徒手格斗"}
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True),
+                  combat_service._npc_participant(ally, "ally")],
+        [])
+    wounded = combat_service._find(state, "npc_ally")
+    wounded["hp"] = 3; wounded["status"] = "major_wound"
+    _fix_rolls(monkeypatch, [10])   # 急救70 → 成功
+    actor = combat_service._find(state, hero.id)
+    chunks, summary = combat_service._apply_one_action(
+        db, sid, state, actor, {"type": "first_aid", "target_id": "npc_ally"})
+    assert wounded["hp"] == 4                     # 回 1 HP
+    assert wounded["first_aid_used"] is True       # 标记该处伤已急救
+    assert summary
+
+
+def test_first_aid_stabilizes_dying(db_factory, monkeypatch):
+    db = db_factory()
+    sid, hero = _seed_medic_hero(db)
+    ally = {"id": "npc_ally", "name": "同伴", "attributes": {"DEX": 30, "CON": 50, "SIZ": 50},
+            "skills": {}, "weapon": "徒手格斗"}
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True),
+                  combat_service._npc_participant(ally, "ally")],
+        [])
+    dying = combat_service._find(state, "npc_ally")
+    dying["hp"] = 0; dying["status"] = "dying"
+    _fix_rolls(monkeypatch, [10])   # 急救成功
+    actor = combat_service._find(state, hero.id)
+    combat_service._apply_one_action(db, sid, state, actor, {"type": "first_aid", "target_id": "npc_ally"})
+    assert dying["status"] == "unconscious"        # 濒死稳住（稳定但出局）
+    assert dying["first_aid_used"] is True
+
+
+def test_first_aid_used_blocks_repeat(db_factory, monkeypatch):
+    db = db_factory()
+    sid, hero = _seed_medic_hero(db)
+    ally = {"id": "npc_ally", "name": "同伴", "attributes": {"DEX": 30, "CON": 50, "SIZ": 50},
+            "skills": {}, "weapon": "徒手格斗"}
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True),
+                  combat_service._npc_participant(ally, "ally")],
+        [])
+    wounded = combat_service._find(state, "npc_ally")
+    wounded["hp"] = 3; wounded["status"] = "major_wound"; wounded["first_aid_used"] = True
+    actor = combat_service._find(state, hero.id)
+    chunks, summary = combat_service._apply_one_action(
+        db, sid, state, actor, {"type": "first_aid", "target_id": "npc_ally"})
+    assert wounded["hp"] == 3        # 该处伤已急救过，不再回血
+
+
+def test_observe_produces_beat(db_factory, monkeypatch):
+    db = db_factory()
+    sid, hero = _seed_medic_hero(db)
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True)], [])
+    _fix_rolls(monkeypatch, [10])   # 侦查70 → 成功
+    actor = combat_service._find(state, hero.id)
+    chunks, summary = combat_service._apply_one_action(
+        db, sid, state, actor, {"type": "observe"})
+    assert summary and "观察" in summary
+
+
+def test_maneuver_grapple_appends_condition(db_factory, monkeypatch):
+    db = db_factory()
+    sid, hero = _seed_medic_hero(db)
+    enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 40, "CON": 50, "SIZ": 60},
+             "skills": {"格斗(斗殴)": 30, "闪避": 20}, "weapon": "徒手格斗"}
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True)],
+        [combat_service._npc_participant(enemy, "enemy")])
+    _fix_rolls(monkeypatch, [10, 80])   # 英雄格斗60成功、打手格斗30失败 → 英雄胜
+    actor = combat_service._find(state, hero.id)
+    combat_service._apply_one_action(
+        db, sid, state, actor, {"type": "maneuver", "target_id": "npc_thug", "kind": "grapple"})
+    thug = combat_service._find(state, "npc_thug")
+    assert "grappled" in thug["conditions"]
+    # 去重：再擒抱一次不重复追加
+    _fix_rolls(monkeypatch, [10, 80])
+    combat_service._apply_one_action(
+        db, sid, state, actor, {"type": "maneuver", "target_id": "npc_thug", "kind": "grapple"})
+    assert thug["conditions"].count("grappled") == 1
+
+
+def test_aim_then_attack_consumes_flag(db_factory, monkeypatch):
+    db = db_factory()
+    sid, hero = _seed_medic_hero(db)
+    enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 40, "CON": 50, "SIZ": 60},
+             "skills": {"格斗(斗殴)": 45, "闪避": 20}, "weapon": "徒手格斗"}
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True)],
+        [combat_service._npc_participant(enemy, "enemy")])
+    actor = combat_service._find(state, hero.id)
+    # aim 置 flag
+    combat_service._apply_one_action(db, sid, state, actor, {"type": "aim"})
+    assert actor["aim"] is True
+    # 随后攻击应消费 aim（打完清标记）
+    _fix_rolls(monkeypatch, [10, 80], die=3)
+    combat_service._apply_one_action(
+        db, sid, state, actor, {"type": "attack", "target_id": "npc_thug", "weapon": "徒手格斗"})
+    assert actor["aim"] is False
+
+
+def test_disarmed_attacker_forced_unarmed(db_factory, monkeypatch):
+    db = db_factory()
+    sid, hero = _seed_medic_hero(db)
+    enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 40, "CON": 50, "SIZ": 60},
+             "skills": {"格斗(斗殴)": 45, "闪避": 20}, "weapon": "徒手格斗"}
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True)],
+        [combat_service._npc_participant(enemy, "enemy")])
+    actor = combat_service._find(state, hero.id)
+    actor["conditions"].append("disarmed")
+    _fix_rolls(monkeypatch, [10, 80], die=3)   # 命中
+    chunks, summary = combat_service._apply_one_action(
+        db, sid, state, actor, {"type": "attack", "target_id": "npc_thug", "weapon": "手枪"})
+    # 被缴械 → 即使指定手枪也按徒手格斗结算
+    assert "徒手格斗" in summary
+
+
+def test_reload_marks_loaded(db_factory):
+    db = db_factory()
+    sid, hero = _seed_medic_hero(db)
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True)], [])
+    actor = combat_service._find(state, hero.id)
+    chunks, summary = combat_service._apply_one_action(
+        db, sid, state, actor, {"type": "reload"})
+    assert actor.get("loaded") is True and summary
+
+
+def test_grappled_human_reaction_only_fight_back(db_factory):
+    """被擒抱的真人被 NPC 攻击时，pending_reaction.allowed 只剩反击。"""
+    db = db_factory()
+    sid, hero = _seed(db)
+    enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 90, "CON": 50, "SIZ": 60},
+             "skills": {"格斗(斗殴)": 45, "闪避": 20}, "weapon": "徒手格斗"}
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True)],
+        [combat_service._npc_participant(enemy, "enemy")])
+    hero_p = combat_service._find(state, hero.id)
+    hero_p["conditions"].append("grappled")   # 真人已被擒抱
+    combat_service._save_combat(db, sid, state)
+    asyncio.run(combat_service.drive_npcs(db, sid, state))
+    pr = state.get("pending_reaction")
+    assert pr and pr["defender_id"] == hero.id
+    assert pr["allowed"] == ["fight_back"]   # 被擒抱近战只能反击

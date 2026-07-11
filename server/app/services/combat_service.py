@@ -48,6 +48,8 @@ def _char_participant(char: Character, side: str, is_human: bool = True) -> dict
         "skills": char.skills or {}, "base_attributes": char.base_attributes or {},
         "system_data": sd, "db": (sd.get("damageBonus") or "0"),
         "acted_this_round": False, "dodged_this_round": False,
+        # P2 主动动作集：正交条件 / 瞄准 / 该处伤是否已急救（RAW 每处伤一次）
+        "conditions": [], "aim": False, "first_aid_used": False,
     }
 
 
@@ -74,6 +76,8 @@ def _npc_participant(npc: dict, side: str = "enemy") -> dict:
         "is_key": bool(npc.get("personality") or npc.get("secrets")),
         "personality": npc.get("personality"),
         "acted_this_round": False, "dodged_this_round": False,
+        # P2 主动动作集：正交条件 / 瞄准 / 该处伤是否已急救
+        "conditions": [], "aim": False, "first_aid_used": False,
     }
 
 
@@ -187,6 +191,38 @@ def apply_damage(db: Session, state: dict, target: dict, amount: int, reason: st
     return lines
 
 
+def _sync_char_status(db: Session, target: dict) -> None:
+    """把参战方的 status 写回其角色卡（仅玩家/队友；敌人只在战斗态追踪）。"""
+    if not target.get("char_id"):
+        return
+    char = db.get(Character, target["char_id"])
+    if char and target["status"] in ("dead", "dying", "unconscious", "major_wound", "ok"):
+        char.status = target["status"]
+        db.add(char)
+        db.commit()
+
+
+def apply_heal(db: Session, state: dict, target: dict, amount: int) -> list[str]:
+    """对参战方回血：更新战斗态 HP（封顶 max_hp）；玩家/队友同步写回角色卡。返回可读结算行。
+    对称 apply_damage，但不触发状态迁移（濒死稳住由 first_aid 分支单独处理）。"""
+    old = target.get("hp", 0)
+    max_hp = target.get("max_hp") or old
+    new_hp = min(max_hp, old + max(0, amount))
+    target["hp"] = new_hp
+    lines = [f"{target['name']} 恢复 {new_hp - old} 点伤势（HP {old}→{new_hp}）"]
+    if target.get("char_id"):
+        char = db.get(Character, target["char_id"])
+        if char:
+            sd = dict(char.system_data or {})
+            hp = dict(sd.get("hitPoints") or {})
+            hp["current"] = new_hp
+            sd["hitPoints"] = hp
+            char.system_data = sd
+            db.add(char)
+            db.commit()
+    return lines
+
+
 async def resolve_player_action(
     db: Session, session_id: str, actor_id: str, action: dict,
     agent=None, scene_hint: str = "",
@@ -241,9 +277,12 @@ async def resolve_reaction(db: Session, session_id: str, defender_id: str, choic
     out: list[str] = []
     beats: list[str] = []
     if attacker and defender and engine.is_active(attacker) and engine.is_active(defender):
+        # 攻方若已被缴械 → 强制徒手结算（与 _apply_one_action 的攻击分支一致）
+        atk_disarmed = "disarmed" in (attacker.get("conditions") or [])
         res = engine.resolve_attack(
             _char_data(attacker), attacker.get("db", "0"), pr["weapon"],
             defender_data=_char_data(defender), defense=choice, ranged=pr["ranged"],
+            attacker_disarmed=atk_disarmed,
         )
         out.append(_combat_dice(db, session_id, attacker, defender, pr["weapon"], res))
         if res["hit"] and res["damage"]:
@@ -289,6 +328,83 @@ def _apply_one_action(db: Session, session_id: str, state: dict, actor: dict, ac
         chunks.append(_combat_line(db, session_id, summary + "。"))
         return chunks, summary
 
+    if atype == "first_aid":
+        # 对己方受伤者施急救：目标存在、且该处伤尚未急救过（RAW 每处伤一次）
+        target = _find(state, action.get("target_id"))
+        if target is None:
+            s = f"{actor['name']} 的急救目标已不在场"
+            chunks.append(_combat_line(db, session_id, s + "。"))
+            return chunks, s
+        if target.get("first_aid_used"):
+            s = f"{actor['name']} 想为 {target['name']} 急救，但这处伤已被处理过"
+            chunks.append(_combat_line(db, session_id, s + "。"))
+            return chunks, s
+        r = engine.resolve_first_aid(_char_data(actor))
+        for line in r["lines"]:
+            chunks.append(_combat_line(db, session_id, f"{actor['name']}｜{line}"))
+        heal_lines: list[str] = []
+        if r["success"]:
+            if target.get("status") == "dying":
+                # 濒死稳住：dying → unconscious（稳定但出局），不回 HP
+                target["status"] = "unconscious"
+                line = f"{target['name']} 濒死伤势被稳住，转为昏迷（脱离濒死）。"
+                chunks.append(_combat_line(db, session_id, line))
+                heal_lines = [line]
+                _sync_char_status(db, target)
+            elif r["heal"]:
+                heal_lines = apply_heal(db, state, target, r["heal"])
+                for line in heal_lines:
+                    chunks.append(_combat_line(db, session_id, line))
+            target["first_aid_used"] = True
+        state["log"].append({"round": state["round"], "actor": actor["name"], "action": "first_aid",
+                             "target": target["name"], "success": r["success"]})
+        summary = f"{actor['name']} 为 {target['name']} 急救：" + (
+            "；".join(heal_lines) if heal_lines else ("成功" if r["success"] else "失败"))
+        return chunks, summary
+
+    if atype == "observe":
+        r = engine.resolve_observe(_char_data(actor))
+        for line in r["lines"]:
+            chunks.append(_combat_line(db, session_id, f"{actor['name']}｜{line}"))
+        state["log"].append({"round": state["round"], "actor": actor["name"], "action": "observe",
+                             "success": r["success"]})
+        summary = f"{actor['name']} 观察战场：" + ("察觉到敌方破绽/动向" if r["success"] else "未看出更多")
+        return chunks, summary
+
+    if atype == "maneuver":
+        target = _find(state, action.get("target_id"))
+        if target is None or not engine.is_active(target):
+            s = f"{actor['name']} 的机动目标已不在场"
+            chunks.append(_combat_line(db, session_id, s + "。"))
+            return chunks, s
+        kind = action.get("kind") or "grapple"
+        r = engine.resolve_maneuver(_char_data(actor), _char_data(target), kind=kind)
+        for line in r["lines"]:
+            chunks.append(_combat_line(db, session_id, f"{actor['name']} → {target['name']}｜{line}"))
+        if r["success"] and r["condition"]:
+            conds = target.setdefault("conditions", [])
+            if r["condition"] not in conds:   # 去重
+                conds.append(r["condition"])
+        kind_cn = "擒抱" if kind == "grapple" else "缴械"
+        state["log"].append({"round": state["round"], "actor": actor["name"], "action": "maneuver",
+                             "target": target["name"], "kind": kind, "success": r["success"]})
+        summary = f"{actor['name']} 对 {target['name']} 尝试{kind_cn}：" + ("得手" if r["success"] else "未得手")
+        return chunks, summary
+
+    if atype == "reload":
+        actor["loaded"] = True
+        summary = f"{actor['name']} 装填弹药，武器就绪"
+        state["log"].append({"round": state["round"], "actor": actor["name"], "action": "reload"})
+        chunks.append(_combat_line(db, session_id, summary + "。"))
+        return chunks, summary
+
+    if atype == "aim":
+        actor["aim"] = True
+        summary = f"{actor['name']} 举枪瞄准，下一击更准"
+        state["log"].append({"round": state["round"], "actor": actor["name"], "action": "aim"})
+        chunks.append(_combat_line(db, session_id, summary + "。"))
+        return chunks, summary
+
     # attack
     target = _find(state, action.get("target_id"))
     if target is None or not engine.is_active(target):
@@ -296,12 +412,20 @@ def _apply_one_action(db: Session, session_id: str, state: dict, actor: dict, ac
         chunks.append(_combat_line(db, session_id, s + "。"))
         return chunks, s
     weapon = action.get("weapon") or actor.get("weapon") or "徒手格斗"
+    # 缴械：强制徒手（连带把武器/远程判定改成徒手），瞄准：命中检定加 1 奖励骰后清标记
+    disarmed = "disarmed" in (actor.get("conditions") or [])
+    if disarmed:
+        weapon = "徒手格斗"
     ranged = _weapon_is_firearm(weapon)
+    aim_bonus = 1 if actor.get("aim") else 0
     defense = None if ranged else (action.get("defense") or engine.heuristic_defense(target, is_firearm=False))
     res = engine.resolve_attack(
         _char_data(actor), actor.get("db", "0"), weapon,
         defender_data=_char_data(target), defense=defense, ranged=ranged,
+        attacker_disarmed=disarmed, bonus=aim_bonus,
     )
+    if actor.get("aim"):
+        actor["aim"] = False   # 瞄准一次性消费
     chunks.append(_combat_dice(db, session_id, actor, target, weapon, res))
     dmg_lines: list[str] = []
     if res["hit"] and res["damage"]:
@@ -365,7 +489,8 @@ async def drive_npcs(db: Session, session_id: str, state: dict, agent=None, scen
                     "attacker_id": actor["id"], "defender_id": target["id"],
                     "attacker_name": actor["name"], "defender_name": target["name"],
                     "weapon": weapon, "ranged": is_fire,
-                    "allowed": engine.allowed_reactions(is_fire),
+                    "allowed": engine.allowed_reactions(
+                        is_fire, defender_grappled="grappled" in (target.get("conditions") or [])),
                 }
                 _save_combat(db, session_id, state)
                 chunks.append(_chunk("combat_reaction_prompt", metadata=state["pending_reaction"]))
