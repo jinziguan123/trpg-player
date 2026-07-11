@@ -328,6 +328,11 @@ async def drive_npcs(db: Session, session_id: str, state: dict, agent=None, scen
         actor = current_actor(state)
         if actor is None:
             break
+        # 濒死者回合开始先跑体质 tick（须在 is_active 跳过之前，否则永远不掷）
+        if actor.get("status") == "dying":
+            for line in engine.tick_dying(actor):
+                chunks.append(_combat_line(db, session_id, line))
+            _save_combat(db, session_id, state)
         if not engine.is_active(actor):   # 当前指针落在失能者 → 跳过
             engine.advance_turn(state)
             continue

@@ -242,3 +242,30 @@ def test_resolve_reaction_rejects_disallowed_choice(db_factory):
     assert "fight_back" not in state["pending_reaction"]["allowed"]   # 火器不能反击
     with pytest.raises(ValueError, match="不可用"):
         asyncio.run(combat_service.resolve_reaction(db, sid, hero.id, "fight_back"))
+
+
+def test_dying_participant_ticks_each_round(db_factory, monkeypatch):
+    """濒死 NPC 落在先攻序中：回合开始被体质 tick；CON 必失败 → 死亡 + 广播濒死检定行。"""
+    db = db_factory()
+    sid, hero = _seed(db)
+    dying = {"id": "npc_dying", "name": "垂死者", "attributes": {"DEX": 95, "CON": 50, "SIZ": 50},
+             "skills": {"格斗(斗殴)": 40}, "weapon": "徒手格斗"}
+    guard = {"id": "npc_guard", "name": "卫兵", "attributes": {"DEX": 90, "CON": 60, "SIZ": 60},
+             "skills": {"格斗(斗殴)": 45}, "weapon": "徒手格斗"}
+    # 垂死者 DEX95 先攻首位、卫兵次之、英雄末位；把垂死者置为濒死态（否则会先手攻击）
+    state = combat_service.start_combat(
+        db, sid,
+        [combat_service._char_participant(hero, "player", is_human=True)],
+        [combat_service._npc_participant(dying, "enemy"),
+         combat_service._npc_participant(guard, "enemy")])
+    dp = combat_service._find(state, "npc_dying")
+    dp["status"] = "dying"; dp["hp"] = 0
+    combat_service._save_combat(db, sid, state)
+    assert combat_service.current_actor(state)["id"] == "npc_dying"   # 垂死者先手（还有卫兵活着，战斗不结束）
+
+    _fix_rolls(monkeypatch, [99, 80, 80], die=3)   # 濒死体质检定 99 必失败；卫兵随后攻英雄→暂停
+    chunks, _ = asyncio.run(combat_service.drive_npcs(db, sid, state))
+
+    dp = combat_service._find(state, "npc_dying")
+    assert dp["status"] == "dead"                                      # 濒死体质检定失败 → 气绝
+    assert any("濒死体质检定" in c for c in chunks)                      # 广播了濒死检定行
