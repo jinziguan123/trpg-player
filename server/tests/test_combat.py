@@ -166,3 +166,15 @@ def test_allowed_reactions_firearm_excludes_fight_back():
     from app.rules.coc.combat import allowed_reactions
     assert allowed_reactions(is_firearm=False) == ["fight_back", "dodge"]
     assert allowed_reactions(is_firearm=True) == ["dodge", "cover"]
+
+
+def test_resolve_attack_firearm_cover_raises_difficulty(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    monkeypatch.setattr(checks, "roll_percentile", lambda: 40)  # 手枪50：普通目标50命中、困难目标25失手
+    shooter = {"skills": {"射击(手枪)": 50}, "base_attributes": {}, "system_data": {}}
+    res = combat.resolve_attack(shooter, "0", "手枪",
+                                defender_data={"skills": {}, "base_attributes": {}, "system_data": {}},
+                                defense="cover", ranged=True)
+    assert res["hit"] is False
+    assert res["damage_to"] is None

@@ -169,15 +169,16 @@ def resolve_attack(
     weapon: str | dict,
     *,
     defender_data: dict | None = None,
-    defense: str | None = None,     # None(远程/无防御) | 'dodge' | 'fight_back'
+    defense: str | None = None,     # None(无反应) | 'dodge' | 'cover' | 'fight_back'
     ranged: bool = False,
     difficulty: str = "normal",
 ) -> dict:
     """解析一次攻击。返回结构化结果（谁命中谁、伤害多少、各自检定）。**不改状态、不落库。**
 
-    - 近战 + defense='dodge'：攻方武器技能 对抗 守方闪避；攻方成功等级更高才命中（平/低=被闪开）。
+    - 近战 + defense='dodge'/'cover'：攻方武器技能 对抗 守方闪避；攻方成功等级更高才命中（平/低=被闪开）。
     - 近战 + defense='fight_back'：双方各掷格斗，胜方伤害负方（攻→守 或 守→攻反击）。
-    - 远程 / defense=None：攻方射击检定，达到要求难度即命中（守方可由 difficulty 表现掩体）。
+    - 远程 + defense=None：攻方射击检定，达到要求难度即命中。
+    - 远程 + defense='dodge'/'cover'：射手转困难难度（扑向掩体）重掷，命中即伤、无反击。
     命中且为贯穿武器 + 极难/大成功 → 贯穿加伤。
     """
     w = resolve_weapon(weapon) if isinstance(weapon, str) else weapon
@@ -193,8 +194,17 @@ def resolve_attack(
         impale = bool(w.get("tho")) and tier in ("extreme", "critical")
         return roll_weapon_damage(w, attacker_db, impale=impale)
 
-    # 远程 / 无防御：达到要求难度即命中
-    if ranged or defense is None:
+    # 远程：无反应 → 达标即命中；扑掩体/闪避 → 射手转困难难度（扑向掩体），无反击
+    if ranged:
+        if defense in ("dodge", "cover"):
+            atk = resolve_skill_check(attacker_data, atk_skill, "hard")
+            result["attacker_check"] = atk
+        if atk.meets_difficulty:
+            result["hit"] = True
+            result["damage"] = _damage(atk.tier)
+            result["damage_to"] = "defender"
+        return result
+    if defense is None:
         if atk.meets_difficulty:
             result["hit"] = True
             result["damage"] = _damage(atk.tier)
@@ -210,7 +220,7 @@ def resolve_attack(
             result["damage_to"] = "defender"
         return result
 
-    if defense == "dodge":
+    if defense in ("dodge", "cover"):
         dfn = resolve_skill_check(defender_data, "闪避", "normal")
         result["defender_check"] = dfn
         # 攻方成功等级严格高于守方才命中（平手/守方更高 = 被闪开）
