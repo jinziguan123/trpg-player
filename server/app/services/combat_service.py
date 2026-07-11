@@ -142,6 +142,8 @@ def _combat_meta(state: dict) -> dict:
         "order": [{"id": p["id"], "name": p["name"], "side": p["side"], "is_human": p.get("is_human", False),
                    "hp": p["hp"], "max_hp": p["max_hp"], "status": p["status"]}
                   for p in state.get("initiative") or []],
+        # 断线重连恢复：若正等某真人反应，带上 pending_reaction 让前端重弹反应提示。
+        "pending_reaction": state.get("pending_reaction"),
     }
 
 

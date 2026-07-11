@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import player_token
 from app.database import get_db
-from app.schemas.combat import ChaseActionRequest, CombatActionRequest
+from app.schemas.combat import ChaseActionRequest, CombatActionRequest, ReactionRequest
 from app.services import chase_service, combat_service, session_service
 from app.services.room_hub import room_hub
 
@@ -58,6 +58,34 @@ async def combat_action(
             db, session_id, actor_id, data.model_dump(exclude_none=True),
             agent=agent, scene_hint="",
         )
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    for chunk in chunks:
+        room_hub.broadcast(session_id, chunk)
+    return {"ok": True}
+
+
+@router.post("/{session_id}/combat/reaction")
+async def combat_reaction(
+    session_id: str,
+    data: ReactionRequest,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """被攻击的真人提交反应（fight_back/dodge/cover）。token 对应的角色即防御者。
+
+    结算这一击并续跑驱动，广播新的 combat_state/dice/narration。
+    """
+    session = session_service.get_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "会话不存在")
+    # 兼容纯本机会话（无 token 归属）：回落到会话主角
+    actor_id = _actor_char_id(db, session_id, token) or session.player_character_id
+    if not actor_id:
+        raise HTTPException(403, "无法确定行动角色")
+    try:
+        chunks = await combat_service.resolve_reaction(
+            db, session_id, actor_id, data.choice, agent=_combat_agent(db, session))
     except ValueError as e:
         raise HTTPException(409, str(e))
     for chunk in chunks:
