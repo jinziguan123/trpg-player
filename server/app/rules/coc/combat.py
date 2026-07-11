@@ -296,6 +296,14 @@ def advance_turn(state: dict) -> dict:
     return state  # 无人可动（由 check_combat_end 收尾）
 
 
+def heuristic_defense(defender: dict, is_firearm: bool) -> str:
+    """NPC 防御者的自动防御选择（真人防御走交互，不经此）。
+    火器只能闪避；近战：好斗者反击，其余闪避。"""
+    if is_firearm:
+        return "dodge"
+    return "fight_back" if defender.get("combat_ai") == "aggressive" else "dodge"
+
+
 def heuristic_npc_action(state: dict, actor: dict) -> dict:
     """杂兵启发式：攻击对方阵营中 HP 最低的存活者；HP<25% 且策略为 cautious 则逃跑。
     返回 {action, target_id?, weapon?}。关键 NPC 走子代理（P3），不经此。"""
