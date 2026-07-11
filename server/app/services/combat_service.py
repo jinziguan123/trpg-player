@@ -219,8 +219,12 @@ async def resolve_player_action(
 
 
 async def resolve_reaction(db: Session, session_id: str, defender_id: str, choice: str,
-                           weapon: str | None = None, agent=None, scene_hint: str = "") -> list[str]:
-    """真人对一次针对自己的攻击做出反应（fight_back/dodge/cover），结算这一击后续跑驱动。"""
+                           agent=None, scene_hint: str = "") -> list[str]:
+    """真人对一次针对自己的攻击做出反应（fight_back/dodge/cover），结算这一击后续跑驱动。
+
+    P2 待接：fight_back 反击目前引擎硬编码徒手估伤（resolve_attack 的 _UNARMED + defender._db 恒 0），
+    守方持械反击尚未接线；届时再给本函数与 resolve_attack 补 defender 武器入参。
+    """
     session = db.get(GameSession, session_id)
     state = get_combat(session)
     if not state:
