@@ -181,3 +181,64 @@ def test_drive_npcs_pauses_when_npc_attacks_human(db_factory):
     assert hero_p["hp"] == hp_before
     db.refresh(hero)
     assert hero.system_data["hitPoints"]["current"] == hp_before
+
+
+def _paused_by_npc_attack(db, sid, hero, enemy):
+    """建战斗态、驱动到「NPC 攻击真人」暂停点，返回 state（含 pending_reaction）。"""
+    state = combat_service.start_combat(
+        db, sid,
+        [combat_service._char_participant(hero, "player", is_human=True)],
+        [combat_service._npc_participant(enemy, "enemy")])
+    asyncio.run(combat_service.drive_npcs(db, sid, state))
+    assert state.get("pending_reaction")   # 已停在等真人反应
+    return state
+
+
+def test_resolve_reaction_dodge_success_no_damage_to_attacker(db_factory, monkeypatch):
+    """核心 ⑤ 回归：真人闪避成功、攻方失手 → 攻击者 HP 绝不变、pending 清空、轮次已推进。"""
+    db = db_factory()
+    sid, hero = _seed(db)   # 英雄 DEX70 闪避35
+    enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 90, "CON": 50, "SIZ": 60},
+             "skills": {"格斗(斗殴)": 45, "闪避": 20}, "weapon": "徒手格斗"}
+    state = _paused_by_npc_attack(db, sid, hero, enemy)
+    # 打手(DEX90)是先攻首位、英雄次之；结算后指针从打手推进到英雄（本轮内，round 不变）
+    assert combat_service.current_actor(state)["id"] == "npc_thug"
+    attacker = combat_service._find(state, "npc_thug")
+    atk_hp_before = attacker["hp"]
+
+    # 结算这一击：攻方掷 80（>45 失手）、真人闪避掷 10（<35 成功）→ 攻方成功等级不高于守方 → 未命中
+    _fix_rolls(monkeypatch, [80, 10], die=3)
+    out = asyncio.run(combat_service.resolve_reaction(db, sid, hero.id, "dodge"))
+
+    st = combat_service.get_combat(db.get(GameSession, sid))
+    atk = next(p for p in st["initiative"] if p["id"] == "npc_thug")
+    assert atk["hp"] == atk_hp_before                 # 闪避永不伤攻击者（⑤ 核心）
+    hero_p = next(p for p in st["initiative"] if p["id"] == hero.id)
+    assert hero_p["hp"] == 11                          # 闪开了，真人也没掉血
+    assert st.get("pending_reaction") is None          # pending 已清空
+    assert combat_service.current_actor(st)["id"] == hero.id   # 攻方已行动 → 推进到英雄回合
+    assert any('"dice"' in c for c in out)             # 结算广播了骰子
+
+
+def test_resolve_reaction_rejects_wrong_defender(db_factory):
+    """非 pending 的防御者提交反应 → raise ValueError。"""
+    db = db_factory()
+    sid, hero = _seed(db)
+    enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 90, "CON": 50, "SIZ": 60},
+             "skills": {"格斗(斗殴)": 45, "闪避": 20}, "weapon": "徒手格斗"}
+    _paused_by_npc_attack(db, sid, hero, enemy)   # pending 的 defender 是 hero
+    with pytest.raises(ValueError, match="等待你的反应"):
+        asyncio.run(combat_service.resolve_reaction(db, sid, "npc_thug", "dodge"))
+
+
+def test_resolve_reaction_rejects_disallowed_choice(db_factory):
+    """火器 pending 下提交 fight_back（不在 allowed）→ raise ValueError。"""
+    db = db_factory()
+    sid, hero = _seed(db)
+    enemy = {"id": "npc_gun", "name": "枪手", "attributes": {"DEX": 90, "CON": 50, "SIZ": 60},
+             "skills": {"射击(手枪)": 55, "闪避": 20}, "weapon": "自动手枪"}
+    state = _paused_by_npc_attack(db, sid, hero, enemy)
+    assert state["pending_reaction"]["ranged"] is True
+    assert "fight_back" not in state["pending_reaction"]["allowed"]   # 火器不能反击
+    with pytest.raises(ValueError, match="不可用"):
+        asyncio.run(combat_service.resolve_reaction(db, sid, hero.id, "fight_back"))

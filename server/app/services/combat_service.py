@@ -218,6 +218,52 @@ async def resolve_player_action(
     return out + chunks + drive_chunks
 
 
+async def resolve_reaction(db: Session, session_id: str, defender_id: str, choice: str,
+                           weapon: str | None = None, agent=None, scene_hint: str = "") -> list[str]:
+    """真人对一次针对自己的攻击做出反应（fight_back/dodge/cover），结算这一击后续跑驱动。"""
+    session = db.get(GameSession, session_id)
+    state = get_combat(session)
+    if not state:
+        raise ValueError("当前不在战斗中")
+    pr = state.get("pending_reaction")
+    if not pr or pr["defender_id"] != defender_id:
+        raise ValueError("现在没有等待你的反应")
+    if choice not in pr["allowed"]:
+        raise ValueError("该反应在本次攻击下不可用")
+    attacker = _find(state, pr["attacker_id"])
+    defender = _find(state, pr["defender_id"])
+    out: list[str] = []
+    beats: list[str] = []
+    if attacker and defender and engine.is_active(attacker) and engine.is_active(defender):
+        res = engine.resolve_attack(
+            _char_data(attacker), attacker.get("db", "0"), pr["weapon"],
+            defender_data=_char_data(defender), defense=choice, ranged=pr["ranged"],
+        )
+        out.append(_combat_dice(db, session_id, attacker, defender, pr["weapon"], res))
+        if res["hit"] and res["damage"]:
+            victim = defender if res["damage_to"] == "defender" else attacker
+            for line in apply_damage(db, state, victim, res["damage"]["total"],
+                                     reason=f"{attacker['name']} 的 {pr['weapon']}"):
+                out.append(_combat_line(db, session_id, line))
+        verb = {"fight_back": "反击", "dodge": "闪避", "cover": "扑向掩体"}.get(choice, choice)
+        beats.append(f"{defender['name']} 对 {attacker['name']} 的攻击选择{verb}："
+                     + ("被击中" if (res["hit"] and res["damage_to"] == "defender")
+                        else "反击得手" if (res["hit"] and res["damage_to"] == "attacker")
+                        else "未受伤"))
+    state["pending_reaction"] = None
+    if attacker:
+        attacker["acted_this_round"] = True
+    engine.advance_turn(state)
+    drive_chunks, drive_beats = await drive_npcs(db, session_id, state, agent, scene_hint)
+    beats += drive_beats
+    narr: list[str] = []
+    if agent and beats:
+        prose = await agent.narrate(state, beats, scene_hint)
+        if prose:
+            narr.append(_combat_narration(db, session_id, prose))
+    return narr + out + drive_chunks
+
+
 def _apply_one_action(db: Session, session_id: str, state: dict, actor: dict, action: dict) -> tuple[list[str], str]:
     """结算某参战方的一个行动（玩家/NPC 共用）。返回 (chunks, 机械结算摘要行 供子代理叙述)。"""
     chunks: list[str] = []
