@@ -19,6 +19,7 @@ interface Combatant {
   hp: number
   max_hp: number
   status: CombatStatus
+  weapon?: string         // 当前武器名（后端 order 投影透传）
   conditions?: string[]   // 正交条件：grappled（被擒）/ disarmed（缴械）
   aim?: boolean           // 瞄准态（下一击加奖励骰）
 }
@@ -27,6 +28,7 @@ export interface CombatState {
   round: number
   turn: string | null   // 当前轮到的参战方 id
   order: Combatant[]
+  started_seq?: number  // 本场战斗日志起点 seq：日志抽屉只收本场（seq>started_seq）的结算行
 }
 
 // 反应提示：NPC 攻击某真人时后端暂停并广播 combat_reaction_prompt 的 metadata。
@@ -174,12 +176,17 @@ function CombatantCard({ c, mine, active, diff }: {
           </span>
         )}
       </div>
-      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--color-input-bg)' }}>
-        <div
-          key={diff?.seq ?? 'base'}
-          className={`stat-bar-fill h-full ${dmg ? 'hp-bar-dmg' : heal ? 'hp-bar-heal' : ''}`}
-          style={{ width: `${pctOf(c)}%`, background: hpColor }}
-        />
+      {/* 血条：底层填充始终平滑过渡宽度（不换 key，保住 transition:width）；
+          红闪/绿涨的颜色脉冲另起一层叠加，只有它带 seq key 重挂、播一次动画 → 宽度不瞬跳。 */}
+      <div className="relative h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--color-input-bg)' }}>
+        <div className="stat-bar-fill h-full" style={{ width: `${pctOf(c)}%`, background: hpColor }} />
+        {(dmg || heal) && (
+          <div
+            key={diff?.seq}
+            className={`stat-bar-fill absolute inset-y-0 left-0 h-full ${dmg ? 'hp-bar-dmg' : 'hp-bar-heal'}`}
+            style={{ width: `${pctOf(c)}%`, background: hpColor }}
+          />
+        )}
       </div>
       <div className="flex items-center justify-between gap-1 mt-0.5">
         <span className="text-[10px] font-mono" style={{ color: 'var(--color-text-secondary)' }}>{c.hp}/{c.max_hp}</span>
@@ -202,7 +209,7 @@ function CombatantCard({ c, mine, active, diff }: {
         </div>
       </div>
       <div className="text-[10px] mt-0.5 truncate" style={{ color: 'var(--color-text-secondary)', opacity: 0.75 }}>
-        {(c as Combatant & { weapon?: string }).weapon || ''}
+        {c.weapon || ''}
       </div>
     </div>
   )

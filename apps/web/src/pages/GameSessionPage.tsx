@@ -379,8 +379,11 @@ export function GameSessionPage() {
     if (t === 'generating') { setStreaming(true); setThinking(true); return }
     if (t === 'turn_state') { setTurnState((chunk.metadata as { confirmed_ids: string[]; total: number; ready: boolean }) || null); return }
     if (t === 'combat_start') {
-      // 新战斗：设日志下限为当前最大 seq → 抽屉只收本场机械结算，不掺上一场。
-      setCombat((chunk.metadata as CombatState) || null); setPendingReaction(null); setCombatLogSince(maxSeqSeen.current)
+      // 新战斗：日志下限取后端透传的 started_seq（本场开打前最大 seq），抽屉只收本场结算、不掺上一场；
+      // 后端未带时回退到客户端已见最大 seq。
+      const meta = (chunk.metadata as CombatState) || null
+      setCombat(meta); setPendingReaction(null)
+      setCombatLogSince(meta?.started_seq ?? maxSeqSeen.current)
       return
     }
     if (t === 'combat_state') { setCombat((chunk.metadata as CombatState) || null); setPendingReaction(null); return }  // 续跑广播新态 → 清反应提示
@@ -497,13 +500,16 @@ export function GameSessionPage() {
 
       // 进页/重连恢复战斗态：active 时置入面板，否则清空（战斗中刷新页面不丢面板）。
       // 同时恢复 pending_reaction：断线时若正等我反应，重连后仍弹反应提示。
-      api.get<{ active: boolean; round?: number; turn?: string | null; order?: unknown; pending_reaction?: PendingReaction | null }>(`/sessions/${sessionId}/combat`)
+      // 并用 started_seq 初始化日志抽屉下限：重连（不经 combat_start 分支）进入第 2+ 场战斗时，
+      // 抽屉据此只收本场（seq>started_seq）的 combat_log，不掺同会话上一场的结算行。
+      api.get<{ active: boolean; round?: number; turn?: string | null; order?: unknown; pending_reaction?: PendingReaction | null; started_seq?: number | null }>(`/sessions/${sessionId}/combat`)
         .then((c) => {
           if (cancelled) return
           setCombat(c.active ? (c as unknown as CombatState) : null)
           setPendingReaction(c.active ? (c.pending_reaction ?? null) : null)
+          setCombatLogSince(c.active ? (c.started_seq ?? null) : null)
         })
-        .catch(() => { if (!cancelled) { setCombat(null); setPendingReaction(null) } })
+        .catch(() => { if (!cancelled) { setCombat(null); setPendingReaction(null); setCombatLogSince(null) } })
 
       // 进页/重连恢复追逐态：active 时置入面板，否则清空。
       api.get<{ active: boolean }>(`/sessions/${sessionId}/chase`)
