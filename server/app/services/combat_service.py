@@ -16,7 +16,6 @@ from sqlalchemy.orm import Session
 from app.models.character import Character
 from app.models.session import GameSession
 from app.rules.coc import combat as engine
-from app.rules.coc.checks import resolve_skill_check
 from app.rules.coc.weapons import WEAPON_CATEGORY_ORDER
 from app.services import session_service
 
@@ -159,28 +158,16 @@ def _find(state: dict, pid: str) -> dict | None:
 def apply_damage(db: Session, state: dict, target: dict, amount: int, reason: str) -> list[str]:
     """对参战方结算伤害：更新战斗态 HP/状态；玩家/队友同步角色卡 HP + 重伤体质检定判昏迷。
     返回可读结算行（供叙述/日志）。"""
+    r = engine.resolve_wound(target.get("hp", 0), target.get("max_hp") or 1, amount, _char_data(target))
+    target["hp"] = r["new_hp"]
+    target["status"] = r["status"]
+    # r["lines"] 首行是「受到 N 点伤害（HP a→b）」，冠上名字与 reason，保持既有可读格式
     lines: list[str] = []
-    old = target.get("hp", 0)
-    max_hp = target.get("max_hp", old) or 1
-    new = max(-max_hp, old - amount)
-    target["hp"] = max(0, new)
-    lines.append(f"{target['name']} 受到 {amount} 点伤害（HP {old}→{max(0, new)}）" + (f"——{reason}" if reason else ""))
-
-    major = amount >= max_hp // 2 and max_hp > 0
-    if new <= -max_hp:
-        target["status"] = "dead"
-        lines.append(f"{target['name']} 当场毙命！")
-    elif target["hp"] <= 0:
-        target["status"] = "dying"
-        lines.append(f"{target['name']} 濒死，需急救/医学稳定。")
-    elif major:
-        target["status"] = "major_wound"
-        # 重伤体质检定判昏迷（对有属性的都判）
-        con = resolve_skill_check(_char_data(target), "体质", "normal")
-        lines.append(f"{target['name']}｜重伤体质检定：{con.description}")
-        if con.outcome in ("failure", "fumble"):
-            target["status"] = "unconscious"
-            lines.append(f"{target['name']} 眼前一黑，昏迷倒地！")
+    for i, line in enumerate(r["lines"]):
+        text = f"{target['name']} {line}"
+        if i == 0 and reason:
+            text += f"——{reason}"
+        lines.append(text)
 
     # 玩家/队友：把 HP 与状态写回角色卡（敌人只在战斗态）
     if target.get("char_id"):
@@ -258,7 +245,7 @@ def _apply_one_action(db: Session, session_id: str, state: dict, actor: dict, ac
         return chunks, s
     weapon = action.get("weapon") or actor.get("weapon") or "徒手格斗"
     ranged = _weapon_is_firearm(weapon)
-    defense = None if ranged else (action.get("defense") or _default_defense(target))
+    defense = None if ranged else (action.get("defense") or engine.heuristic_defense(target, is_firearm=False))
     res = engine.resolve_attack(
         _char_data(actor), actor.get("db", "0"), weapon,
         defender_data=_char_data(target), defense=defense, ranged=ranged,
@@ -280,11 +267,6 @@ def _apply_one_action(db: Session, session_id: str, state: dict, actor: dict, ac
     summary = f"{actor['name']} 用 {weapon} 攻击 {target['name']}：{verb}" + (
         "；" + "；".join(dmg_lines) if dmg_lines else "")
     return chunks, summary
-
-
-def _default_defense(target: dict) -> str:
-    """守方默认应对：本轮未用过行动则反击，否则闪避（简化行动经济）。"""
-    return "fight_back" if not target.get("acted_this_round") else "dodge"
 
 
 async def drive_npcs(db: Session, session_id: str, state: dict, agent=None, scene_hint: str = "") -> tuple[list[str], list[str]]:
