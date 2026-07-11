@@ -107,19 +107,21 @@ def _combat_agent(db: Session, session):
 
 
 def _schedule_aftermath_if_ended(session_id: str, chunks: list[str]) -> None:
-    """本次行动使战斗结束（chunks 含 combat_end）→ 主动调度一次主 KP 余波生成。
+    """本次行动使战斗/追逐结束（chunks 含 combat_end 或 chase_end）→ 主动调度一次主 KP 余波生成。
 
-    不必等玩家先开口：KP 读 combat_result 承接后果、把场面交还调查员。已有生成在跑则跳过。
+    不必等玩家先开口：KP 读 combat_result（战斗与追逐共用此折回通道）承接后果、把场面交还调查员。
+    已有生成在跑则跳过（下一玩家回合仍会折回，不丢）。
     """
-    if not any('"combat_end"' in c for c in chunks):
+    if not any(('"combat_end"' in c or '"chase_end"' in c) for c in chunks):
         return
-    from app.services.chat_service import run_combat_aftermath_generation
+    from app.services.chat_service import _make_chunk, run_combat_aftermath_generation
     from app.services.generation_manager import generation_manager
     if generation_manager.is_generating(session_id):
         return
     coro = run_combat_aftermath_generation(session_id)
     try:
-        generation_manager.start(session_id, coro)
+        # prelude 带 generating：与其它生成入口对齐，让前端立刻亮起「KP 叙事中」指示器
+        generation_manager.start(session_id, coro, prelude=[_make_chunk("generating")])
     except ValueError:
         coro.close()   # 竞态：刚好有生成在跑，放弃本次余波（下一玩家回合仍会折回）
 
@@ -155,4 +157,5 @@ async def chase_action(
         raise HTTPException(409, str(e))
     for chunk in chunks:
         room_hub.broadcast(session_id, chunk)
+    _schedule_aftermath_if_ended(session_id, chunks)
     return {"ok": True}

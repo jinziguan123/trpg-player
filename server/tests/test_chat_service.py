@@ -933,8 +933,8 @@ def test_combat_aftermath_noop_without_result(db_factory, monkeypatch):
     assert calls["n"] == 0
 
 
-def test_schedule_aftermath_detects_combat_end(monkeypatch):
-    """combat 端点：本次行动使战斗结束（chunks 含 combat_end）→ 调度余波生成；否则不调度。"""
+def test_schedule_aftermath_detects_combat_and_chase_end(monkeypatch):
+    """combat/chase 端点：本次行动使战斗或追逐结束（chunks 含 combat_end/chase_end）→ 调度余波；否则不。"""
     from app.api import combat as combat_api
 
     scheduled = []
@@ -943,7 +943,7 @@ def test_schedule_aftermath_detects_combat_end(monkeypatch):
         def is_generating(self, sid):
             return False
 
-        def start(self, sid, coro):
+        def start(self, sid, coro, prelude=None):
             coro.close()          # 关掉协程避免「未 await」警告
             scheduled.append(sid)
 
@@ -952,8 +952,10 @@ def test_schedule_aftermath_detects_combat_end(monkeypatch):
     combat_api._schedule_aftermath_if_ended(
         "s1", ['data: {"type": "combat_end", "content": "战斗结束"}\n\n'])
     combat_api._schedule_aftermath_if_ended(
-        "s2", ['data: {"type": "dice", "content": "命中"}\n\n'])   # 无 combat_end
-    assert scheduled == ["s1"]
+        "s2", ['data: {"type": "chase_end", "content": "追逐结束"}\n\n'])   # 追逐也触发
+    combat_api._schedule_aftermath_if_ended(
+        "s3", ['data: {"type": "dice", "content": "命中"}\n\n'])   # 无结束标记 → 不调度
+    assert scheduled == ["s1", "s2"]
 
 
 def test_generation_saves_once_on_success(db_factory, monkeypatch):
