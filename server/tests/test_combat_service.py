@@ -461,3 +461,86 @@ def test_grappled_human_reaction_only_fight_back(db_factory):
     pr = state.get("pending_reaction")
     assert pr and pr["defender_id"] == hero.id
     assert pr["allowed"] == ["fight_back"]   # 被擒抱近战只能反击
+
+
+def test_grappled_npc_defender_forced_fight_back(db_factory, monkeypatch):
+    """C 审查 I2：玩家擒抱 NPC 后近战攻击，NPC 防御被收窄到反击（不能闪避）——
+    与真人路径对称。用 monkeypatch 捕获传给 resolve_attack 的 defense。"""
+    db = db_factory()
+    sid, hero = _seed_medic_hero(db)
+    enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 40, "CON": 50, "SIZ": 60},
+             "skills": {"格斗(斗殴)": 45, "闪避": 60}, "weapon": "徒手格斗", "combat_ai": "cautious"}
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True)],
+        [combat_service._npc_participant(enemy, "enemy")])
+    thug = combat_service._find(state, "npc_thug")
+    thug["conditions"].append("grappled")   # NPC 已被擒抱
+
+    captured = {}
+    real = combat_service.engine.resolve_attack
+
+    def _spy(*args, **kwargs):
+        captured["defense"] = kwargs.get("defense")
+        return real(*args, **kwargs)
+    monkeypatch.setattr(combat_service.engine, "resolve_attack", _spy)
+
+    _fix_rolls(monkeypatch, [10, 80], die=3)
+    actor = combat_service._find(state, hero.id)
+    combat_service._apply_one_action(
+        db, sid, state, actor, {"type": "attack", "target_id": "npc_thug", "weapon": "徒手格斗"})
+    assert captured["defense"] == "fight_back"   # 被擒抱的 NPC 不能闪避，强制反击
+
+
+def test_first_aid_used_resets_on_new_wound_then_stabilizes(db_factory, monkeypatch):
+    """C 审查 C1：同伴先被急救标 used → 再受伤到 dying → first_aid 仍能稳住濒死。"""
+    db = db_factory()
+    sid, hero = _seed_medic_hero(db)
+    ally = {"id": "npc_ally", "name": "同伴", "attributes": {"DEX": 30, "CON": 50, "SIZ": 50},
+            "skills": {}, "weapon": "徒手格斗"}
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True),
+                  combat_service._npc_participant(ally, "ally")],
+        [])
+    wounded = combat_service._find(state, "npc_ally")
+    wounded["hp"] = 5; wounded["first_aid_used"] = True   # 前期已被急救过
+
+    # 再受一次伤，直接打到 0（dying）——apply_damage 应把 first_aid_used 重置
+    combat_service.apply_damage(db, state, wounded, 5, reason="被重击")
+    assert wounded["status"] == "dying"
+    assert wounded["first_aid_used"] is False   # C1：新伤重置了急救标记
+
+    # 现在急救应能稳住濒死（而非被顶端 used 检查拒绝）
+    _fix_rolls(monkeypatch, [10])   # 急救70 成功
+    actor = combat_service._find(state, hero.id)
+    combat_service._apply_one_action(
+        db, sid, state, actor, {"type": "first_aid", "target_id": "npc_ally"})
+    assert wounded["status"] == "unconscious"   # dying → unconscious 稳住
+    assert wounded["first_aid_used"] is True
+
+
+def test_reaction_disarmed_attacker_uses_unarmed(db_factory, monkeypatch):
+    """M3：pending 的攻方 conditions 含 disarmed → 反应结算时攻击强制徒手。"""
+    db = db_factory()
+    sid, hero = _seed(db)
+    enemy = {"id": "npc_gun", "name": "枪手", "attributes": {"DEX": 90, "CON": 50, "SIZ": 60},
+             "skills": {"射击(手枪)": 55, "格斗(斗殴)": 40, "闪避": 20}, "weapon": "自动手枪"}
+    state = _paused_by_npc_attack(db, sid, hero, enemy)
+    attacker = combat_service._find(state, "npc_gun")
+    attacker["conditions"].append("disarmed")   # 枪手已被缴械
+    combat_service._save_combat(db, sid, state)
+
+    captured = {}
+    real = combat_service.engine.resolve_attack
+
+    def _spy(*args, **kwargs):
+        r = real(*args, **kwargs)
+        captured["disarmed"] = kwargs.get("attacker_disarmed")
+        captured["weapon"] = r["weapon"]
+        return r
+    monkeypatch.setattr(combat_service.engine, "resolve_attack", _spy)
+
+    # 火器 pending 但攻方被缴械：反应结算走徒手；choice 用 dodge（火器 allowed 含 dodge）
+    _fix_rolls(monkeypatch, [50, 90], die=3)
+    asyncio.run(combat_service.resolve_reaction(db, sid, hero.id, "dodge"))
+    assert captured["disarmed"] is True
+    assert captured["weapon"] == "徒手格斗"   # 缴械后强制徒手结算

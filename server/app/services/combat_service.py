@@ -167,6 +167,10 @@ def apply_damage(db: Session, state: dict, target: dict, amount: int, reason: st
     r = engine.resolve_wound(target.get("hp", 0), target.get("max_hp") or 1, amount, _char_data(target))
     target["hp"] = r["new_hp"]
     target["status"] = r["status"]
+    # 新伤 = 新的急救机会：重置 first_aid_used，否则前期被急救过的人再受伤（乃至濒死）
+    # 会被 first_aid 分支顶端的 used 检查锁死，连救命的濒死稳住都做不了。
+    if amount > 0:
+        target["first_aid_used"] = False
     # r["lines"] 首行是「受到 N 点伤害（HP a→b）」，冠上名字与 reason，保持既有可读格式
     lines: list[str] = []
     for i, line in enumerate(r["lines"]):
@@ -418,14 +422,19 @@ def _apply_one_action(db: Session, session_id: str, state: dict, actor: dict, ac
         weapon = "徒手格斗"
     ranged = _weapon_is_firearm(weapon)
     aim_bonus = 1 if actor.get("aim") else 0
-    defense = None if ranged else (action.get("defense") or engine.heuristic_defense(target, is_firearm=False))
+    # NPC 防御者被擒抱 → 近战无法闪避，收窄到反击（与真人 pending_reaction.allowed 对称）
+    target_grappled = "grappled" in (target.get("conditions") or [])
+    defense = None if ranged else (
+        action.get("defense")
+        or engine.heuristic_defense(target, is_firearm=False, defender_grappled=target_grappled))
     res = engine.resolve_attack(
         _char_data(actor), actor.get("db", "0"), weapon,
         defender_data=_char_data(target), defense=defense, ranged=ranged,
         attacker_disarmed=disarmed, bonus=aim_bonus,
     )
     if actor.get("aim"):
-        actor["aim"] = False   # 瞄准一次性消费
+        actor["aim"] = False   # 瞄准一次性消费（aim 只在此攻击分支清；observe/maneuver 不碰它，
+        # 故瞄准会一直保持到下一次攻击——「瞄准保持到下一击」的有意设计，勿改）
     chunks.append(_combat_dice(db, session_id, actor, target, weapon, res))
     dmg_lines: list[str] = []
     if res["hit"] and res["damage"]:

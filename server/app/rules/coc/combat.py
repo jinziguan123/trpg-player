@@ -397,11 +397,14 @@ def advance_turn(state: dict) -> dict:
     return state  # 无人可动（由 check_combat_end 收尾）
 
 
-def heuristic_defense(defender: dict, is_firearm: bool) -> str:
+def heuristic_defense(defender: dict, is_firearm: bool, defender_grappled: bool = False) -> str:
     """NPC 防御者的自动防御选择（真人防御走交互，不经此）。
-    火器只能闪避；近战：好斗者反击，其余闪避。"""
+    火器只能闪避；近战：好斗者反击，其余闪避。
+    被擒抱（defender_grappled）且近战 → 无法闪避，只能反击。defender_grappled 默认 False 向后兼容。"""
     if is_firearm:
         return "dodge"
+    if defender_grappled:
+        return "fight_back"
     return "fight_back" if defender.get("combat_ai") == "aggressive" else "dodge"
 
 

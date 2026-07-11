@@ -187,6 +187,12 @@ def test_heuristic_defense_firearm_never_fight_back():
     assert heuristic_defense({"combat_ai": "cautious"}, is_firearm=False) == "dodge"
 
 
+def test_heuristic_defense_grappled_forces_fight_back():
+    from app.rules.coc.combat import heuristic_defense
+    # 被擒抱的 NPC 近战防御无法闪避，强制反击（哪怕平时 cautious 会闪避）
+    assert heuristic_defense({"combat_ai": "cautious"}, is_firearm=False, defender_grappled=True) == "fight_back"
+
+
 def test_resolve_wound_major_wound_triggers_con_check(monkeypatch):
     import app.rules.coc.checks as checks
     from app.rules.coc import combat

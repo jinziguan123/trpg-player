@@ -43,7 +43,8 @@ async def combat_action(
     db: Session = Depends(get_db),
     token: str | None = Depends(player_token),
 ):
-    """提交一个战斗行动（attack/dodge/fight_back/flee/other）。仅当轮到本玩家时有效。"""
+    """提交一个战斗行动（attack/dodge/fight_back/flee/first_aid/observe/maneuver/reload/aim/other）。
+    仅当轮到本玩家时有效。"""
     session = session_service.get_session(db, session_id)
     if not session:
         raise HTTPException(404, "会话不存在")
