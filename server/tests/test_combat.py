@@ -185,3 +185,32 @@ def test_heuristic_defense_firearm_never_fight_back():
     assert heuristic_defense({"combat_ai": "aggressive"}, is_firearm=True) in ("dodge", "cover")
     assert heuristic_defense({"combat_ai": "aggressive"}, is_firearm=False) == "fight_back"
     assert heuristic_defense({"combat_ai": "cautious"}, is_firearm=False) == "dodge"
+
+
+def test_resolve_wound_major_wound_triggers_con_check(monkeypatch):
+    import app.rules.coc.checks as checks
+    from app.rules.coc import combat
+    monkeypatch.setattr(checks, "roll_percentile", lambda: 99)  # 体质检定必失败
+    target = {"skills": {}, "base_attributes": {"CON": 50}, "system_data": {}}
+    r = combat.resolve_wound(hp=10, max_hp=13, damage=7, defender_data=target)
+    assert r["new_hp"] == 3
+    assert r["status"] == "unconscious"
+    assert any("重伤" in line for line in r["lines"])
+
+
+def test_resolve_wound_minor_hit_no_status_change():
+    from app.rules.coc import combat
+    r = combat.resolve_wound(hp=10, max_hp=13, damage=2, defender_data={})
+    assert r["new_hp"] == 8 and r["status"] == "ok"
+
+
+def test_resolve_wound_zero_hp_is_dying():
+    from app.rules.coc import combat
+    r = combat.resolve_wound(hp=3, max_hp=13, damage=5, defender_data={})
+    assert r["new_hp"] == 0 and r["status"] == "dying"
+
+
+def test_resolve_wound_overkill_is_dead():
+    from app.rules.coc import combat
+    r = combat.resolve_wound(hp=1, max_hp=13, damage=99, defender_data={})
+    assert r["status"] == "dead"

@@ -248,6 +248,27 @@ def resolve_attack(
     return result
 
 
+def resolve_wound(hp: int, max_hp: int, damage: int, defender_data: dict) -> dict:
+    """结算一次伤害的 HP 与状态迁移（纯规则，不碰 DB）。
+    返回 {new_hp, status, lines}。重伤（单击≥半血）触发 CON 检定，失败则昏迷。"""
+    max_hp = max_hp or 1
+    raw = hp - damage
+    new_hp = max(0, raw)
+    lines = [f"受到 {damage} 点伤害（HP {hp}→{new_hp}）"]
+    major = damage >= max_hp // 2 and max_hp > 0
+    if raw <= -max_hp:
+        return {"new_hp": new_hp, "status": "dead", "lines": lines + ["当场毙命！"]}
+    if new_hp <= 0:
+        return {"new_hp": 0, "status": "dying", "lines": lines + ["濒死，需急救/医学稳定。"]}
+    if major:
+        con = resolve_skill_check(defender_data, "体质", "normal")
+        lines.append(f"重伤体质检定：{con.description}")
+        if con.outcome in ("failure", "fumble"):
+            return {"new_hp": new_hp, "status": "unconscious", "lines": lines + ["眼前一黑，昏迷倒地！"]}
+        return {"new_hp": new_hp, "status": "major_wound", "lines": lines}
+    return {"new_hp": new_hp, "status": "ok", "lines": lines}
+
+
 # ── 参战方存活 / 结束判定 / 回合推进 / 启发式 ──────────────────────────
 
 _DOWN_STATUS = {"dead", "dying", "fled"}
