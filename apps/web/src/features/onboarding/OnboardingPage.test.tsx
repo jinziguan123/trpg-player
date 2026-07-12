@@ -96,4 +96,7 @@ it('首页提供唯一的新手团主入口', () => {
   const entries = screen.getAllByRole('link', { name: /体验新手团/ })
   expect(entries).toHaveLength(1)
   expect(entries[0]).toHaveAttribute('href', '/onboarding')
+  expect(entries[0]).toHaveClass('whitespace-nowrap', '!px-3')
+  expect(screen.getByRole('heading', { name: 'TRPG Player' })).toHaveClass('text-3xl')
+  expect(screen.getByText('AI 驱动的跑团平台')).toHaveClass('text-sm')
 })
