@@ -78,18 +78,26 @@ export function ModuleDetailPage() {
   }, [id, isNew, navigate])
 
   const updateWS = (k: string, v: unknown) => setData((d) => ({ ...d, world_setting: { ...d.world_setting, [k]: v } }))
-  const upd = useCallback(<K extends 'scenes' | 'npcs' | 'clues'>(key: K, i: number, patch: Partial<ModuleData[K][number]>) =>
-    setData((d) => ({ ...d, [key]: (d[key] as Record<string, unknown>[]).map((it, j) => (j === i ? { ...it, ...patch } : it)) })), [])
+  const updScene = useCallback((i: number, patch: Partial<Scene>) =>
+    setData((d) => ({ ...d, scenes: d.scenes.map((it, j) => (j === i ? { ...it, ...patch } : it)) })), [])
+  const updNpc = useCallback((i: number, patch: Partial<NPC>) =>
+    setData((d) => ({ ...d, npcs: d.npcs.map((it, j) => (j === i ? { ...it, ...patch } : it)) })), [])
+  const updClue = useCallback((i: number, patch: Partial<Clue>) =>
+    setData((d) => ({ ...d, clues: d.clues.map((it, j) => (j === i ? { ...it, ...patch } : it)) })), [])
   const removeAt = (key: 'scenes' | 'npcs' | 'clues', i: number) =>
     setData((d) => ({ ...d, [key]: (d[key] as unknown[]).filter((_, j) => j !== i) }))
 
   // 剧情变体（场景/NPC 的 states）增删改
-  const addState = (key: 'scenes' | 'npcs', i: number) =>
-    setData((d) => ({ ...d, [key]: (d[key] as Record<string, unknown>[]).map((it, ii) => ii === i ? { ...it, states: [...((it.states as unknown[]) || []), { when: [] }] } : it) }))
-  const updState = (key: 'scenes' | 'npcs', i: number, j: number, patch: Record<string, unknown>) =>
-    setData((d) => ({ ...d, [key]: (d[key] as Record<string, unknown>[]).map((it, ii) => ii === i ? { ...it, states: ((it.states as Record<string, unknown>[]) || []).map((st, jj) => jj === j ? { ...st, ...patch } : st) } : it) }))
-  const rmState = (key: 'scenes' | 'npcs', i: number, j: number) =>
-    setData((d) => ({ ...d, [key]: (d[key] as Record<string, unknown>[]).map((it, ii) => ii === i ? { ...it, states: ((it.states as unknown[]) || []).filter((_, jj) => jj !== j) } : it) }))
+  const addSceneState = (i: number) => updScene(i, { states: [...(data.scenes[i]?.states || []), { when: [] }] })
+  const updSceneState = (i: number, j: number, patch: Partial<SceneState>) =>
+    updScene(i, { states: (data.scenes[i]?.states || []).map((st, jj) => jj === j ? { ...st, ...patch } : st) })
+  const rmSceneState = (i: number, j: number) =>
+    updScene(i, { states: (data.scenes[i]?.states || []).filter((_, jj) => jj !== j) })
+  const addNpcState = (i: number) => updNpc(i, { states: [...(data.npcs[i]?.states || []), { when: [] }] })
+  const updNpcState = (i: number, j: number, patch: Partial<NpcState>) =>
+    updNpc(i, { states: (data.npcs[i]?.states || []).map((st, jj) => jj === j ? { ...st, ...patch } : st) })
+  const rmNpcState = (i: number, j: number) =>
+    updNpc(i, { states: (data.npcs[i]?.states || []).filter((_, jj) => jj !== j) })
 
   // 触发器（模组级 triggers）增删改
   const addTrigger = () => setData((d) => ({ ...d, triggers: [...d.triggers, { id: genId('trig'), when: '', set_flags: [], clear_flags: [] }] }))
@@ -210,27 +218,27 @@ export function ModuleDetailPage() {
       <Section title={`场景（${data.scenes.length}）`} onAdd={edit ? () => setData((d) => ({ ...d, scenes: [...d.scenes, { id: genId('scene'), name: '', description: '', danger: 'calm', atmosphere: '', connections: [] }] })) : undefined}>
         {data.scenes.map((s, i) => (
           <ItemCard key={s.id || i} onRemove={edit ? () => removeAt('scenes', i) : undefined}>
-            <Row label="名称">{edit ? <TextInput value={sceneName(s) === '(未命名场景)' ? '' : sceneName(s)} onChange={(v) => upd('scenes', i, { name: v })} /> : <span className="font-semibold">{sceneName(s)}</span>}</Row>
-            <Row label="描述">{edit ? <TextInput value={s.description || ''} onChange={(v) => upd('scenes', i, { description: v })} multiline /> : <span className="whitespace-pre-wrap">{s.description || '—'}</span>}</Row>
+            <Row label="名称">{edit ? <TextInput value={sceneName(s) === '(未命名场景)' ? '' : sceneName(s)} onChange={(v) => updScene(i, { name: v })} /> : <span className="font-semibold">{sceneName(s)}</span>}</Row>
+            <Row label="描述">{edit ? <TextInput value={s.description || ''} onChange={(v) => updScene(i, { description: v })} multiline /> : <span className="whitespace-pre-wrap">{s.description || '—'}</span>}</Row>
             <Row label="危险度">{edit ? (
-              <Select value={s.danger || 'calm'} onValueChange={(v) => upd('scenes', i, { danger: v })}>
+              <Select value={s.danger || 'calm'} onValueChange={(v) => updScene(i, { danger: v })}>
                 <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
                 <SelectContent>{DANGER_OPTS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
               </Select>
             ) : <span className="badge" style={{ color: dangerMeta(s.danger)?.color, borderColor: dangerMeta(s.danger)?.color }}>{dangerMeta(s.danger)?.label || '平静'}</span>}</Row>
-            <Row label="氛围">{edit ? <TextInput value={s.atmosphere || ''} onChange={(v) => upd('scenes', i, { atmosphere: v })} placeholder="感官+情绪基调，如『腐臭、低压、随时塌方』" /> : <span style={{ color: 'var(--color-text-secondary)' }}>{s.atmosphere || '—'}</span>}</Row>
-            <Row label="连接">{edit ? <TextInput value={(s.connections || []).join(', ')} onChange={(v) => upd('scenes', i, { connections: v.split(/[,，]/).map((x) => x.trim()).filter(Boolean) })} placeholder="目标场景 id，逗号分隔" /> : <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{(s.connections || []).join('、') || '—'}　id: {s.id}</span>}</Row>
-            <VariantList states={s.states} edit={edit} onAdd={() => addState('scenes', i)} onRemove={(j) => rmState('scenes', i, j)} onWhen={(j, f) => updState('scenes', i, j, { when: f })}
+            <Row label="氛围">{edit ? <TextInput value={s.atmosphere || ''} onChange={(v) => updScene(i, { atmosphere: v })} placeholder="感官+情绪基调，如『腐臭、低压、随时塌方』" /> : <span style={{ color: 'var(--color-text-secondary)' }}>{s.atmosphere || '—'}</span>}</Row>
+            <Row label="连接">{edit ? <TextInput value={(s.connections || []).join(', ')} onChange={(v) => updScene(i, { connections: v.split(/[,，]/).map((x) => x.trim()).filter(Boolean) })} placeholder="目标场景 id，逗号分隔" /> : <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{(s.connections || []).join('、') || '—'}　id: {s.id}</span>}</Row>
+            <VariantList states={s.states} edit={edit} onAdd={() => addSceneState(i)} onRemove={(j) => rmSceneState(i, j)} onWhen={(j, f) => updSceneState(i, j, { when: f })}
               renderFields={(st, j) => (
                 <>
                   <Row label="危险度">{edit ? (
-                    <Select value={(st.danger as string) || 'calm'} onValueChange={(v) => updState('scenes', i, j, { danger: v })}>
+                    <Select value={st.danger || 'calm'} onValueChange={(v) => updSceneState(i, j, { danger: v })}>
                       <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
                       <SelectContent>{DANGER_OPTS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
                     </Select>
-                  ) : <span className="badge" style={{ color: dangerMeta(st.danger as string)?.color, borderColor: dangerMeta(st.danger as string)?.color }}>{dangerMeta(st.danger as string)?.label || '—'}</span>}</Row>
-                  <Row label="氛围">{edit ? <TextInput value={(st.atmosphere as string) || ''} onChange={(v) => updState('scenes', i, j, { atmosphere: v })} placeholder="切换后的氛围" /> : <span className="text-xs">{(st.atmosphere as string) || '—'}</span>}</Row>
-                  <Row label="描述">{edit ? <TextInput value={(st.description as string) || ''} onChange={(v) => updState('scenes', i, j, { description: v })} multiline placeholder="（可选）切换后的场景描述" /> : <span className="whitespace-pre-wrap text-xs">{(st.description as string) || '—'}</span>}</Row>
+                  ) : <span className="badge" style={{ color: dangerMeta(st.danger)?.color, borderColor: dangerMeta(st.danger)?.color }}>{dangerMeta(st.danger)?.label || '—'}</span>}</Row>
+                  <Row label="氛围">{edit ? <TextInput value={st.atmosphere || ''} onChange={(v) => updSceneState(i, j, { atmosphere: v })} placeholder="切换后的氛围" /> : <span className="text-xs">{st.atmosphere || '—'}</span>}</Row>
+                  <Row label="描述">{edit ? <TextInput value={st.description || ''} onChange={(v) => updSceneState(i, j, { description: v })} multiline placeholder="（可选）切换后的场景描述" /> : <span className="whitespace-pre-wrap text-xs">{st.description || '—'}</span>}</Row>
                 </>
               )} />
           </ItemCard>
@@ -242,21 +250,21 @@ export function ModuleDetailPage() {
       <Section title={`NPC（${data.npcs.length}）`} onAdd={edit ? () => setData((d) => ({ ...d, npcs: [...d.npcs, { id: genId('npc'), name: '', description: '', personality: '', secrets: [], initial_location: '', skills: {} }] })) : undefined}>
         {data.npcs.map((n, i) => (
           <ItemCard key={n.id || i} onRemove={edit ? () => removeAt('npcs', i) : undefined}>
-            <Row label="姓名">{edit ? <TextInput value={n.name || ''} onChange={(v) => upd('npcs', i, { name: v })} /> : <span className="font-semibold">{n.name || '(未命名)'}</span>}</Row>
-            <Row label="描述">{edit ? <TextInput value={n.description || ''} onChange={(v) => upd('npcs', i, { description: v })} multiline /> : <span className="whitespace-pre-wrap">{n.description || '—'}</span>}</Row>
-            <Row label="性格">{edit ? <TextInput value={n.personality || ''} onChange={(v) => upd('npcs', i, { personality: v })} /> : <span>{n.personality || '—'}</span>}</Row>
-            <Row label="生平">{edit ? <TextInput value={n.background || ''} onChange={(v) => upd('npcs', i, { background: v })} multiline placeholder="来历渊源（与秘密区分）" /> : <span className="whitespace-pre-wrap">{n.background || '—'}</span>}</Row>
-            <Row label="初始位置">{edit ? <TextInput value={n.initial_location || ''} onChange={(v) => upd('npcs', i, { initial_location: v })} placeholder="场景 id" /> : <span className="text-xs">{n.initial_location || '—'}</span>}</Row>
-            <Row label="属性">{<AttrGrid attrs={n.attributes} edit={edit} onChange={(a) => upd('npcs', i, { attributes: a })} />}</Row>
-            <Row label={<span style={{ color: 'var(--color-danger)' }} className="inline-flex items-center gap-0.5"><GiPadlock />秘密</span>}>{edit ? <TextInput value={(n.secrets || []).join('\n')} onChange={(v) => upd('npcs', i, { secrets: v.split('\n') })} multiline placeholder="每行一条，仅 KP 可见" /> : <span className="whitespace-pre-wrap" style={{ color: 'var(--color-danger)' }}>{(n.secrets || []).join('\n') || '—'}</span>}</Row>
-            <Row label="技能">{edit ? <TextInput value={skillsToText(n.skills)} onChange={(v) => upd('npcs', i, { skills: parseSkills(v) })} multiline placeholder="每行 技能: 数值，如 侦查: 60" /> : <span className="text-xs">{skillsToText(n.skills).replace(/\n/g, '、') || '—'}</span>}</Row>
-            <VariantList states={n.states} edit={edit} onAdd={() => addState('npcs', i)} onRemove={(j) => rmState('npcs', i, j)} onWhen={(j, f) => updState('npcs', i, j, { when: f })}
+            <Row label="姓名">{edit ? <TextInput value={n.name || ''} onChange={(v) => updNpc(i, { name: v })} /> : <span className="font-semibold">{n.name || '(未命名)'}</span>}</Row>
+            <Row label="描述">{edit ? <TextInput value={n.description || ''} onChange={(v) => updNpc(i, { description: v })} multiline /> : <span className="whitespace-pre-wrap">{n.description || '—'}</span>}</Row>
+            <Row label="性格">{edit ? <TextInput value={n.personality || ''} onChange={(v) => updNpc(i, { personality: v })} /> : <span>{n.personality || '—'}</span>}</Row>
+            <Row label="生平">{edit ? <TextInput value={n.background || ''} onChange={(v) => updNpc(i, { background: v })} multiline placeholder="来历渊源（与秘密区分）" /> : <span className="whitespace-pre-wrap">{n.background || '—'}</span>}</Row>
+            <Row label="初始位置">{edit ? <TextInput value={n.initial_location || ''} onChange={(v) => updNpc(i, { initial_location: v })} placeholder="场景 id" /> : <span className="text-xs">{n.initial_location || '—'}</span>}</Row>
+            <Row label="属性">{<AttrGrid attrs={n.attributes} edit={edit} onChange={(a) => updNpc(i, { attributes: a })} />}</Row>
+            <Row label={<span style={{ color: 'var(--color-danger)' }} className="inline-flex items-center gap-0.5"><GiPadlock />秘密</span>}>{edit ? <TextInput value={(n.secrets || []).join('\n')} onChange={(v) => updNpc(i, { secrets: v.split('\n') })} multiline placeholder="每行一条，仅 KP 可见" /> : <span className="whitespace-pre-wrap" style={{ color: 'var(--color-danger)' }}>{(n.secrets || []).join('\n') || '—'}</span>}</Row>
+            <Row label="技能">{edit ? <TextInput value={skillsToText(n.skills)} onChange={(v) => updNpc(i, { skills: parseSkills(v) })} multiline placeholder="每行 技能: 数值，如 侦查: 60" /> : <span className="text-xs">{skillsToText(n.skills).replace(/\n/g, '、') || '—'}</span>}</Row>
+            <VariantList states={n.states} edit={edit} onAdd={() => addNpcState(i)} onRemove={(j) => rmNpcState(i, j)} onWhen={(j, f) => updNpcState(i, j, { when: f })}
               renderFields={(st, j) => (
                 <>
-                  <Row label="性格">{edit ? <TextInput value={(st.personality as string) || ''} onChange={(v) => updState('npcs', i, j, { personality: v })} placeholder="切换后的态度" /> : <span className="text-xs">{(st.personality as string) || '—'}</span>}</Row>
-                  <Row label="位置">{edit ? <TextInput value={(st.initial_location as string) || ''} onChange={(v) => updState('npcs', i, j, { initial_location: v })} placeholder="切换后的场景 id" /> : <span className="text-xs">{(st.initial_location as string) || '—'}</span>}</Row>
+                  <Row label="性格">{edit ? <TextInput value={st.personality || ''} onChange={(v) => updNpcState(i, j, { personality: v })} placeholder="切换后的态度" /> : <span className="text-xs">{st.personality || '—'}</span>}</Row>
+                  <Row label="位置">{edit ? <TextInput value={st.initial_location || ''} onChange={(v) => updNpcState(i, j, { initial_location: v })} placeholder="切换后的场景 id" /> : <span className="text-xs">{st.initial_location || '—'}</span>}</Row>
                   <Row label="存活">{edit ? (
-                    <Select value={st.alive === false ? 'false' : 'true'} onValueChange={(v) => updState('npcs', i, j, { alive: v === 'true' })}>
+                    <Select value={st.alive === false ? 'false' : 'true'} onValueChange={(v) => updNpcState(i, j, { alive: v === 'true' })}>
                       <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
                       <SelectContent><SelectItem value="true">存活</SelectItem><SelectItem value="false">死亡</SelectItem></SelectContent>
                     </Select>
@@ -272,10 +280,10 @@ export function ModuleDetailPage() {
       <Section title={`线索（${data.clues.length}）`} onAdd={edit ? () => setData((d) => ({ ...d, clues: [...d.clues, { id: genId('clue'), name: '', description: '', location: '', trigger_condition: '' }] })) : undefined}>
         {data.clues.map((c, i) => (
           <ItemCard key={c.id || i} onRemove={edit ? () => removeAt('clues', i) : undefined}>
-            <Row label="名称">{edit ? <TextInput value={c.name || ''} onChange={(v) => upd('clues', i, { name: v })} /> : <span className="font-semibold" style={{ color: 'var(--color-danger)' }}>{c.name || '(未命名)'}</span>}</Row>
-            <Row label="内容">{edit ? <TextInput value={c.description || ''} onChange={(v) => upd('clues', i, { description: v })} multiline /> : <span className="whitespace-pre-wrap" style={{ color: 'var(--color-danger)' }}>{c.description || '—'}</span>}</Row>
-            <Row label="位置">{edit ? <TextInput value={c.location || ''} onChange={(v) => upd('clues', i, { location: v })} placeholder="场景 id" /> : <span className="text-xs">{c.location || '—'}</span>}</Row>
-            <Row label="发现条件">{edit ? <TextInput value={c.trigger_condition || ''} onChange={(v) => upd('clues', i, { trigger_condition: v })} multiline /> : <span className="whitespace-pre-wrap">{c.trigger_condition || '—'}</span>}</Row>
+            <Row label="名称">{edit ? <TextInput value={c.name || ''} onChange={(v) => updClue(i, { name: v })} /> : <span className="font-semibold" style={{ color: 'var(--color-danger)' }}>{c.name || '(未命名)'}</span>}</Row>
+            <Row label="内容">{edit ? <TextInput value={c.description || ''} onChange={(v) => updClue(i, { description: v })} multiline /> : <span className="whitespace-pre-wrap" style={{ color: 'var(--color-danger)' }}>{c.description || '—'}</span>}</Row>
+            <Row label="位置">{edit ? <TextInput value={c.location || ''} onChange={(v) => updClue(i, { location: v })} placeholder="场景 id" /> : <span className="text-xs">{c.location || '—'}</span>}</Row>
+            <Row label="发现条件">{edit ? <TextInput value={c.trigger_condition || ''} onChange={(v) => updClue(i, { trigger_condition: v })} multiline /> : <span className="whitespace-pre-wrap">{c.trigger_condition || '—'}</span>}</Row>
           </ItemCard>
         ))}
         {data.clues.length === 0 && <Empty />}
@@ -304,13 +312,13 @@ export function ModuleDetailPage() {
 }
 
 /** 剧情变体列表（场景/NPC 的 states）：每个变体一个「条件(when) + 覆盖字段」卡片。 */
-function VariantList({ states, edit, onAdd, onRemove, onWhen, renderFields }: {
-  states?: Record<string, unknown>[]
+function VariantList<T extends { when?: string[] }>({ states, edit, onAdd, onRemove, onWhen, renderFields }: {
+  states?: T[]
   edit: boolean
   onAdd: () => void
   onRemove: (j: number) => void
   onWhen: (j: number, flags: string[]) => void
-  renderFields: (st: Record<string, unknown>, j: number) => React.ReactNode
+  renderFields: (st: T, j: number) => React.ReactNode
 }) {
   const list = states || []
   if (!edit && list.length === 0) return null
@@ -324,7 +332,7 @@ function VariantList({ states, edit, onAdd, onRemove, onWhen, renderFields }: {
       {list.map((st, j) => (
         <div key={j} className="rounded p-1.5 mb-1 relative" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
           {edit && <button onClick={() => onRemove(j)} className="absolute top-1 right-1 p-0.5" style={{ color: 'var(--color-danger)' }} title="删除变体"><Trash2 size={11} /></button>}
-          <Row label="条件">{edit ? <TextInput value={csv(st.when as string[])} onChange={(v) => onWhen(j, parseCsv(v))} placeholder="标志名，逗号分隔（全部激活才生效）" /> : <span className="text-xs">{csv(st.when as string[]) || '（恒生效）'}</span>}</Row>
+          <Row label="条件">{edit ? <TextInput value={csv(st.when)} onChange={(v) => onWhen(j, parseCsv(v))} placeholder="标志名，逗号分隔（全部激活才生效）" /> : <span className="text-xs">{csv(st.when) || '（恒生效）'}</span>}</Row>
           {renderFields(st, j)}
         </div>
       ))}

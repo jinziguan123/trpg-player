@@ -17,9 +17,10 @@ import { ImprovisedNpcModal } from '../components/game/ImprovisedNpcModal'
 import { CombatStage, type CombatState, type PendingReaction, type CombatLogEntry } from '../components/game/CombatStage'
 import { ChasePanel, type ChaseState } from '../components/game/ChasePanel'
 import { Modal } from '../components/ui/modal'
-import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiPositionMarker, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter } from 'react-icons/gi'
+import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter } from 'react-icons/gi'
 import { Copy, Bot, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
+import { parseChaseState, parseCombatState, parsePendingReaction } from '../lib/liveState'
 
 interface KnownLocation { id: string; name: string; current: boolean; visited: boolean; connections?: string[]; party?: string[] }
 interface SearchHit { id: string; sequence_num: number; event_type: string; actor_name: string; content: string }
@@ -381,15 +382,15 @@ export function GameSessionPage() {
     if (t === 'combat_start') {
       // 新战斗：日志下限取后端透传的 started_seq（本场开打前最大 seq），抽屉只收本场结算、不掺上一场；
       // 后端未带时回退到客户端已见最大 seq。
-      const meta = (chunk.metadata as CombatState) || null
+      const meta = parseCombatState(chunk.metadata)
       setCombat(meta); setPendingReaction(null)
       setCombatLogSince(meta?.started_seq ?? maxSeqSeen.current)
       return
     }
-    if (t === 'combat_state') { setCombat((chunk.metadata as CombatState) || null); setPendingReaction(null); return }  // 续跑广播新态 → 清反应提示
-    if (t === 'combat_reaction_prompt') { setPendingReaction((chunk.metadata as PendingReaction) || null); return }  // NPC 攻击真人：弹反应按钮
+    if (t === 'combat_state') { setCombat(parseCombatState(chunk.metadata)); setPendingReaction(null); return }  // 续跑广播新态 → 清反应提示
+    if (t === 'combat_reaction_prompt') { setPendingReaction(parsePendingReaction(chunk.metadata)); return }  // NPC 攻击真人：弹反应按钮
     if (t === 'combat_end') { setCombat(null); setPendingReaction(null); return }  // 结果那句话已由后端落库为消息，不额外处理
-    if (t === 'chase_start' || t === 'chase_state') { setChase((chunk.metadata as ChaseState) || null); return }
+    if (t === 'chase_start' || t === 'chase_state') { setChase(parseChaseState(chunk.metadata)); return }
     if (t === 'chase_end') { setChase(null); return }  // 结果那句话已由后端落库为消息，不额外处理
     if (t === 'event_delete') { if (chunk.id) removeMessage(chunk.id); return }
     if (t === 'event_update') { if (chunk.id) updateMessage(chunk.id, chunk.content || ''); return }

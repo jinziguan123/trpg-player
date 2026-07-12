@@ -273,16 +273,16 @@ export function ModulePage() {
                 {m.description}
               </p>
               <div className="flex flex-wrap gap-1.5 mt-2">
-                {m.world_setting?.era && (
+                {Boolean(m.world_setting?.era) && (
                   <span className="badge">{String(m.world_setting.era)}</span>
                 )}
-                {m.world_setting?.region && (
+                {Boolean(m.world_setting?.region) && (
                   <span className="badge">{String(m.world_setting.region)}</span>
                 )}
-                {m.world_setting?.player_count && (
+                {Boolean(m.world_setting?.player_count) && (
                   <span className="badge">{String(m.world_setting.player_count)}人</span>
                 )}
-                {m.world_setting?.difficulty && (
+                {Boolean(m.world_setting?.difficulty) && (
                   <span
                     className="badge"
                     style={{

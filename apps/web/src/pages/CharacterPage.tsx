@@ -70,15 +70,6 @@ const DRAFT_KEY = 'trpg_character_draft'
 const STEPS = ['基本信息', '属性设定', '职业选择', '技能加点', '背景故事', '随身物品'] as const
 type Step = (typeof STEPS)[number]
 
-interface WeaponItem {
-  name: string
-  skill: string
-  damage: string
-  range: string
-  attacks: number
-  ammo: string
-}
-
 // Excel 导入与 AI 建卡返回的统一数据结构
 interface ImportedCharacterData {
   name?: string
@@ -87,7 +78,7 @@ interface ImportedCharacterData {
   skills?: Record<string, number>
   backstory?: string
   equipment?: string[]
-  weapons?: WeaponItem[]
+  weapons?: Record<string, unknown>[]
   system_data?: {
     gender?: string
     residence?: string
@@ -549,7 +540,7 @@ export function CharacterPage() {
     }
 
     if (data.weapons && data.weapons.length > 0) {
-      setWeapons(data.weapons.map((w) => normalizeWeapon(w as Record<string, unknown>)))
+      setWeapons(data.weapons.map(normalizeWeapon))
     }
 
     // 查找匹配职业；找不到则建为自定义职业

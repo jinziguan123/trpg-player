@@ -54,7 +54,7 @@ function hasWebGL(): boolean {
   } catch { return false }
 }
 
-export const DiceRoller = forwardRef<DiceRollerHandle, Record<string, never>>(function DiceRoller(_props, ref) {
+export const DiceRoller = forwardRef<DiceRollerHandle, Record<never, never>>(function DiceRoller(_props, ref) {
   const containerIdRef = useRef<string>(`dice-box-container-${++containerSeq}`)
   const containerRef = useRef<HTMLDivElement>(null)
   const boxRef = useRef<DiceBoxInstance | null>(null)
@@ -80,7 +80,7 @@ export const DiceRoller = forwardRef<DiceRollerHandle, Record<string, never>>(fu
       }
       try {
         const mod = await import('@3d-dice/dice-box-threejs')
-        const DiceBox = (mod as { default: new (sel: string, cfg: Record<string, unknown>) => DiceBoxInstance }).default
+        const DiceBox = mod.default
         // 传 CSS 选择器字符串（库内部 document.querySelector）——不能传 HTMLElement。
         const box = new DiceBox(`#${containerIdRef.current}`, {
           assetPath: ASSET_PATH,
