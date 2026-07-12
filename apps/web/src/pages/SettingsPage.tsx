@@ -9,6 +9,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { THEMES, getTheme, setTheme, type Theme } from '@/lib/theme'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { getOnboardingReturnTo } from '@/features/onboarding/navigation'
 
 /* ---------- 类型定义 ---------- */
 
@@ -79,6 +81,9 @@ type SettingsTab = (typeof SETTINGS_TABS)[number]['key']
 
 export function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('ai')
+  const location = useLocation()
+  const navigate = useNavigate()
+  const returnTo = getOnboardingReturnTo(location.state)
 
   return (
     <div style={{ display: 'flex', gap: 0, height: '100%', minHeight: 0 }}>
@@ -139,7 +144,11 @@ export function SettingsPage() {
 
       {/* 右侧内容区 */}
       <div style={{ flex: 1, padding: '1rem 1.5rem', overflow: 'auto' }}>
-        {activeTab === 'ai' && <AISettingsPanel />}
+        {activeTab === 'ai' && (
+          <AISettingsPanel
+            onTestSuccess={returnTo ? () => navigate(returnTo, { replace: true }) : undefined}
+          />
+        )}
         {activeTab === 'appearance' && <AppearanceSettingsPanel />}
         {activeTab === 'rag' && <RagStatsPanel />}
       </div>
@@ -447,7 +456,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 /* ---------- AI 配置面板 ---------- */
 
-function AISettingsPanel() {
+function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
   const [profiles, setProfiles] = useState<AIProfile[]>([])
   const [loading, setLoading] = useState(true)
   const [editingId, setEditingId] = useState<string | null>(null) // null=列表模式, 'new'=新建, 其他=编辑
@@ -556,6 +565,7 @@ function AISettingsPanel() {
       )
       if (result.success) {
         toast.success(`${result.message}（${result.latency_ms}ms）`)
+        onTestSuccess?.()
       } else {
         toast.error(`连接失败: ${result.message}`)
       }

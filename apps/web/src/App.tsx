@@ -10,6 +10,7 @@ import { GamePage } from './pages/GamePage'
 import { GameSessionPage } from './pages/GameSessionPage'
 import { RoomLobbyPage } from './pages/RoomLobbyPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { OnboardingPage } from './features/onboarding/OnboardingPage'
 import './index.css'
 
 export default function App() {
@@ -25,6 +26,7 @@ export default function App() {
           <Route path="rulebooks" element={<RulebookPage />} />
           <Route path="characters" element={<CharacterPage />} />
           <Route path="game" element={<GamePage />} />
+          <Route path="onboarding" element={<OnboardingPage />} />
           <Route path="room/:sessionId" element={<RoomLobbyPage />} />
           <Route path="game/:sessionId" element={<GameSessionPage />} />
           <Route path="settings" element={<SettingsPage />} />
