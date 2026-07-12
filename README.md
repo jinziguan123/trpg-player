@@ -1,166 +1,127 @@
 # TRPG Player
 
-AI 驱动的桌面角色扮演游戏（TRPG）平台，让单个玩家也能快速开启一场跑团。
+TRPG Player 是一个本地优先的 AI 跑团桌面应用：AI 担任主持人和 NPC，玩家可独自开团，也可在可信局域网内邀请其他玩家加入。
 
-AI 扮演守秘人（KP）和 NPC，玩家专注于角色扮演。当前支持 CoC（克苏鲁的呼唤）七版规则。
+> 当前项目适合本地桌面使用、开发测试和可信局域网联机。它没有面向公网部署所需的账号体系、强身份认证、TLS 终止、权限隔离和抗滥用措施，请勿直接暴露到互联网。
 
-## 核心功能
+## 功能状态
 
-- **模组上传与 AI 解析**：上传模组文本文件，AI 自动提取场景、NPC、线索等结构化数据
-- **CoC 车卡系统**：属性掷骰（三选一）、20+ 职业选择、职业/兴趣技能加点、背景故事
-- **AI 文字跑团**：KP Agent 流式叙述 + NPC Agent 独立对话，SSE 实时推送
-- **骰子检定**：CoC 七版检定规则，AI 叙述与骰子结果严格一致（先掷骰后叙述结果）
-- **信息隔离**：EventLog 的 visibility 机制确保 NPC 只知道应该知道的信息
-- **角色卡面板**：游戏界面右侧实时展示角色属性（九维雷达图）、技能、道具
-- **联机游玩体验**：支持远程联机
+### 已实现
 
-## 技术栈
+- 首页一键体验原创示例团《雾港失灯事件》，自动准备预设调查员；缺少 AI 配置时先进入设置，连接测试成功后返回继续；
+- 模组导入与 AI 结构化解析，支持文本、PDF、Word 和常见图片格式，图片解析需要视觉模型；
+- CoC 七版完整车卡向导、掷骰/自定义属性、职业与技能、Excel 导入、AI 生成、草稿和角色编辑；
+- AI 主持、NPC/队友协作、SSE 流式叙述、事件历史、上下文预算与规则书 RAG；
+- CoC 检定、理智、结构化战斗、追逐、已知地点调查板和分头行动；
+- 多席位房间、房间码、等待大厅、真人认领与可信局域网主机连接；
+- Tauri 桌面外壳、PyInstaller 后端 sidecar、SQLite 本地数据和 macOS/Windows 构建流程。
 
-| 层 | 选型 |
-|---|---|
-| 前端 | React 19 + TypeScript + Vite 8 + Tailwind CSS 4 + Zustand 5 |
-| 后端 | Python 3.10+ + FastAPI + SQLAlchemy + Alembic |
-| 数据库 | SQLite（本地文件，零配置） |
-| AI | DeepSeek API（OpenAI 兼容格式），可通过 LLMProvider 抽象切换 |
-| 包管理 | pnpm workspace monorepo |
+### 实验性
 
-## 项目结构
+- AI 模组解析、开场和长局叙事质量受所选模型、上下文窗口与供应商兼容性影响；
+- 工具调用模式、战斗子代理、规则书检索和图片解析仍需按模型验证；
+- DnD 可作为模组/角色数据类型选择，但完整规则引擎和游戏流程尚未实现；
+- 桌面构建尚未提供正式签名、公证、自动更新或经过内容审计的公开安装包；
+- 局域网身份使用本地生成的 `X-Player-Token`，只能用于可信网络中的轻量席位归属。
 
-```
-trpg-player/
-├── apps/web/                    # React 前端
-│   └── src/
-│       ├── api/                 # API client + SSE 流式
-│       ├── stores/              # Zustand 状态管理
-│       ├── components/          # 布局、角色卡、UI 组件
-│       └── pages/               # 首页、模组、角色、游戏
-├── packages/shared/             # 前后端共享类型
-├── server/                      # Python 后端
-│   └── app/
-│       ├── api/                 # FastAPI 路由
-│       ├── services/            # 业务逻辑（ChatService 为核心协调器）
-│       ├── ai/                  # AI Agent 系统（KP/NPC Agent + ContextManager）
-│       ├── rules/               # 规则引擎（CoC 检定、车卡、职业）
-│       ├── models/              # SQLAlchemy ORM 模型
-│       └── schemas/             # Pydantic 请求/响应模型
-├── package.json                 # pnpm workspace root
-└── pnpm-workspace.yaml
-```
+### 规划中
 
-## 快速启动
+- 完整 DnD 规则支持；
+- 可安全部署到非可信网络的账号、授权和传输安全；
+- 签名发布、自动更新、可复现构建和持续的跨平台安装测试；
+- BGM 与更完整的音频体验。
 
-### 前置条件
+## 首选使用方式
 
-- Node.js >= 18 + pnpm
-- Python >= 3.10
-- DeepSeek API Key（[获取地址](https://platform.deepseek.com)）
-
-### 1. 克隆并安装依赖
+日常游玩优先使用桌面构建，前后端同源运行，数据保存在系统应用数据目录。当前仓库尚未提供可公开下载的审计安装包，需要在本机完成构建：
 
 ```bash
-git clone <repo-url> && cd trpg-player
-
-# 前端依赖
 pnpm install
-
-# 后端依赖
 cd server
 python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e .
-```
-
-### 2. 配置环境变量
-
-```bash
-# 在 server/ 目录下创建 .env
-cp ../.env.example server/.env
-# 编辑 server/.env，填入你的 DeepSeek API Key
-```
-
-`.env` 文件内容：
-
-```
-DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-```
-
-### 3. 初始化数据库
-
-```bash
-cd server
-alembic upgrade head
-```
-
-> 如果没有 alembic 迁移版本，首次运行时 SQLAlchemy 会自动创建 `trpg.db`。
-
-### 4. 启动开发服务
-
-**方式一**：分别启动
-
-```bash
-# 终端 1 - 后端（server/ 目录下）
 source .venv/bin/activate
-uvicorn app.main:app --reload --port 8000
-
-# 终端 2 - 前端（项目根目录）
-pnpm dev:web
+pip install -e ".[packaging]"
+cd ..
+pnpm desktop:build
 ```
 
-**方式二**：一键启动（需安装 concurrently）
+桌面构建需要 Node.js 20.19+、pnpm、Python 3.10+ 和 Rust。macOS/Windows 的产物位置、平台限制和排查方法见 [桌面打包文档](docs/packaging.md)。公开分发前必须先完成该文档中的内容审计。
+
+首次进入应用后：
+
+1. 打开“设置 → AI 配置”，新增并激活 OpenAI 兼容或 Anthropic 配置；
+2. 点击“测试”，确认连接成功；
+3. 回到首页点击“体验新手团”，或进入“开始游戏”使用自己的模组和角色。
+
+## 开发启动
+
+安装前端和后端开发依赖：
 
 ```bash
-# 项目根目录
+pnpm install
+cd server
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+alembic upgrade head
+cd ..
+```
+
+同时启动 FastAPI 和 Vite：
+
+```bash
 pnpm dev
 ```
 
-前端默认运行在 `http://localhost:5173`，后端运行在 `http://localhost:8000`。
-Vite 已配置代理，前端 `/api/*` 请求自动转发到后端。
+也可以分别运行 `pnpm dev:server` 与 `pnpm dev:web`。前端默认地址为 `http://localhost:5173`，后端为 `http://localhost:8000`，Vite 会代理 `/api` 请求。
 
-### 5. 开始使用
+AI 配置优先通过应用设置页管理，存放在本地数据目录旁的 `ai_settings.json`。不要提交真实 API Key。
 
-1. 打开浏览器访问 `http://localhost:5173`
-2. **上传模组**：进入「模组」页面，上传 .txt 或 .md 格式的模组文件
-3. **创建角色**：进入「角色」页面，按向导完成车卡（属性→职业→技能→背景）
-4. **开始游戏**：进入「游戏」页面，选择模组和角色，开始冒险
-
-## 架构要点
-
-### AI Agent 协作流程
-
-```
-玩家输入 → ChatService 记录 EventLog
-         → KP Agent 流式叙述（不预测检定结果）
-         → 解析 [DICE_CHECK] 指令 → 规则引擎掷骰
-         → KP Agent 根据实际骰子结果续写叙述
-         → 解析 [NPC_ACT] 指令 → NPC Agent 回应
-         → SSE 推送所有结果到前端
-```
-
-### EventLog 信息隔离
-
-所有游戏事件记录在 `event_log` 表中，`visibility` 字段存储可见角色 ID 列表。
-ContextManager 在构建 AI 上下文时根据 visibility 过滤事件，确保 NPC 只能看到自己参与的信息。
-
-### 规则引擎插件化
-
-`RuleEngine` 抽象基类定义了检定、伤害、车卡等接口，CoC 作为第一个实现。
-通过 `registry.py` 注册/获取引擎，扩展 DnD 等规则只需实现新的引擎类。
-
-## 开发说明
+## 验证
 
 ```bash
-# TypeScript 类型检查
-cd apps/web && npx tsc --noEmit
+# 前端
+pnpm --filter web exec vitest run
+pnpm --filter web exec tsc --noEmit
+pnpm --filter web build
+pnpm --filter web lint
 
-# Python 后端测试
-cd server && .venv/bin/pytest
-
-# 格式化等工具请参考各子项目配置
+# 后端
+server/.venv/bin/ruff check server/app server/tests
+server/.venv/bin/pytest -q
+cd server && .venv/bin/python -m evals.run --smoke
 ```
 
-## 当前状态
+## 技术架构
 
-P0 里程碑已完成核心流程：模组上传 → AI 解析 → 车卡 → 文字跑团。
+| 层 | 选型 |
+|---|---|
+| 前端 | React 19、TypeScript 6、Vite 8、Tailwind CSS 4、Zustand 5 |
+| 后端 | Python 3.10+、FastAPI、SQLAlchemy、Alembic |
+| 数据 | SQLite、本地素材目录、fastembed RAG |
+| 桌面 | Tauri 2、PyInstaller onedir sidecar |
+| AI | OpenAI 兼容协议与 Anthropic 协议，可配置模型与上下文窗口 |
 
-待开发功能包括：地图编辑与渲染、DnD 规则支持、多人游戏、BGM 系统、Tauri 桌面端打包等。
+核心数据流为：
+
+```text
+玩家动作 → EventLog → KP/规则引擎/子代理 → 持久化事件 → SSE → 游戏界面
+```
+
+主要目录：
+
+```text
+apps/web/          React 前端
+packages/shared/   共享 TypeScript 类型
+server/app/        FastAPI、服务、AI、规则和数据模型
+server/tests/      后端测试
+server/evals/      叙事与指令评估
+src-tauri/         桌面外壳
+docs/              设计、实施和打包文档
+```
+
+## 许可证与内容边界
+
+项目代码采用 [Apache License 2.0](LICENSE)。这不自动授权规则书、商业模组、用户上传内容、字体、模型权重或其他第三方素材。详细范围和公开分发要求见 [内容与素材声明](CONTENT_NOTICE.md)。
+
+仓库中的开发数据库、种子目录或缓存不应被默认视为可公开分发内容。发布者必须逐项完成来源和许可证审计，只把原创或已明确授权的内容放入安装包。
