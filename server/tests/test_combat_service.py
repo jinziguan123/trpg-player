@@ -52,6 +52,11 @@ def _act(db, sid, actor_id, action):
     return asyncio.run(combat_service.resolve_player_action(db, sid, actor_id, action))
 
 
+def _roll(db, sid, actor_id):
+    """两段式攻击第二段：玩家亲自掷伤害。"""
+    return asyncio.run(combat_service.resolve_combat_roll(db, sid, actor_id))
+
+
 def test_mechanical_chunks_carry_combat_log_flag(db_factory):
     """机械结算行（system）带 combat_log 供前端归入折叠日志抽屉；KP 叙述（narration_full）不带。"""
     import json
@@ -124,20 +129,47 @@ def test_start_pauses_at_human_and_broadcasts_state(db_factory):
     assert any('"combat_start"' in c for c in chunks)
 
 
-def test_player_attack_hits_and_npc_counterattacks(db_factory, monkeypatch):
+def test_player_attack_two_step_hit_then_damage(db_factory, monkeypatch):
+    """两段式：真人攻击命中后先挂 pending_roll（不扣血），玩家亲自掷伤害才扣血、推进。"""
     db = db_factory()
     sid, hero = _seed(db)
     enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 40, "CON": 50, "SIZ": 60},
              "skills": {"格斗(斗殴)": 45, "闪避": 20}, "weapon": "徒手格斗"}
     _start(db, sid, hero, enemy)
-    _fix_rolls(monkeypatch, [10, 80, 10, 80], die=3)   # 英雄攻中/打手闪避失败；打手攻中/英雄防守失败
+    _fix_rolls(monkeypatch, [10, 80], die=3)   # 英雄攻中(10)/打手闪避失败(80) → 命中
     chunks = _act(db, sid, hero.id, {"type": "attack", "target_id": "npc_thug", "weapon": "徒手格斗"})
 
+    # 第一段：命中检定作为 3D 骰事件（带 metadata.dice）下发，挂 pending_roll，尚未扣血。
     st = combat_service.get_combat(db.get(GameSession, sid))
+    assert st["pending_roll"] and st["pending_roll"]["actor_id"] == hero.id
     thug = next(p for p in st["initiative"] if p["id"] == "npc_thug")
-    assert thug["hp"] < thug["max_hp"]
-    db.refresh(hero)
-    assert hero.system_data["hitPoints"]["current"] <= 11
+    assert thug["hp"] == thug["max_hp"]                       # 伤害还没结算
+    assert any('"combat_roll"' in c and '"dice"' in c for c in chunks)   # 命中骰事件（可动画）
+
+    # 未完成投掷前不许再提交行动。
+    with pytest.raises(ValueError, match="待掷"):
+        _act(db, sid, hero.id, {"type": "dodge"})
+
+    # 第二段：玩家亲自掷伤害 → 扣血、清 pending_roll、推进先攻。
+    roll_chunks = _roll(db, sid, hero.id)
+    st2 = combat_service.get_combat(db.get(GameSession, sid))
+    thug2 = next(p for p in st2["initiative"] if p["id"] == "npc_thug")
+    assert thug2["hp"] < thug2["max_hp"]                      # 伤害已结算
+    assert not st2.get("pending_roll")
+    assert any('"combat_roll"' in c and '"dice"' in c for c in roll_chunks)
+
+
+def test_player_attack_miss_no_pending_roll(db_factory, monkeypatch):
+    """未命中：不挂 pending_roll，直接推进（无第二段伤害投掷）。"""
+    db = db_factory()
+    sid, hero = _seed(db)
+    enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 40, "CON": 50, "SIZ": 60},
+             "skills": {"格斗(斗殴)": 45, "闪避": 20}, "weapon": "徒手格斗"}
+    _start(db, sid, hero, enemy)
+    _fix_rolls(monkeypatch, [99, 10], die=3)   # 英雄大失败(99) → 未命中
+    chunks = _act(db, sid, hero.id, {"type": "attack", "target_id": "npc_thug", "weapon": "徒手格斗"})
+    st = combat_service.get_combat(db.get(GameSession, sid))
+    assert st is None or not st.get("pending_roll")   # 未命中不挂待掷
     assert any('"dice"' in c for c in chunks)
 
 
@@ -159,8 +191,11 @@ def test_combat_ends_when_enemy_down(db_factory, monkeypatch):
     enemy = {"id": "npc_weak", "name": "虚弱者", "attributes": {"DEX": 30, "CON": 10, "SIZ": 10},
              "skills": {"格斗(斗殴)": 20, "闪避": 10}, "weapon": "徒手格斗"}
     _start(db, sid, hero, enemy)
-    _fix_rolls(monkeypatch, [1, 90, 90], die=8)   # 英雄大成功命中、伤害拉满，秒掉 HP=2 的敌人
-    chunks = _act(db, sid, hero.id, {"type": "attack", "target_id": "npc_weak", "weapon": "大棒(棒球棒、拨火棍)"})
+    _fix_rolls(monkeypatch, [1, 90], die=8)   # 英雄大成功命中、伤害拉满，秒掉 HP=2 的敌人
+    _act(db, sid, hero.id, {"type": "attack", "target_id": "npc_weak", "weapon": "大棒(棒球棒、拨火棍)"})
+    # 命中挂 pending_roll，战斗尚未结束（伤害待玩家掷）
+    assert combat_service.get_combat(db.get(GameSession, sid))["pending_roll"]
+    chunks = _roll(db, sid, hero.id)   # 玩家掷伤害 → 秒掉敌人 → 战斗结束
 
     session = db.get(GameSession, sid)
     assert combat_service.get_combat(session) is None

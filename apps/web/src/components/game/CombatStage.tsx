@@ -4,7 +4,7 @@ import { api } from '../../api/client'
 import {
   GiCrossedSwords, GiShield, GiRun, GiBrickWall, GiScrollUnfurled,
   GiFirstAidKit, GiBinoculars, GiGrab, GiBrokenAxe, GiAmmoBox, GiCrosshair,
-  GiHandcuffs, GiDeathSkull,
+  GiHandcuffs, GiDeathSkull, GiRollingDices,
 } from 'react-icons/gi'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 
@@ -24,11 +24,20 @@ interface Combatant {
   aim?: boolean           // 瞄准态（下一击加奖励骰）
 }
 
+// 两段式投骰：真人攻击命中后，等该玩家亲自掷伤害。actor_id 为该掷骰的玩家。
+export interface PendingRoll {
+  actor_id: string
+  kind: string          // 目前为 'damage'
+  label: string         // 按钮/提示文案，如「投掷伤害（1D8+DB）」
+  victim_id?: string
+}
+
 export interface CombatState {
   round: number
   turn: string | null   // 当前轮到的参战方 id
   order: Combatant[]
   started_seq?: number  // 本场战斗日志起点 seq：日志抽屉只收本场（seq>started_seq）的结算行
+  pending_roll?: PendingRoll | null
 }
 
 // 反应提示：NPC 攻击某真人时后端暂停并广播 combat_reaction_prompt 的 metadata。
@@ -324,6 +333,22 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
     }
   }
 
+  // 两段式投骰：我攻击命中后要亲自掷伤害。
+  const pendingRoll = combat.pending_roll || null
+  const rollForMe = !!(pendingRoll && myCharId && pendingRoll.actor_id === myCharId)
+  const rollActorName = pendingRoll ? (order.find((c) => c.id === pendingRoll.actor_id)?.name ?? '……') : ''
+  const rollDamage = async () => {
+    if (submitting) return
+    setSubmitting(true)
+    try {
+      await api.post(`/sessions/${sessionId}/combat/roll`, {})
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : '投掷失败')
+    } finally {
+      setTimeout(() => setSubmitting(false), 600)
+    }
+  }
+
   // 反应提示：NPC 攻击我时，提交 fight_back/dodge/cover。
   const reactionForMe = !!(pendingReaction && myCharId && pendingReaction.defender_id === myCharId)
   const reactAs = async (choice: string) => {
@@ -373,7 +398,27 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
 
       {/* B4 反应提示 / B5 主动动作栏 / 等待提示 */}
       <div className="mt-2 pt-2" style={{ borderTop: '1px solid var(--color-border)' }}>
-        {pendingReaction ? (
+        {pendingRoll ? (
+          rollForMe ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs" style={{ color: 'var(--color-text-primary)' }}>
+                命中！{pendingRoll.label || '投掷伤害'}
+              </span>
+              <button
+                onClick={() => void rollDamage()}
+                disabled={submitting}
+                className="btn-primary text-xs !px-2.5 !py-1 flex items-center gap-1"
+                style={submitting ? { opacity: 0.5 } : undefined}
+              >
+                <GiRollingDices size={13} /> {pendingRoll.label || '投掷伤害'}
+              </button>
+            </div>
+          ) : (
+            <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+              等待 {rollActorName} 投掷伤害…
+            </div>
+          )
+        ) : pendingReaction ? (
           reactionForMe ? (
             <div className="flex flex-col gap-1.5">
               <span className="text-xs" style={{ color: 'var(--color-text-primary)' }}>

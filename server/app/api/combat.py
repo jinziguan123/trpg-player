@@ -67,6 +67,30 @@ async def combat_action(
     return {"ok": True}
 
 
+@router.post("/{session_id}/combat/roll")
+async def combat_roll(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """两段式攻击第二段：玩家亲自掷伤害。仅当有属于本玩家的 pending_roll 时有效。"""
+    session = session_service.get_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "会话不存在")
+    actor_id = _actor_char_id(db, session_id, token) or session.player_character_id
+    if not actor_id:
+        raise HTTPException(403, "无法确定行动角色")
+    try:
+        chunks = await combat_service.resolve_combat_roll(
+            db, session_id, actor_id, agent=_combat_agent(db, session), scene_hint="")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    for chunk in chunks:
+        room_hub.broadcast(session_id, chunk)
+    _schedule_aftermath_if_ended(session_id, chunks)
+    return {"ok": True}
+
+
 @router.post("/{session_id}/combat/reaction")
 async def combat_reaction(
     session_id: str,

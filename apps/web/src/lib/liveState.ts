@@ -1,4 +1,4 @@
-import type { CombatState, PendingReaction } from '@/components/game/CombatStage'
+import type { CombatState, PendingReaction, PendingRoll } from '@/components/game/CombatStage'
 import type { ChaseState } from '@/components/game/ChasePanel'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -26,11 +26,24 @@ export function parseCombatState(value: unknown): CombatState | null {
   if (value.turn !== null && typeof value.turn !== 'string') return null
   if (!Array.isArray(value.order) || !value.order.every(isCombatant)) return null
   if (value.started_seq !== undefined && typeof value.started_seq !== 'number') return null
+  const pendingRoll = parsePendingRoll(value.pending_roll)
   return {
     round: value.round,
     turn: value.turn,
     order: value.order,
     ...(value.started_seq === undefined ? {} : { started_seq: value.started_seq }),
+    ...(pendingRoll ? { pending_roll: pendingRoll } : {}),
+  }
+}
+
+function parsePendingRoll(value: unknown): PendingRoll | null {
+  if (!isRecord(value)) return null
+  if (typeof value.actor_id !== 'string' || typeof value.kind !== 'string') return null
+  return {
+    actor_id: value.actor_id,
+    kind: value.kind,
+    label: typeof value.label === 'string' ? value.label : '投掷',
+    ...(typeof value.victim_id === 'string' ? { victim_id: value.victim_id } : {}),
   }
 }
 
