@@ -12,22 +12,18 @@ import {
   AssetsPanel, MythosEditor, RelationsEditor, ModuleHistoryEditor,
   type AssetsInfo, type Mythos, type Relation, type ModuleExperience,
 } from '../components/character/CharacterExtraEditors'
-import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiDiceSixFacesSix, GiCharacter, GiReturnArrow, GiUpCard, GiPadlock, GiSave, GiScrollUnfurled } from 'react-icons/gi'
 import { ChevronRight } from 'lucide-react'
-
-interface Character {
-  id: string
-  name: string
-  module_id: string
-  rule_system: string
-  base_attributes: Record<string, number>
-  skills: Record<string, number>
-  system_data: Record<string, unknown>
-  backstory: string
-  status: string
-}
+import { CharacterList } from '@/features/characters/CharacterList'
+import {
+  createCharacter,
+  generateCharacter,
+  listCharacters,
+  removeCharacter,
+  type Character,
+} from '@/features/characters/api'
+import { buildCharacterPayload } from '@/features/characters/characterPayload'
 
 interface AttrSet {
   sets: Array<Record<string, number>>
@@ -124,9 +120,6 @@ export function CharacterPage() {
   const [inCreateFlow, setInCreateFlow] = useState(false)
   // 草稿：localStorage 暂存的未完成创建。draftSavedAt 存在即显示恢复横幅
   const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null)
-  const [charQuery, setCharQuery] = useState('')
-  const [charPage, setCharPage] = useState(1)
-  const CHAR_PAGE_SIZE = 8
 
   // Step 1: 基本信息
   const [name, setName] = useState('')
@@ -197,7 +190,7 @@ export function CharacterPage() {
   }, [fetchModules])
 
   const loadCharacters = async () => {
-    const chars = await api.get<Character[]>('/characters')
+    const chars = await listCharacters()
     setCharacters(chars)
   }
 
@@ -373,9 +366,6 @@ export function CharacterPage() {
     if (scarsAndWounds) sd.scarsAndWounds = scarsAndWounds
     if (phobiasAndManias) sd.phobiasAndManias = phobiasAndManias
     if (investigatorHistory) sd.investigatorHistory = investigatorHistory
-    const equip = equipText.split(/[、,，]/).map((e) => e.trim()).filter(Boolean)
-    if (equip.length > 0) sd.equipment = equip
-    if (weapons.length > 0) sd.weapons = weapons
     // 资产（现金/消费水平/资产情况）
     if (assetsInfo.cash) sd.cash = assetsInfo.cash
     if (assetsInfo.spendingLevel) sd.spendingLevel = assetsInfo.spendingLevel
@@ -432,16 +422,17 @@ export function CharacterPage() {
         }
       }
       finalSkills['信用评级'] = creditRating
-      await api.post('/characters', {
+      await createCharacter(buildCharacterPayload({
         name,
-        module_id: moduleId,
-        rule_system: 'coc',
+        moduleId,
         age,
-        base_attributes: effectiveAttrs,
+        baseAttributes: effectiveAttrs,
         skills: finalSkills,
         backstory: buildBackstoryText(),
-        system_data: buildSystemData(),
-      })
+        systemData: buildSystemData(),
+        equipmentText: equipText,
+        weapons,
+      }))
       await loadCharacters()
       toast.success(`角色「${name}」创建成功`)
       localStorage.removeItem(DRAFT_KEY)   // 创建成功 → 清除草稿，避免残留
@@ -597,10 +588,10 @@ export function CharacterPage() {
     }
     setAiGenerating(true)
     try {
-      const data = await api.post<ImportedCharacterData & { _fallback?: boolean }>(
-        '/characters/ai-generate',
-        { module_id: moduleId, hint: aiHint.trim() },
-      )
+      const data = await generateCharacter<ImportedCharacterData & { _fallback?: boolean }>({
+        module_id: moduleId,
+        hint: aiHint.trim(),
+      })
       applyImportedData(data)
       setStep('属性设定')
       if (data._fallback) {
@@ -617,7 +608,7 @@ export function CharacterPage() {
 
   const deleteCharacter = async (id: string) => {
     try {
-      await api.delete(`/characters/${id}`)
+      await removeCharacter(id)
       if (selectedChar?.id === id) setSelectedChar(null)
       await loadCharacters()
       toast.success('角色已删除')
@@ -741,17 +732,6 @@ export function CharacterPage() {
   }
 
   const stepIndex = STEPS.indexOf(step)
-
-  // 角色列表：条件查询（名/职业/规则）+ 分页
-  const charFiltered = characters.filter((c) => {
-    const q = charQuery.trim().toLowerCase()
-    if (!q) return true
-    const occ = String((c.system_data as Record<string, unknown>)?.occupation ?? '').toLowerCase()
-    return c.name.toLowerCase().includes(q) || occ.includes(q) || c.rule_system.toLowerCase().includes(q)
-  })
-  const charTotalPages = Math.max(1, Math.ceil(charFiltered.length / CHAR_PAGE_SIZE))
-  const pageClamped = Math.min(charPage, charTotalPages)
-  const charPageItems = charFiltered.slice((pageClamped - 1) * CHAR_PAGE_SIZE, pageClamped * CHAR_PAGE_SIZE)
 
   const allSkillNames = [...new Set([
     ...Object.keys(defaultSkills),
@@ -1462,102 +1442,15 @@ export function CharacterPage() {
 
           {/* 角色列表（默认视图）：条件查询 + 分页 */}
           {!inCreateFlow && (
-          <div>
-            <div className="flex items-center gap-2 mb-3">
-              <input
-                value={charQuery}
-                onChange={(e) => { setCharQuery(e.target.value); setCharPage(1) }}
-                placeholder="搜索角色名 / 职业 / 规则…"
-                className="input flex-1"
-              />
-              <span className="text-xs whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
-                {charFiltered.length} 个角色
-              </span>
-            </div>
-          <div className="space-y-3">
-            {charPageItems.length === 0 && (
-              <p className="text-sm py-6 text-center" style={{ color: 'var(--color-text-secondary)' }}>
-                {characters.length === 0 ? '暂无角色，点右上角「创建角色」开始' : '没有匹配的角色'}
-              </p>
-            )}
-            {charPageItems.map((c) => {
-              const hp = (c.system_data?.hitPoints as { current: number; max: number }) || { current: 0, max: 0 }
-              const san = (c.system_data?.sanity as { current: number; max: number }) || { current: 0, max: 0 }
-              const occ = (c.system_data?.occupation as string) || ''
-              const isActive = selectedChar?.id === c.id
-              return (
-                <div
-                  key={c.id}
-                  className="card cursor-pointer transition-colors"
-                  style={{ borderColor: isActive ? 'var(--color-accent)' : undefined }}
-                  onClick={() => setSelectedChar(isActive ? null : c)}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <h3 className="card-title !mb-0 flex items-center gap-2">
-                      <GiCharacter className="opacity-60" /> {c.name}
-                    </h3>
-                    <div className="flex items-center gap-2">
-                      {occ && <span className="badge">{occ}</span>}
-                      <span className="badge">{c.rule_system.toUpperCase()}</span>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setEditingChar(c) }}
-                        className="text-xs px-1.5 py-0.5 rounded transition-colors hover:bg-[var(--color-accent)] hover:text-[var(--color-on-accent)]"
-                        style={{ color: 'var(--color-text-accent)', border: '1px solid var(--color-border)' }}
-                      >
-                        编辑
-                      </button>
-                      <ConfirmDialog
-                        title="删除角色"
-                        description={`确定要删除「${c.name}」吗？此操作不可恢复。`}
-                        confirmLabel="删除"
-                        onConfirm={() => deleteCharacter(c.id)}
-                      >
-                        {(open) => (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); open() }}
-                            className="text-xs px-1.5 py-0.5 rounded hover:bg-[var(--color-danger-deep)] hover:text-white transition-colors"
-                            style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}
-                          >
-                            删除
-                          </button>
-                        )}
-                      </ConfirmDialog>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-3 text-sm" style={{ color: 'var(--color-text-secondary)' }}>
-                    {Object.entries(c.base_attributes).map(([k, v]) => (
-                      <span key={k}>
-                        {ATTR_LABELS[k] || k} <strong className="font-mono">{v}</strong>
-                      </span>
-                    ))}
-                  </div>
-                  {hp.max && (
-                    <div className="flex gap-4 mt-2 text-xs font-mono" style={{ color: 'var(--color-text-secondary)' }}>
-                      <span>HP {hp.current}/{hp.max}</span>
-                      <span>SAN {san.current}/{san.max}</span>
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-
-          {charTotalPages > 1 && (
-            <div className="flex items-center justify-center gap-2 mt-4 text-sm">
-              <button
-                onClick={() => setCharPage((p) => Math.max(1, p - 1))}
-                disabled={pageClamped <= 1}
-                className="btn-secondary !px-2 !py-1 disabled:opacity-40"
-              >上一页</button>
-              <span style={{ color: 'var(--color-text-secondary)' }}>{pageClamped} / {charTotalPages}</span>
-              <button
-                onClick={() => setCharPage((p) => Math.min(charTotalPages, p + 1))}
-                disabled={pageClamped >= charTotalPages}
-                className="btn-secondary !px-2 !py-1 disabled:opacity-40"
-              >下一页</button>
-            </div>
-          )}
-          </div>
+            <CharacterList
+              characters={characters}
+              selectedId={selectedChar?.id ?? null}
+              onSelect={(character) => setSelectedChar(
+                selectedChar?.id === character.id ? null : character,
+              )}
+              onEdit={setEditingChar}
+              onDelete={deleteCharacter}
+            />
           )}
         </div>
       </div>

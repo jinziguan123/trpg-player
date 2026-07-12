@@ -5,6 +5,11 @@ import { api, getServerUrl, setServerUrl } from '@/api/client'
 import { useModuleStore } from '@/stores/moduleStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import {
+  createCharacter,
+  generateCharacter,
+  listAvailableCharacters,
+} from '@/features/characters/api'
+import {
   createEmptyModuleFilters,
   filterModules,
   hasModuleFilters,
@@ -44,8 +49,8 @@ export function useGameSetup() {
 
   const refreshCharacters = useCallback(async () => {
     const [availableHeroes, availableAllies] = await Promise.all([
-      api.get<SetupCharacter[]>('/characters?available=true&is_player=true'),
-      api.get<SetupCharacter[]>('/characters?available=true&is_player=false'),
+      listAvailableCharacters(true),
+      listAvailableCharacters(false),
     ])
     setHeroes(availableHeroes)
     setAllies(availableAllies)
@@ -103,12 +108,12 @@ export function useGameSetup() {
     setGeneratingSeat(index)
     setError('')
     try {
-      const draft = await api.post<Record<string, unknown>>('/characters/ai-generate', {
+      const draft = await generateCharacter<Record<string, unknown>>({
         module_id: moduleId,
         hint: (seatHints[index] || '').trim(),
         is_player: isPlayer,
       })
-      const created = await api.post<SetupCharacter>('/characters', {
+      const created = await createCharacter<SetupCharacter>({
         name: draft.name,
         module_id: moduleId,
         rule_system: (draft.rule_system as string) || 'coc',
