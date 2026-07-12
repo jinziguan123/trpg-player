@@ -97,6 +97,8 @@ def create_session(
     module_id: str,
     participants: list[dict],
     creator_token: str | None = None,
+    *,
+    commit: bool = True,
 ) -> GameSession:
     module = db.get(Module, module_id)
     if not module:
@@ -163,8 +165,11 @@ def create_session(
         char = db.get(Character, primary_id)
         if char and not char.owner_token:
             char.owner_token = creator_token
-    db.commit()
-    db.refresh(game_session)
+    if commit:
+        db.commit()
+        db.refresh(game_session)
+    else:
+        db.flush()
     return game_session
 
 
