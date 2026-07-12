@@ -552,6 +552,18 @@ export function GameSessionPage() {
     }
   }, [shownCharId, refreshTick])
 
+  // 我的武器栏（战斗武器选择器用）：拳头默认由前端补，其余从角色卡 system_data.weapons 取。
+  const [myWeapons, setMyWeapons] = useState<{ name: string; dam?: string }[]>([])
+  useEffect(() => {
+    if (!myCharId) { setMyWeapons([]); return }
+    api.get<Character>(`/characters/${myCharId}`)
+      .then((c) => {
+        const ws = (c.system_data?.weapons as { name?: string; dam?: string }[] | undefined) || []
+        setMyWeapons(ws.filter((w) => w?.name).map((w) => ({ name: String(w.name), dam: w.dam })))
+      })
+      .catch(() => setMyWeapons([]))
+  }, [myCharId, refreshTick])
+
   // 大地图（已知地点）：展开时拉取，前往后/生成结束刷新
   useEffect(() => {
     if (!showBigMap || !sessionId) return
@@ -1370,7 +1382,7 @@ export function GameSessionPage() {
         </div>
 
         {combat && (
-          <CombatStage combat={combat} myCharId={myCharId} sessionId={currentSession.id} pendingReaction={pendingReaction} log={combatLog} />
+          <CombatStage combat={combat} myCharId={myCharId} sessionId={currentSession.id} pendingReaction={pendingReaction} log={combatLog} myWeapons={myWeapons} />
         )}
         {chase && (
           <ChasePanel chase={chase} sessionId={currentSession.id} />

@@ -72,8 +72,9 @@ const CONDITION_META: Record<string, { label: string; Icon: typeof GiCrossedSwor
   disarmed: { label: '缴械', Icon: GiBrokenAxe },
 }
 
-// 武器预设：与后端约定的口径一致；「其它(手填)」切换成自由文本输入。
-const WEAPON_PRESETS = ['徒手格斗', '大棒(棒球棒、拨火棍)', '小型刀(弹簧折叠刀等)', '手枪', '猎枪']
+// 武器：拳头（徒手格斗）永远可选并置顶；其余从角色卡武器栏（system_data.weapons）来；
+// 末尾「其它(手填)」切换成自由文本输入。UNARMED 与后端 resolve_weapon 的徒手口径一致。
+const UNARMED = '徒手格斗'
 const WEAPON_OTHER = '__other__'
 
 // 主动动作元数据：图标 + 标签 + 目标类型（敌方/己方/无）。全部 gi 图标，已确认存在。
@@ -215,12 +216,13 @@ function CombatantCard({ c, mine, active, diff }: {
   )
 }
 
-export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log }: {
+export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log, myWeapons = [] }: {
   combat: CombatState
   myCharId: string | null
   sessionId: string
   pendingReaction?: PendingReaction | null
   log: CombatLogEntry[]
+  myWeapons?: { name: string; dam?: string }[]
 }) {
   const order = combat.order
   const diffs = useHpDiff(order)
@@ -243,10 +245,29 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log 
 
   const [action, setAction] = useState<ActionKey>('attack')
   const [targetId, setTargetId] = useState<string>('')
-  const [weaponSel, setWeaponSel] = useState<string>(WEAPON_PRESETS[0])
+  const [weaponSel, setWeaponSel] = useState<string>(UNARMED)
   const [weaponCustom, setWeaponCustom] = useState<string>('')
   const [submitting, setSubmitting] = useState(false)
   const [logOpen, setLogOpen] = useState(false)
+
+  // 武器下拉项：拳头置顶（永远有）+ 角色卡武器栏（去重、保留伤害提示）+ 其它(手填)。
+  const weaponOptions = useMemo(() => {
+    const seen = new Set<string>([UNARMED])
+    const opts: { value: string; label: string }[] = [{ value: UNARMED, label: UNARMED }]
+    for (const w of myWeapons) {
+      const name = (w.name || '').trim()
+      if (!name || seen.has(name)) continue
+      seen.add(name)
+      opts.push({ value: name, label: w.dam ? `${name}（${w.dam}）` : name })
+    }
+    return opts
+  }, [myWeapons])
+  // 角色卡换人/武器栏变化后，若当前所选武器已不在列表则回落拳头。
+  useEffect(() => {
+    if (weaponSel !== WEAPON_OTHER && !weaponOptions.some((o) => o.value === weaponSel)) {
+      setWeaponSel(UNARMED)
+    }
+  }, [weaponOptions, weaponSel])
 
   // 当前动作的目标候选（按 target 类型）。
   const actionMeta = ACTIONS[action]
@@ -410,35 +431,41 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log 
             {/* 参数：目标（按动作切候选）+ 武器（仅攻击） */}
             <div className="flex flex-wrap items-end gap-2">
               {actionMeta.target !== 'none' && (
-                <label className="flex flex-col gap-0.5">
-                  <span className="text-[10px]" style={{ color: 'var(--color-text-secondary)' }}>
+                <label className="flex flex-col gap-1">
+                  <span className="combat-field-label">
                     {actionMeta.target === 'enemy' ? '目标（敌方）' : '目标（己方）'}
                   </span>
-                  <select
-                    className="input !py-1 text-xs"
-                    value={effectiveTarget}
-                    onChange={(e) => setTargetId(e.target.value)}
-                    disabled={candidates.length === 0}
-                  >
-                    {candidates.length === 0 && <option value="">{actionMeta.target === 'enemy' ? '无存活敌方' : '无需处理'}</option>}
-                    {candidates.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}（{c.hp}/{c.max_hp}）</option>
-                    ))}
-                  </select>
+                  <div className="combat-select-wrap">
+                    <select
+                      className="combat-select"
+                      value={effectiveTarget}
+                      onChange={(e) => setTargetId(e.target.value)}
+                      disabled={candidates.length === 0}
+                    >
+                      {candidates.length === 0 && <option value="">{actionMeta.target === 'enemy' ? '无存活敌方' : '无需处理'}</option>}
+                      {candidates.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}（{c.hp}/{c.max_hp}）</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="combat-select-caret" size={13} />
+                  </div>
                 </label>
               )}
               {action === 'attack' && (
                 <>
-                  <label className="flex flex-col gap-0.5">
-                    <span className="text-[10px]" style={{ color: 'var(--color-text-secondary)' }}>武器</span>
-                    <select
-                      className="input !py-1 text-xs"
-                      value={weaponSel}
-                      onChange={(e) => setWeaponSel(e.target.value)}
-                    >
-                      {WEAPON_PRESETS.map((w) => (<option key={w} value={w}>{w}</option>))}
-                      <option value={WEAPON_OTHER}>其它(手填)</option>
-                    </select>
+                  <label className="flex flex-col gap-1">
+                    <span className="combat-field-label">武器</span>
+                    <div className="combat-select-wrap">
+                      <select
+                        className="combat-select"
+                        value={weaponSel}
+                        onChange={(e) => setWeaponSel(e.target.value)}
+                      >
+                        {weaponOptions.map((o) => (<option key={o.value} value={o.value}>{o.label}</option>))}
+                        <option value={WEAPON_OTHER}>其它（手填）</option>
+                      </select>
+                      <ChevronDown className="combat-select-caret" size={13} />
+                    </div>
                   </label>
                   {weaponSel === WEAPON_OTHER && (
                     <input
@@ -447,6 +474,7 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log 
                       placeholder="填写武器…"
                       value={weaponCustom}
                       onChange={(e) => setWeaponCustom(e.target.value)}
+                      autoFocus
                     />
                   )}
                 </>
