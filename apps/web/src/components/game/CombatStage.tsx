@@ -4,7 +4,7 @@ import { api } from '../../api/client'
 import {
   GiCrossedSwords, GiShield, GiRun, GiBrickWall, GiScrollUnfurled,
   GiFirstAidKit, GiBinoculars, GiGrab, GiBrokenAxe, GiAmmoBox, GiCrosshair,
-  GiHandcuffs, GiDeathSkull, GiRollingDices,
+  GiHandcuffs, GiDeathSkull, GiRollingDices, GiFlame, GiFireBottle,
 } from 'react-icons/gi'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 
@@ -79,6 +79,7 @@ const STATUS_META: Record<Exclude<CombatStatus, 'ok'>, { label: string; color: s
 const CONDITION_META: Record<string, { label: string; Icon: typeof GiCrossedSwords }> = {
   grappled: { label: '被擒', Icon: GiHandcuffs },
   disarmed: { label: '缴械', Icon: GiBrokenAxe },
+  burning: { label: '着火', Icon: GiFlame },
 }
 
 // 武器：拳头（徒手格斗）永远可选并置顶；其余从角色卡武器栏（system_data.weapons）来；
@@ -87,7 +88,7 @@ const UNARMED = '徒手格斗'
 const WEAPON_OTHER = '__other__'
 
 // 主动动作元数据：图标 + 标签 + 目标类型（敌方/己方/无）。全部 gi 图标，已确认存在。
-type ActionKey = 'attack' | 'first_aid' | 'observe' | 'grapple' | 'disarm' | 'reload' | 'aim' | 'flee'
+type ActionKey = 'attack' | 'first_aid' | 'observe' | 'grapple' | 'disarm' | 'reload' | 'aim' | 'extinguish' | 'flee'
 const ACTIONS: Record<ActionKey, { label: string; Icon: typeof GiCrossedSwords; target: 'enemy' | 'ally' | 'none' }> = {
   attack: { label: '攻击', Icon: GiCrossedSwords, target: 'enemy' },
   first_aid: { label: '急救', Icon: GiFirstAidKit, target: 'ally' },
@@ -96,6 +97,7 @@ const ACTIONS: Record<ActionKey, { label: string; Icon: typeof GiCrossedSwords; 
   disarm: { label: '缴械', Icon: GiBrokenAxe, target: 'enemy' },
   reload: { label: '装填', Icon: GiAmmoBox, target: 'none' },
   aim: { label: '瞄准', Icon: GiCrosshair, target: 'none' },
+  extinguish: { label: '灭火', Icon: GiFireBottle, target: 'none' },
   flee: { label: '逃跑', Icon: GiRun, target: 'none' },
 }
 
@@ -251,6 +253,7 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
   const me = myCharId ? order.find((c) => c.id === myCharId) || null : null
   const myTurn = !!(active && myCharId && active.id === myCharId && active.is_human)
   const iAmGrappled = !!(me && (me.conditions || []).includes('grappled'))
+  const iAmBurning = !!(me && (me.conditions || []).includes('burning'))
 
   const [action, setAction] = useState<ActionKey>('attack')
   const [targetId, setTargetId] = useState<string>('')
@@ -327,6 +330,9 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
         break
       case 'aim':
         void submit({ type: 'aim' })
+        break
+      case 'extinguish':
+        void submit({ type: 'extinguish' })
         break
       case 'flee':
         void submit({ type: 'flee' })
@@ -471,6 +477,8 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
               {(Object.keys(ACTIONS) as ActionKey[]).map((k) => {
                 // 被擒抱时隐藏逃跑（无效）：擒抱状态下逃跑要先挣脱，暂不给该入口。
                 if (k === 'flee' && iAmGrappled) return null
+                // 灭火仅在自己着火时出现（否则是无效动作）。
+                if (k === 'extinguish' && !iAmBurning) return null
                 const { label, Icon } = ACTIONS[k]
                 const on = action === k
                 return (

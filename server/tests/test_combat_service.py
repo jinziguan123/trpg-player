@@ -70,6 +70,73 @@ def test_mechanical_chunks_carry_combat_log_flag(db_factory):
     assert ndata["type"] == "narration_full" and "combat_log" not in ndata.get("metadata", {})
 
 
+def _start_multi(db, sid, hero, enemies):
+    return combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True)],
+        [combat_service._npc_participant(e, "enemy") for e in enemies])
+
+
+def _mk_enemy(eid, name):
+    return {"id": eid, "name": name, "attributes": {"DEX": 40, "CON": 50, "SIZ": 60},
+            "skills": {"格斗(斗殴)": 30}, "weapon": "徒手格斗"}
+
+
+def test_stage_aoe_damage_molotov_targets_enemies_and_burns(db_factory, monkeypatch):
+    """燃烧弹：查武器表得 2D6+烧，挂成投掷者 pending_roll，波及多个敌人、附燃烧。"""
+    db = db_factory(); sid, hero = _seed(db)
+    _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A"), _mk_enemy("e2", "循声者B")])
+    _fix_rolls(monkeypatch, [], die=4)   # 伤害骰=4 → 2D6=8
+    chunk, staged = combat_service.stage_aoe_damage(
+        db, sid, hero.id, ["循声者A", "循声者B"], weapon="莫洛托夫鸡尾酒", dedup_key="k1")
+    assert staged and chunk
+    pr = combat_service.get_combat(db.get(GameSession, sid))["pending_roll"]
+    assert pr["kind"] == "aoe_damage" and pr["actor_id"] == hero.id
+    assert set(pr["victim_ids"]) == {"e1", "e2"}
+    assert pr["burning"] is True and pr["damage"]["total"] == 8
+
+
+def test_stage_aoe_dedup_and_no_targets(db_factory, monkeypatch):
+    db = db_factory(); sid, hero = _seed(db)
+    _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A")])
+    _fix_rolls(monkeypatch, [], die=3)
+    # 匹配不到目标 → 不挂
+    _, staged = combat_service.stage_aoe_damage(db, sid, hero.id, ["不存在"], formula="2d6")
+    assert not staged
+    # 挂一次
+    _, s1 = combat_service.stage_aoe_damage(db, sid, hero.id, ["循声者A"], formula="2d6", dedup_key="k")
+    assert s1
+    # 清掉 pending_roll 后同 dedup_key 再挂 → 幂等跳过
+    st = combat_service.get_combat(db.get(GameSession, sid)); st["pending_roll"] = None
+    combat_service._save_combat(db, sid, st)
+    _, s2 = combat_service.stage_aoe_damage(db, sid, hero.id, ["循声者A"], formula="2d6", dedup_key="k")
+    assert not s2
+
+
+def test_resolve_aoe_applies_to_all_and_burns_without_advancing(db_factory, monkeypatch):
+    db = db_factory(); sid, hero = _seed(db)
+    _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A"), _mk_enemy("e2", "循声者B")])
+    _fix_rolls(monkeypatch, [], die=2)   # 2D6=4（< 半血，不触发重伤 CON 检定，无需 d100）
+    combat_service.stage_aoe_damage(db, sid, hero.id, ["循声者A", "循声者B"],
+                                    weapon="莫洛托夫鸡尾酒", dedup_key="k1")
+    turn_before = combat_service.get_combat(db.get(GameSession, sid))["turn_index"]
+    _roll(db, sid, hero.id)   # resolve_combat_roll → aoe 分支
+    st = combat_service.get_combat(db.get(GameSession, sid))
+    e1, e2 = combat_service._find(st, "e1"), combat_service._find(st, "e2")
+    assert e1["hp"] < e1["max_hp"] and e2["hp"] < e2["max_hp"]      # 两个都扣了血
+    assert "burning" in e1["conditions"] and "burning" in e2["conditions"]
+    assert not st.get("pending_roll")
+    assert st["turn_index"] == turn_before                          # AoE 不推进先攻
+
+
+def test_extinguish_action_removes_burning(db_factory):
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A")])
+    hero_p = combat_service._find(state, hero.id)
+    hero_p["conditions"] = ["burning"]
+    combat_service._apply_one_action(db, sid, state, hero_p, {"type": "extinguish"})
+    assert "burning" not in hero_p.get("conditions", [])
+
+
 def test_combat_meta_order_carries_conditions_aim_weapon(db_factory):
     """_combat_meta 的 order 投影要透传 conditions/aim/weapon，供前端 HUD 渲染徽标与武器名。"""
     db = db_factory()

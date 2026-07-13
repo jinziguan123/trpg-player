@@ -123,6 +123,18 @@ class ItemDelta(BaseModel):
 ItemDeltaList = Annotated[list[ItemDelta], BeforeValidator(_coerce_item_deltas)]
 
 
+class CombatDamage(BaseModel):
+    """战斗中一次非常规/范围攻击对敌人造成的伤害（燃烧弹/泼火/群体/环境）——引擎没建模的单体
+    武器攻击之外的伤害，由此确定性落到敌人 HP，不靠 KP 叙述。命中已由先前的投掷检定判定。"""
+
+    trigger: bool = False
+    targets: StrList = Field(default_factory=list)  # 被波及的敌人名（战斗态里的名字）
+    weapon: str = ""     # 已知投掷武器名（查武器表拿伤害/燃烧，如「莫洛托夫鸡尾酒」）
+    formula: str = ""    # 武器表查不到时的伤害骰式（如「2d6」）
+    burning: bool = False  # 命中后附加燃烧（每轮 1d6 直到扑灭）；武器表带「烧/燃烧」会自动置
+    reason: str = ""
+
+
 class SanityPolicy(BaseModel):
     """本轮是否有角色目睹/得知会动摇理智的恐怖——由 planner 裁定，引擎据此确定性发 SAN 检定，
     不依赖 KP 临场记得。trigger=False 时其余字段忽略。"""
@@ -175,7 +187,8 @@ class DirectionPolicy(BaseModel):
 # 各嵌套子模型字段：LLM 常把它们写成一句话（safety→「安全，无即时威胁」、check→「不需要」），
 # 形状错误只应让该字段退到默认，绝不能连累整份计划被丢弃回退旧流程。
 _SUBMODEL_FIELDS = (
-    "check", "clue_policy", "npc_policy", "scene_policy", "combat", "safety", "sanity", "direction",
+    "check", "clue_policy", "npc_policy", "scene_policy", "combat", "combat_damage",
+    "safety", "sanity", "direction",
 )
 _TURN_KINDS = frozenset(
     ("investigate", "social", "move", "combat", "knowledge", "roleplay", "mixed")
@@ -194,6 +207,7 @@ class TurnPlan(BaseModel):
     narration_brief: StrList = Field(default_factory=list)
     safety: SafetyPolicy = Field(default_factory=SafetyPolicy)
     sanity: SanityPolicy = Field(default_factory=SanityPolicy)
+    combat_damage: CombatDamage = Field(default_factory=CombatDamage)  # 战斗中非常规/范围攻击伤害
     items_gained: ItemDeltaList = Field(default_factory=list)  # 本轮玩家获得的物品 → 确定性入库
     items_lost: ItemDeltaList = Field(default_factory=list)     # 本轮确定性失去/消耗/损毁的物品
     direction: DirectionPolicy = Field(default_factory=DirectionPolicy)
@@ -403,6 +417,12 @@ def build_turn_plan_messages(
                 "威胁、戒备、瞄准、谈判或尚未接敌时保持 false。开战时 enemies 必须列出本轮实际参战敌方的名字，"
                 "优先使用 visible_npcs 中的原名，trigger 用一句话说明开战原因。结构化战斗会自行结算攻击，"
                 "因此规划开战时不要再把本次攻击裁定为普通 dice_check。\n"
+                "combat_damage.trigger 在**战斗中玩家用引擎没建模的非常规/范围攻击命中敌人**时为 true："
+                "燃烧弹/汽油弹泼火、群体波及、环境伤害（爆炸/塌方砸中）等（普通单体武器攻击走战斗面板、"
+                "不在此列）。命中已由先前的投掷/攻击检定判定，这里只列后果：targets 填被波及的敌人名"
+                "（用战斗态里的名字）；已知投掷武器填 weapon（如「莫洛托夫鸡尾酒」，系统查表拿 2D6 烧）、"
+                "否则填 formula 骰式；burning=是否点燃。后端会让玩家亲手掷这份伤害、应用到所有波及敌人，"
+                "不靠 KP 叙述扣血。\n"
                 "sanity.trigger 在**本轮有角色目睹或得知会动摇心智的恐怖**时为 true："
                 "尸体/血腥惨状/怪物/超自然异象/亵渎的神话真相等；仅世俗惊吓（普通打斗、坏消息、"
                 "寻常尸体已见过）不触发。true 时给 source（恐怖源标识，如「墓室腐尸」，同一源只检一次）、"
@@ -518,6 +538,7 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
         "npc_policy": plan.npc_policy.model_dump(),
         "scene_policy": plan.scene_policy.model_dump(),
         "combat": plan.combat.model_dump(),
+        "combat_damage": plan.combat_damage.model_dump(),
         "narration_brief": plan.narration_brief,
         "safety": plan.safety.model_dump(),
         "sanity": plan.sanity.model_dump(),

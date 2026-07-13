@@ -2187,6 +2187,31 @@ async def _ensure_planned_items(
         db.commit()
 
 
+async def _ensure_planned_combat_damage(
+    db: Session,
+    session_id: str,
+    player_char: Character,
+    plan: turn_planner.TurnPlan | None,
+) -> AsyncIterator[str]:
+    """战斗中非常规/范围攻击（燃烧弹/群体/环境）→ 引擎把伤害挂成玩家 pending_roll（亲手掷、
+    应用到所有波及敌人）。仅战斗中生效；幂等（stage_aoe_damage 按行动锚 dedup_key 去重）。"""
+    if plan is None or not plan.combat_damage.trigger or not plan.combat_damage.targets:
+        return
+    from app.services import combat_service
+    if not combat_service.get_combat(db.get(GameSession, session_id)):
+        return
+    turn = _current_turn_events(session_service.get_session_events(db, session_id))
+    anchor = max(
+        (e.sequence_num or 0 for e in turn if e.event_type in ("action", "dialogue")), default=0)
+    cd = plan.combat_damage
+    chunk, staged = combat_service.stage_aoe_damage(
+        db, session_id, player_char.id, list(cd.targets), cd.weapon, cd.formula, cd.burning,
+        cd.reason, dedup_key=f"{anchor}|{'/'.join(cd.targets)}",
+    )
+    if staged and chunk:
+        yield chunk
+
+
 async def _run_generation(
     db: Session,
     session_id: str,
@@ -2357,6 +2382,10 @@ async def _run_generation(
     ):
         room_hub.broadcast(session_id, chunk)
 
+    # 确定性战斗伤害守卫：战斗中非常规/范围攻击 → 挂成玩家 pending_roll 亲手掷、扣敌人 HP。
+    async for chunk in _ensure_planned_combat_damage(db, session_id, player_char, plan):
+        room_hub.broadcast(session_id, chunk)
+
     await _finish_generation(db, session_id, llm)
 
 
@@ -2495,6 +2524,10 @@ async def _run_split_generation(
     async for chunk in _ensure_planned_items(
         db, session_id, game_session, player_char, teammates, plan,
     ):
+        room_hub.broadcast(session_id, chunk)
+
+    # 确定性战斗伤害守卫：战斗中非常规/范围攻击 → 挂成玩家 pending_roll 亲手掷、扣敌人 HP。
+    async for chunk in _ensure_planned_combat_damage(db, session_id, player_char, plan):
         room_hub.broadcast(session_id, chunk)
 
     await _finish_generation(db, session_id, llm)

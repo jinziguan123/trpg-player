@@ -55,7 +55,9 @@ def _roll_expr(expr: str) -> tuple[int, list[int]]:
     for term in re.findall(r"[+-]?[^+-]+", expr):
         sign = -1 if term.startswith("-") else 1
         t = term.lstrip("+-")
-        m = re.fullmatch(r"(\d+)[dD](\d+)", t)
+        # 取前导 NdM（不用 fullmatch）：武器伤害常把注记粘在骰式后（如「2D6 烧」去空格成「2D6烧」），
+        # fullmatch 会整项作废、掷出 0；match 只认前导骰、忽略尾巴。
+        m = re.match(r"(\d+)[dD](\d+)", t)
         if m:
             c, s = int(m.group(1)), int(m.group(2))
             r = [random.randint(1, s) for _ in range(c)]
@@ -74,7 +76,7 @@ def _max_dice(expr: str) -> int:
     for term in re.findall(r"[+-]?[^+-]+", expr):
         sign = -1 if term.startswith("-") else 1
         t = term.lstrip("+-")
-        m = re.fullmatch(r"(\d+)[dD](\d+)", t)
+        m = re.match(r"(\d+)[dD](\d+)", t)   # 前导骰，忽略粘在后面的注记
         if m:
             total += sign * int(m.group(1)) * int(m.group(2))
         elif t.isdigit():
