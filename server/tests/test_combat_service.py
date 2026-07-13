@@ -205,6 +205,24 @@ def test_reaction_emits_opposed_card_dodge(db_factory, monkeypatch):
     assert op["winner"] == "defender" and op["result"] == "被闪开/防住"
 
 
+def test_reaction_opposed_card_attacker_whiff_is_未命中(db_factory, monkeypatch):
+    """攻方自己 roll 失手、守方闪避也没成→结果应是『未命中』且无胜方（不能算守方防住）。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A")])
+    state["pending_reaction"] = {
+        "attacker_id": "e1", "defender_id": hero.id, "attacker_name": "循声者A",
+        "defender_name": hero.name, "weapon": "徒手格斗", "ranged": False,
+        "allowed": ["fight_back", "dodge"],
+    }
+    combat_service._save_combat(db, sid, state)
+    # e1 格斗30：roll 90 失败；hero 闪避35：roll 80 也失败 → 双失手
+    _fix_rolls(monkeypatch, [90, 80], die=2)
+    out = asyncio.run(combat_service.resolve_reaction(db, sid, hero.id, "dodge"))
+    op = _opposed_meta(out)
+    assert op is not None
+    assert op["winner"] is None and op["result"] == "未命中"
+
+
 def test_extinguish_action_removes_burning(db_factory):
     db = db_factory(); sid, hero = _seed(db)
     state = _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A")])

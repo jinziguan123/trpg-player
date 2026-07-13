@@ -895,10 +895,18 @@ def _check_side(chk, name: str) -> dict:
             "skill": chk.skill_name, "outcome": chk.outcome}
 
 
+def _CHK_OK(chk) -> bool:
+    """检定是否达成（大成功/困难成功/普通成功都算命中该检定）。"""
+    return chk is not None and chk.outcome in ("critical_success", "hard_success", "success")
+
+
 def _opposed_detail(res: dict, actor_name: str, target_name: str) -> dict:
     """攻守两方检定的结构化对抗数据（前端据此画「两边并排 + VS + 高亮胜方」的对抗卡）。
 
-    winner/result 按引擎结果给：命中=攻方胜、反击得手=守方胜、被闪开/防住=守方胜、未命中=无守方。
+    winner/result 语义：
+    - 命中 → 攻方胜；反击得手 → 守方胜（守方反击命中攻方）；
+    - 被闪开/防住 → 守方胜（守方闪避/招架**检定成功**、主动化解了攻击）；
+    - 未命中 → 无胜方（攻方自己失手，守方并未出力防住，不能算守方赢）。
     远程无守方检定（defender=None）时只呈现攻方一侧。
     """
     atk = res["attacker_check"]
@@ -910,9 +918,10 @@ def _opposed_detail(res: dict, actor_name: str, target_name: str) -> dict:
             d["winner"], d["result"] = "attacker", "命中"
         else:
             d["winner"], d["result"] = "defender", "反击得手"
+    elif _CHK_OK(dfn):
+        d["winner"], d["result"] = "defender", "被闪开/防住"   # 守方检定成功、真的防住了
     else:
-        d["winner"] = "defender" if dfn is not None else None
-        d["result"] = "被闪开/防住" if dfn is not None else "未命中"
+        d["winner"], d["result"] = None, "未命中"              # 攻方失手，无人取胜
     return d
 
 
