@@ -1042,7 +1042,7 @@ def test_generation_patches_narration_when_validator_flags_violation(db_factory,
         result[3] = [(len("管家垂下眼。"), "管家", "别问我。")]
         yield chat_service._make_chunk("narration", result[0], actor_name="KP")
 
-    async def fake_validate(llm, plan, narration):
+    async def fake_validate(llm, plan, narration, seen_context=""):
         return chat_service.turn_validator.TurnValidation(
             violated=True, reason="泄露", corrected_narration="管家垂下眼。房间陷入了短暂的沉默。",
         )

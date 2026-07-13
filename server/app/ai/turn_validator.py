@@ -56,29 +56,44 @@ def _looks_suspicious(narration: str, plan: TurnPlan) -> bool:
     return False
 
 
-def build_validator_messages(plan: TurnPlan, narration: str) -> list[dict]:
+def build_validator_messages(
+    plan: TurnPlan, narration: str, seen_context: str = "",
+) -> list[dict]:
     do_not_reveal = json.dumps(plan.safety.do_not_reveal, ensure_ascii=False)
+    seen_block = (
+        "\n\n【玩家已可感知/近期已看到的内容】（这些已经在明面上，再次描写不算泄露）：\n"
+        + seen_context.strip() + "\n"
+    ) if seen_context.strip() else ""
     return [
         {
             "role": "system",
             "content": (
-                "你是 TRPG 内容安全校验器，检查一段旁白是否违反裁定计划的安全约束。"
+                "你是 TRPG 内容安全校验器，检查一段旁白是否**点破了本轮必须保密的隐藏真相**。"
                 "只输出一个 JSON object，不要输出 Markdown。"
             ),
         },
         {
             "role": "user",
             "content": (
-                "安全约束（玩家不可见的隐藏信息，绝不能出现在旁白里，即使是转述/总结/暗示）：\n"
-                f"{do_not_reveal}\n\n"
-                "此外无论约束是否为空，以下两类都算违规：\n"
-                "1. 用【标题】加项目符号列表的「汇报体」总结本回合状态/进展/待触发条件，而非自然叙事；\n"
+                "本轮必须对玩家保密的**隐藏真相**（其身份/本质/成因/幕后关联/后果，玩家须靠游戏"
+                "自行揭开）：\n"
+                f"{do_not_reveal}\n"
+                + seen_block +
+                "\n判定标准——**只拦「点破真相」，不拦「亲历现象」**：\n"
+                "· 违规 = 旁白**命名、点破或解释**了上述隐藏真相：直接说出它是什么/是谁/为何发生/"
+                "将导致什么；或让角色的内心「已然明白/认出」了这层真相（等于把答案塞进玩家脑子）；"
+                "或以总结、暗示让玩家实质上得知了本该自己查明的因果。\n"
+                "· **不违规** = 如实描写角色**正在亲眼目睹/亲耳所闻/亲身感受**的感官现象本身——"
+                "哪怕它正是某个隐藏真相的外在显现。恐怖的观感、反常的景象、说不清的怪异、扭曲的画面，"
+                "都是合法氛围；**绝不能因为它「指向」某个秘密就删掉**。玩家看得见的东西，就能写。\n\n"
+                "此外无论上面是否为空，以下两类也算违规：\n"
+                "1. 用【标题】加项目符号列表的「汇报体」总结状态/进展/待触发条件，而非自然叙事；\n"
                 "2. 旁白里出现了 flag 名、线索/NPC 的内部 id、JSON 字段名等技术性标识。\n\n"
                 f"待检查的旁白：\n{narration}\n\n"
                 '不违规时只返回 {"violated": false}，不要回填旁白；\n'
                 '违规时返回 {"violated": true, "reason": "简述违规之处", '
-                '"corrected_narration": "改写后的旁白——去掉违规部分，'
-                '尽量保留其余内容与叙事风格、少改动"}\n'
+                '"corrected_narration": "改写后的旁白——只删掉「点破真相」的字句（命名/解释/'
+                '角色已认出），**保留角色亲历的感官描写与氛围**，尽量少改动、不改文风"}\n'
                 "只输出 JSON。"
             ),
         },
@@ -86,7 +101,7 @@ def build_validator_messages(plan: TurnPlan, narration: str) -> list[dict]:
 
 
 async def validate_turn_narration(
-    llm: Any, plan: TurnPlan | None, narration: str,
+    llm: Any, plan: TurnPlan | None, narration: str, seen_context: str = "",
 ) -> TurnValidation | None:
     """校验一段已生成的旁白是否违反本轮裁定计划的硬约束，违反则给出改写版本。
 
@@ -99,7 +114,7 @@ async def validate_turn_narration(
     if not _looks_suspicious(narration, plan):
         return None
 
-    messages = build_validator_messages(plan, narration)
+    messages = build_validator_messages(plan, narration, seen_context)
     try:
         # 不设 max_tokens 硬上限：推理类模型的 reasoning 会占输出预算，硬上限会把 JSON 截成半截
         # 字符串（线上「Unterminated string」正是如此）。交服务端默认上限，complete 已内部流式。

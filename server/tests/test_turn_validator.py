@@ -22,6 +22,60 @@ class _FakeLLM:
         return self.resp
 
 
+class _Ev:
+    def __init__(self, etype, content):
+        self.event_type, self.content = etype, content
+
+
+def test_recent_seen_text_takes_recent_visible_events():
+    """_recent_seen_text 只取近期玩家可见事件（旁白/台词/骰点）的正文，system/action 不计。"""
+    from app.services.chat_service import _recent_seen_text
+
+    events = [
+        _Ev("narration", "灰雾漫过站台。"),
+        _Ev("system", "flag 内部标记"),          # 不该进（非玩家叙事可见口径）
+        _Ev("dialogue", "「快跑！」"),
+        _Ev("narration", "尽头出现一张巨口。"),
+    ]
+    out = _recent_seen_text(events, limit=6)
+    assert "巨口" in out and "快跑" in out and "灰雾" in out
+    assert "flag 内部标记" not in out
+    assert _recent_seen_text([], limit=6) == ""
+
+
+def test_prompt_distinguishes_witnessed_from_truth():
+    """校验器指令要分清「亲历的感官现象」（不拦）与「点破隐藏真相」（拦）。"""
+    plan = TurnPlan(safety=SafetyPolicy(do_not_reveal=["那是奈亚的化身"]))
+    msgs = turn_validator.build_validator_messages(
+        plan, "龙牙看着那张巨口吞下整列电车。", seen_context="站台尽头出现了一张巨口",
+    )
+    joined = "\n".join(m["content"] for m in msgs)
+    assert "亲历" in joined and "点破" in joined       # 分清两者
+    assert "不违规" in joined                          # 明确「不拦亲历现象」的一侧
+    assert "站台尽头出现了一张巨口" in joined           # seen_context 已嵌入
+    assert "那是奈亚的化身" in joined                   # do_not_reveal 仍传达
+
+
+@pytest.mark.asyncio
+async def test_seen_context_threaded_to_validator_prompt():
+    """seen_context 应贯通到校验器 prompt，让它别把玩家已看到的内容当泄露。"""
+    plan = TurnPlan(safety=SafetyPolicy(do_not_reveal=["隐藏真相"]))
+    captured: dict = {}
+
+    class _Cap:
+        called = True
+
+        async def complete(self, messages, **kw):
+            captured["m"] = messages
+            return '{"violated": false}'
+
+    await turn_validator.validate_turn_narration(
+        _Cap(), plan, "一段旁白", seen_context="玩家上一轮已目睹的怪影",
+    )
+    joined = "\n".join(m["content"] for m in captured["m"])
+    assert "玩家上一轮已目睹的怪影" in joined
+
+
 @pytest.mark.asyncio
 async def test_validate_returns_none_without_plan():
     llm = _FakeLLM()

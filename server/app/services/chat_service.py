@@ -1840,9 +1840,25 @@ def _remap_marks_after_rewrite(
         event_order[:] = [(_remap(o), eid) for (o, eid) in event_order]
 
 
+def _recent_seen_text(events: list | None, limit: int = 6) -> str:
+    """近期玩家已可感知的内容（最近几条旁白/台词/骰点结果）——喂校验器，让它别把已经在明面上的
+    东西当泄露。只取玩家可见事件的正文，截断防过长。"""
+    if not events:
+        return ""
+    seen: list[str] = []
+    for ev in reversed(events):
+        if getattr(ev, "event_type", None) in ("narration", "dialogue", "dice"):
+            txt = (getattr(ev, "content", "") or "").strip()
+            if txt:
+                seen.append(txt[:200])
+        if len(seen) >= limit:
+            break
+    return "\n".join(reversed(seen))
+
+
 async def _validate_and_patch_narration(
     llm, plan: turn_planner.TurnPlan | None, result: list,
-    event_order: list | None = None,
+    event_order: list | None = None, seen_context: str = "",
 ) -> None:
     """校验本轮旁白是否违反裁定计划的硬约束（泄露 do_not_reveal / 汇报体+内部标识泄露），
     违反则用改写版本替换落库文本，防止违规内容永久留在会话记录里。
@@ -1855,7 +1871,7 @@ async def _validate_and_patch_narration(
     """
     if plan is None:
         return
-    validation = await turn_validator.validate_turn_narration(llm, plan, result[0])
+    validation = await turn_validator.validate_turn_narration(llm, plan, result[0], seen_context)
     if validation is None or not validation.violated:
         return
     logger.warning("KP 回合校验发现违规，已改写落库版本：%s", validation.reason)
@@ -2170,7 +2186,8 @@ async def _run_generation(
             _reorder_turn_events(db, session_id, event_order, base_seq)
             raise
         _record_turn_usage(db, game_session, llm, events)   # validator 前，趁 last_usage 仍是主叙事那次
-        await _validate_and_patch_narration(llm, plan, result, event_order)
+        await _validate_and_patch_narration(
+            llm, plan, result, event_order, seen_context=_recent_seen_text(events))
         _persist_narration(db, session_id, result, event_order)
         _reorder_turn_events(db, session_id, event_order, base_seq)
         # 世界记忆钩子 c：本轮 NPC 台词记入其互动史（对全队说话）
@@ -2192,7 +2209,8 @@ async def _run_generation(
             _persist_narration(db, session_id, result)
             raise
         _record_turn_usage(db, game_session, llm, events)   # validator 前，趁 last_usage 仍是主叙事那次
-        await _validate_and_patch_narration(llm, plan, result)
+        await _validate_and_patch_narration(
+            llm, plan, result, seen_context=_recent_seen_text(events))
         _persist_narration(db, session_id, result)
         # 世界记忆钩子 c：本轮 NPC 台词记入其互动史（对全队说话）
         _record_npc_say_memory(
@@ -2317,7 +2335,8 @@ async def _run_split_generation(
         except BaseException:
             _persist_narration(db, session_id, result)
             raise
-        await _validate_and_patch_narration(llm, plan, result)
+        await _validate_and_patch_narration(
+            llm, plan, result, seen_context=_recent_seen_text(events))
         _persist_narration(db, session_id, result)
         # 世界记忆钩子 c：本组 NPC 台词记入其互动史（听众＝该组成员，信息不跨组共享）
         _record_npc_say_memory(
