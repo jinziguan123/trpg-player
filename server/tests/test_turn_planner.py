@@ -122,6 +122,19 @@ def test_turn_plan_messages_include_characteristic_and_unstuck_hint(db_factory):
     assert "direction.nudge" in instruction
 
 
+def test_turn_plan_messages_require_structured_combat_decision(db_factory):
+    """规划器必须明确区分普通动作与开战，并返回可执行的敌方名单。"""
+    db = db_factory()
+    module, hero, session = _seed(db)
+    messages = turn_planner.build_turn_plan_messages(
+        session, module, hero, [], teammates=[], rules_lookup_enabled=False,
+    )
+    instruction = messages[1]["content"]
+    assert "combat.should_start" in instruction
+    assert "结构化战斗" in instruction
+    assert "enemies" in instruction
+
+
 def test_turn_plan_messages_apply_flag_resolved_npc_state(db_factory):
     """NPC 的位置/秘密可能因剧情 flag 变化（states 机制）。build_kp_context 会先按已激活
     flags 解析出『当前样貌』再喂给 KP；planner 必须看到同一份解析结果，否则会因为看着模组
@@ -214,6 +227,7 @@ async def test_run_turn_planner_parses_json_plan():
                 '"requires_inspiration":false,"notes":"成功后给出暗格线索"},'
                 '"npc_policy":{"speakers":["butler"],"reaction":"管家警觉","needs_npc_act":false},'
                 '"scene_policy":{"scene_change":null,"set_flags":[],"clear_flags":[]},'
+                '"combat":{"should_start":false,"enemies":[],"trigger":""},'
                 '"narration_brief":["描述搜查动作","让管家插话阻拦"],'
                 '"safety":{"do_not_reveal":["管家秘密"],"do_not_control_players":true}}'
             )
@@ -224,6 +238,7 @@ async def test_run_turn_planner_parses_json_plan():
     assert plan.turn_kind == "investigate"
     assert plan.check.skill == "侦查"
     assert plan.clue_policy.candidate_clue_ids == ["c1"]
+    assert plan.combat.should_start is False
     injected = turn_planner.build_turn_plan_message(plan)
     assert injected["role"] == "system"
     assert "调查书桌" in injected["content"]
@@ -270,6 +285,38 @@ def test_build_turn_plan_message_不需检定时无检定硬约束():
     content = turn_planner.build_turn_plan_message(plan)["content"]
     assert "本轮必须发起检定" not in content
     assert "[DICE_CHECK:" not in content
+
+
+def test_build_turn_plan_message_开战时注入状态硬约束():
+    from app.ai.turn_planner import CombatPlan, TurnPlan
+
+    plan = TurnPlan(
+        turn_kind="combat",
+        player_intent="攻击循声者",
+        combat=CombatPlan(
+            should_start=True,
+            enemies=["循声者"],
+            trigger="调查员冲向循声者发动攻击",
+        ),
+    )
+    content = turn_planner.build_turn_plan_message(plan)["content"]
+    assert "结构化战斗切换" in content
+    assert "必须调用 start_combat" in content
+    assert "循声者" in content
+    assert "确定性补偿" in content
+
+
+def test_turn_plan_开战时取消普通检定():
+    from app.ai.turn_planner import CheckPlan, CombatPlan, TurnPlan
+
+    plan = TurnPlan(
+        turn_kind="combat",
+        requires_check=True,
+        check=CheckPlan(skill="格斗(斗殴)"),
+        combat=CombatPlan(should_start=True, enemies=["循声者"]),
+    )
+    assert plan.combat.should_start is True
+    assert plan.requires_check is False
 
 
 class _RawLLM:

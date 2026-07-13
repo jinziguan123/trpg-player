@@ -17,14 +17,14 @@ from sqlalchemy.orm import sessionmaker
 from app.ai import tools as kp_tools
 from app.ai.agents.kp_agent import _CHECK_TURN_TEMPERATURE
 from app.ai.provider import LLMProvider, StreamDelta, ToolCall
-from app.ai.turn_planner import CheckPlan, TurnPlan
+from app.ai.turn_planner import CheckPlan, CombatPlan, TurnPlan
 from app.models.base import Base
 from app.models.character import Character
 from app.models.event_log import EventLog  # noqa: F401 — 注册建表
 from app.models.module import Module
 from app.models.session import GameSession
 from app.models.session_participant import SessionParticipant  # noqa: F401 — 注册建表
-from app.services import chat_service, session_service
+from app.services import chat_service, combat_service, session_service
 
 
 # ── 测试基建 ──────────────────────────────────────────────────────────────
@@ -264,6 +264,48 @@ def test_requires_check_model_calls_tool_no_double_roll(db_factory):
     assert sum(1 for c in chunks if '"check_request"' in c) == 1
     pending = (db.get(GameSession, session_id).world_state or {}).get("pending_checks") or {}
     assert len(pending) == 1
+
+
+def test_planned_combat_fallback_starts_once_when_model_omits_tool(db_factory):
+    """规划器已裁定开战时，即使 KP 只写叙事不调工具，也必须进入战斗轮且不能重复创建。"""
+    db = db_factory()
+    session_id, session, module, hero = _seed(db)
+    hero.base_attributes = {"DEX": 80, "CON": 50, "SIZ": 50}
+    hero.system_data = {"hitPoints": {"current": 10, "max": 10}}
+    module.npcs = [{
+        "id": "listener",
+        "name": "循声者",
+        "attributes": {"DEX": 20, "CON": 50, "SIZ": 50},
+        "skills": {"格斗(斗殴)": 40, "闪避": 20},
+        "weapon": "利爪",
+    }]
+    db.commit()
+    plan = TurnPlan(
+        turn_kind="combat",
+        player_intent="冲上去攻击循声者",
+        combat=CombatPlan(
+            should_start=True,
+            enemies=["循声者"],
+            trigger="伊芙琳主动攻击循声者",
+        ),
+    )
+    llm = _FakeToolLLM([[_text("利爪怪物迎面扑来。")]])
+
+    async def _ensure():
+        return [
+            chunk async for chunk in chat_service._ensure_planned_combat(
+                db, session_id, session, module, hero, [], llm, plan,
+            )
+        ]
+
+    first = asyncio.run(_ensure())
+    state = combat_service.get_combat(db.get(GameSession, session_id))
+    assert state and state["active"] is True
+    assert any(p["name"] == "循声者" for p in state["initiative"])
+    assert any('"combat_start"' in chunk for chunk in first)
+
+    second = asyncio.run(_ensure())
+    assert second == []
 
 
 # ── 文本指令兜底 ──────────────────────────────────────────────────────────

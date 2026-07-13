@@ -692,6 +692,14 @@ def test_detect_check_request_routes_only_real_requests():
     assert none is None
 
 
+def test_combat_declaration_bypasses_check_request_router():
+    """截图中的明确攻击宣言必须进入 TurnPlan，不能被普通技能检定分诊提前截走。"""
+    assert chat_service._looks_like_combat_declaration("我冲上去捏紧指虎攻击那只循声者")
+    assert chat_service._looks_like_combat_declaration("我拔枪向怪物射击")
+    assert not chat_service._looks_like_combat_declaration("我用侦查看看书桌暗格")
+    assert not chat_service._looks_like_combat_declaration("我警告他不要攻击我们")
+
+
 def test_check_request_generation_includes_intent(db_factory, monkeypatch):
     """/check 申请检定时，玩家顺带说明的目标要真正进到 KP 的裁定提示词里——否则场景里同时
     有多条线索/多个可疑点时，KP 光看技能名猜不出玩家的具体目标。"""

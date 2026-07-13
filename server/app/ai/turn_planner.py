@@ -82,6 +82,14 @@ class ScenePolicy(BaseModel):
     clear_flags: StrList = Field(default_factory=list)
 
 
+class CombatPlan(BaseModel):
+    """本轮是否必须从自由叙事切入结构化战斗。"""
+
+    should_start: bool = False
+    enemies: StrList = Field(default_factory=list)
+    trigger: str = ""
+
+
 class SafetyPolicy(BaseModel):
     do_not_reveal: StrList = Field(default_factory=list)
     do_not_control_players: bool = True
@@ -127,7 +135,9 @@ class DirectionPolicy(BaseModel):
 
 # 各嵌套子模型字段：LLM 常把它们写成一句话（safety→「安全，无即时威胁」、check→「不需要」），
 # 形状错误只应让该字段退到默认，绝不能连累整份计划被丢弃回退旧流程。
-_SUBMODEL_FIELDS = ("check", "clue_policy", "npc_policy", "scene_policy", "safety", "direction")
+_SUBMODEL_FIELDS = (
+    "check", "clue_policy", "npc_policy", "scene_policy", "combat", "safety", "direction",
+)
 _TURN_KINDS = frozenset(
     ("investigate", "social", "move", "combat", "knowledge", "roleplay", "mixed")
 )
@@ -141,6 +151,7 @@ class TurnPlan(BaseModel):
     clue_policy: CluePolicy = Field(default_factory=CluePolicy)
     npc_policy: NpcPolicy = Field(default_factory=NpcPolicy)
     scene_policy: ScenePolicy = Field(default_factory=ScenePolicy)
+    combat: CombatPlan = Field(default_factory=CombatPlan)
     narration_brief: StrList = Field(default_factory=list)
     safety: SafetyPolicy = Field(default_factory=SafetyPolicy)
     direction: DirectionPolicy = Field(default_factory=DirectionPolicy)
@@ -166,6 +177,13 @@ class TurnPlan(BaseModel):
         if data.get("turn_kind") not in _TURN_KINDS:
             data.pop("turn_kind", None)  # 交回默认 "mixed"
         return data
+
+    @model_validator(mode="after")
+    def _combat_owns_resolution(self):
+        """结构化战斗自行结算攻防；开战轮不能同时挂普通检定。"""
+        if self.combat.should_start:
+            self.requires_check = False
+        return self
 
 
 def _visible_scene_ids(session: GameSession) -> set[str]:
@@ -314,6 +332,7 @@ def build_turn_plan_messages(
             "content": (
                 "你是 TRPG 的 KP 回合规划器。你的任务不是写叙事，而是先判断本轮裁定："
                 "玩家意图、是否需要检定、可揭示线索、NPC 反应、场景变化、安全边界，"
+                "是否必须切入结构化战斗，"
                 "以及导演层的节奏经营 direction。direction 的字段格式必须严格遵守："
                 "pacing 只能是 \"hold\"/\"tighten\"/\"release\" 三者之一（不是句子）；"
                 "spotlight 是角色名的**数组**（如 [\"伊芙琳\"]，无则 []）；"
@@ -338,6 +357,10 @@ def build_turn_plan_messages(
                 "失败不给或给误导），不要干等玩家自己想起来申请。"
                 "但主动裁定仅限被动/本能类（感知/抗性/灵光/SAN）；心理学、话术、图书馆使用等"
                 "**主动运用型技能**只能因应玩家自己的宣言裁定，玩家没说要用就不发——那是替玩家行动。\n"
+                "combat.should_start 只在玩家或 NPC 已明确发起会造成伤害的攻击、双方即刻进入敌对交锋时为 true；"
+                "威胁、戒备、瞄准、谈判或尚未接敌时保持 false。开战时 enemies 必须列出本轮实际参战敌方的名字，"
+                "优先使用 visible_npcs 中的原名，trigger 用一句话说明开战原因。结构化战斗会自行结算攻击，"
+                "因此规划开战时不要再把本次攻击裁定为普通 dice_check。\n"
                 "npc_policy.speakers 与 direction.nudge 里的 NPC **只能用 canonical_npcs 里的名字**；"
                 "improvised_npcs 是 KP 此前临场添加的龙套——**绝不安排他们携带线索、透露情报或推动剧情**，"
                 "最多作为氛围出现，追问时指回模组内容。\n"
@@ -443,6 +466,7 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
         "clue_policy": plan.clue_policy.model_dump(),
         "npc_policy": plan.npc_policy.model_dump(),
         "scene_policy": plan.scene_policy.model_dump(),
+        "combat": plan.combat.model_dump(),
         "narration_brief": plan.narration_brief,
         "safety": plan.safety.model_dump(),
         "direction": plan.direction.model_dump(),
@@ -489,6 +513,18 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
             "再强调一次：本次回复务必以这一行结束，且这必须是回复真正的最后一行 —— " + directive + "\n"
         )
 
+    combat_block = ""
+    if plan.combat.should_start:
+        enemies = "、".join(plan.combat.enemies) or "（必须填写实际敌方名字）"
+        combat_block = (
+            "\n\n【结构化战斗切换——最高优先级状态约束】\n"
+            "本轮裁定已经确认进入实战。你可以简短描写冲突爆发，但不得在自由叙事中自行判定命中、"
+            "伤害或胜负；必须调用 start_combat，并在调用后立即收束本轮。\n"
+            f"敌方：{enemies}\n"
+            f"触发原因：{plan.combat.trigger or plan.player_intent}\n"
+            "即使叙事已经写得完整，也不能省略战斗状态切换；后端会对漏调进行确定性补偿。\n"
+        )
+
     # check_block 放在 JSON 之后收尾：模型对「上下文最末尾的指令」权重最高，把这条硬约束
     # 作为最后读到的内容，能显著提升「照发 [DICE_CHECK] 收尾、不提前泄结果」的遵循率。
     return {
@@ -509,5 +545,6 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
             "绝不能替玩家决定或直接宣布检定成功；foreshadow 是可择机埋设/回收的悬念。\n"
             + json.dumps(content, ensure_ascii=False, indent=2)
             + check_block
+            + combat_block
         ),
     }

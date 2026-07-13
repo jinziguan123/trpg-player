@@ -2022,6 +2022,41 @@ def _record_turn_usage(db: Session, game_session: GameSession, llm, events: list
         logger.exception("落库回合 usage 失败（忽略）")
 
 
+async def _ensure_planned_combat(
+    db: Session,
+    session_id: str,
+    game_session: GameSession,
+    module: Module,
+    player_char: Character,
+    teammates: list[Character] | None,
+    llm,
+    plan: turn_planner.TurnPlan | None,
+) -> AsyncIterator[str]:
+    """确保规划器裁定的开战一定落成战斗态，补偿 KP 漏调工具或旧指令。
+
+    模型仍负责识别「是否开战、敌方是谁」；一旦结构化计划给出肯定裁定，状态切换就由
+    后端确定性保证。若 KP 已经通过工具或文本指令创建战斗，本守卫幂等返回。
+    """
+    if plan is None or not plan.combat.should_start:
+        return
+
+    from app.services import combat_service
+
+    current = combat_service.get_combat(db.get(GameSession, session_id))
+    if current and current.get("active"):
+        return
+
+    enemies = "，".join(plan.combat.enemies)
+    trigger = plan.combat.trigger.strip() or plan.player_intent.strip() or "冲突升级为正面交战"
+    if not enemies:
+        logger.warning("规划器裁定开战但未给敌方名字，使用临场敌人兜底: session=%s", session_id)
+    chunks = await _exec_start_combat(
+        db, session_id, game_session, module, player_char, teammates, llm, enemies, trigger,
+    )
+    for chunk in chunks:
+        yield chunk
+
+
 async def _run_generation(
     db: Session,
     session_id: str,
@@ -2171,6 +2206,11 @@ async def _run_generation(
         ):
             room_hub.broadcast(session_id, chunk)
 
+    async for chunk in _ensure_planned_combat(
+        db, session_id, game_session, module, player_char, teammates, llm, plan,
+    ):
+        room_hub.broadcast(session_id, chunk)
+
     await _finish_generation(db, session_id, llm)
 
 
@@ -2291,6 +2331,11 @@ async def _run_split_generation(
     ):
         room_hub.broadcast(session_id, chunk)
 
+    async for chunk in _ensure_planned_combat(
+        db, session_id, game_session, module, player_char, teammates, llm, plan,
+    ):
+        room_hub.broadcast(session_id, chunk)
+
     await _finish_generation(db, session_id, llm)
 
 
@@ -2314,6 +2359,17 @@ def _skill_names(char: Character) -> list[str]:
 
 
 _CHECK_INTENT_SYS = "你是 TRPG 意图分诊器，只输出 JSON，不要解释。"
+_COMBAT_DECLARATION_RE = re.compile(
+    r"攻击|袭击|开枪|射击|开火|砍向|劈向|刺向|捅向|挥(?:刀|剑|斧)|"
+    r"(?:冲|扑)上去.{0,16}(?:打|揍|攻击|砍|劈|刺)|(?:一拳|一脚|踢向|拳打)"
+)
+
+
+def _looks_like_combat_declaration(text: str) -> bool:
+    """高精度识别明确交战宣言，只用于避免被普通检定分诊提前截走。"""
+    if re.search(r"(?:不要|别|停止|阻止).{0,6}(?:攻击|袭击|开枪|射击|开火)", text or ""):
+        return False
+    return bool(_COMBAT_DECLARATION_RE.search(text or ""))
 
 
 async def _detect_check_request(llm, text: str, char: Character) -> str | None:
@@ -2331,6 +2387,8 @@ async def _detect_check_request(llm, text: str, char: Character) -> str | None:
         "判断玩家是否在【主动要求做一次技能/属性检定】"
         "（如「我用心理学看看他说的真假」「我要过一个侦查检定」「掷个聆听」"
         "「我想过个教育检定回忆一下」「过一个力量把门撞开」）。\n"
+        "攻击、射击、格斗、躲避等交战宣言不是普通检定申请，必须返回 check=false，"
+        "交给战斗规划器与结构化战斗处理。\n"
         '是 → {"check": true, "skill": "技能名或属性中文名（尽量用上面列出的原名）"}\n'
         '否（只是普通说话/行动/移动/环境互动）→ {"check": false}\n只输出 JSON。'
     )
@@ -2404,7 +2462,7 @@ async def run_chat_generation(session_id: str) -> None:
             (e.content or "") for e in turn
             if e.event_type in ("action", "dialogue") and e.actor_id == acting.id and (e.content or "").strip()
         )
-        if player_text:
+        if player_text and not _looks_like_combat_declaration(player_text):
             skill = await _detect_check_request(llm, player_text, acting)
             if skill:
                 await _run_kp_turn(
