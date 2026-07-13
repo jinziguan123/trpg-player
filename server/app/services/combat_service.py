@@ -20,6 +20,7 @@ from app.models.session import GameSession
 from app.rules.coc import combat as engine
 from app.rules.coc.weapons import WEAPON_CATEGORY_ORDER
 from app.services import session_service
+from app.services.room_hub import room_hub
 
 # 火器大类（决定先攻火器优先与「远程」判定）
 _FIREARM_CATEGORIES = {"手枪", "半自动步枪", "全自动步枪", "霰弹枪", "冲锋枪", "狙击步枪", "机枪"}
@@ -396,9 +397,11 @@ async def resolve_combat_roll(
         out.append(_combat_line(db, session_id, "目标已不在场，伤害落空。"))
 
     state["pending_roll"] = None
-    if actor:
-        actor["acted_this_round"] = True
-    engine.advance_turn(state)
+    # 反击伤害（no_advance）时先攻已在 resolve_reaction 里推进过攻方回合，这里不再重复推进。
+    if not pr.get("no_advance"):
+        if actor:
+            actor["acted_this_round"] = True
+        engine.advance_turn(state)
     _save_combat(db, session_id, state)   # 先落库（清 pending_roll+推进），再驱动；
     # 绝不在 drive_npcs 之后再存 state——否则会把 drive 里 _end_combat 的「清空战斗」覆盖回去。
     drive_chunks, drive_beats = await drive_npcs(db, session_id, state, agent, scene_hint)
@@ -533,16 +536,33 @@ async def resolve_reaction(db: Session, session_id: str, defender_id: str, choic
             attacker_disarmed=atk_disarmed,
         )
         out.append(_combat_dice(db, session_id, attacker, defender, pr["weapon"], res))
-        if res["hit"] and res["damage"]:
-            victim = defender if res["damage_to"] == "defender" else attacker
-            for line in apply_damage(db, state, victim, res["damage"]["total"],
+        verb = {"fight_back": "反击", "dodge": "闪避", "cover": "扑向掩体"}.get(choice, choice)
+        if res["hit"] and res["damage"] and res["damage_to"] == "attacker":
+            # 守方（玩家）反击命中攻方 → 让玩家亲手掷反击伤害（两段式）：先清反应、推进攻方回合，
+            # 再挂 pending_roll(no_advance)，由玩家经 /combat/roll 结算伤害。不在此自动扣血。
+            state["pending_reaction"] = None
+            attacker["acted_this_round"] = True
+            engine.advance_turn(state)
+            dmg = res["damage"]
+            state["pending_roll"] = {
+                "id": uuid.uuid4().hex, "actor_id": defender["id"], "kind": "damage",
+                "victim_id": attacker["id"], "weapon": "反击",
+                "damage": {"total": dmg["total"], "rolls": list(dmg["rolls"]),
+                           "notation": dmg["notation"]},
+                "no_advance": True, "reason": f"{defender['name']} 反击",
+                "label": f"投掷反击伤害（{dmg['notation']}）",
+            }
+            state["log"].append({"round": state["round"], "actor": defender["name"],
+                                 "action": "fight_back_hit", "target": attacker["name"]})
+            _save_combat(db, session_id, state)
+            out.append(_combat_state_chunk(state))   # 带 pending_roll → 前端弹「投掷反击伤害」
+            return out
+        if res["hit"] and res["damage"]:   # damage_to == 'defender'：守方被攻方命中 → NPC 伤害自动结算
+            for line in apply_damage(db, state, defender, res["damage"]["total"],
                                      reason=f"{attacker['name']} 的 {pr['weapon']}"):
                 out.append(_combat_line(db, session_id, line))
-        verb = {"fight_back": "反击", "dodge": "闪避", "cover": "扑向掩体"}.get(choice, choice)
         beats.append(f"{defender['name']} 对 {attacker['name']} 的攻击选择{verb}："
-                     + ("被击中" if (res["hit"] and res["damage_to"] == "defender")
-                        else "反击得手" if (res["hit"] and res["damage_to"] == "attacker")
-                        else "未受伤"))
+                     + ("被击中" if (res["hit"] and res["damage_to"] == "defender") else "未受伤"))
     state["pending_reaction"] = None
     if attacker:
         attacker["acted_this_round"] = True
@@ -879,10 +899,14 @@ def _combat_roll_event(db: Session, session_id: str, content: str, dice_detail: 
     """玩家亲自掷的战斗骰（命中/伤害）：落成 dice 事件并带 metadata.dice → 走主线 3D 骰动画。
 
     不打 combat_log 标记（那会被前端分流进日志抽屉、不触发动画）；combat_roll 仅作信息标注。
+    **即时广播**：点掷骰后随即让 3D 动画起来，不必等后续 NPC 驱动/子代理叙述（LLM）跑完——
+    那些延迟以前会卡在「点了按钮到骰子动」之间。端点随整批返回时会再广播一次，前端按 id 幂等去重。
     """
     ev = session_service.add_event(db, session_id, "dice", content, actor_name="战斗",
                                    metadata={"dice": dice_detail, "combat_roll": True})
-    return _chunk("dice", content, id=ev.id, metadata={"dice": dice_detail, "combat_roll": True})
+    chunk = _chunk("dice", content, id=ev.id, metadata={"dice": dice_detail, "combat_roll": True})
+    room_hub.broadcast(session_id, chunk)
+    return chunk
 
 
 def _combat_state_chunk(state: dict) -> str:

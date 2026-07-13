@@ -133,9 +133,13 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   setCurrentSession: (session) => set({ currentSession: session }),
 
   addMessage: (msg) =>
-    set((s) => ({
-      messages: [...s.messages, { ts: Date.now(), ...msg, id: msg.id || `msg-${++msgCounter}` }],
-    })),
+    set((s) => {
+      const id = msg.id || `msg-${++msgCounter}`
+      // 按 id 幂等：同一事件可能被广播两次（如战斗骰为降低延迟先由后端即时广播、随后端点又随
+      // 整批重发一次）——去重避免重复卡片，首条已触发 3D 动画即可。
+      if (s.messages.some((m) => m.id === id)) return s
+      return { messages: [...s.messages, { ts: Date.now(), ...msg, id }] }
+    }),
 
   removeMessage: (id) =>
     set((s) => ({ messages: s.messages.filter((m) => m.id !== id) })),

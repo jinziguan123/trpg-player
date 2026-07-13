@@ -128,6 +128,34 @@ def test_resolve_aoe_applies_to_all_and_burns_without_advancing(db_factory, monk
     assert st["turn_index"] == turn_before                          # AoE 不推进先攻
 
 
+def test_fight_back_counter_is_player_rolled(db_factory, monkeypatch):
+    """反击命中攻方后，反击伤害不再自动结算——挂成防守玩家的 pending_roll，由其亲手掷。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A")])
+    # 手动设 pending_reaction：e1 徒手攻击 hero（模拟 NPC 攻击真人后的暂停点）。
+    state["pending_reaction"] = {
+        "attacker_id": "e1", "defender_id": hero.id, "attacker_name": "循声者A",
+        "defender_name": hero.name, "weapon": "徒手格斗", "ranged": False,
+        "allowed": ["fight_back", "dodge"],
+    }
+    combat_service._save_combat(db, sid, state)
+    # 反击对抗：e1 格斗90失败、hero 格斗5成功 → hero 胜 → 反击命中攻方（damage_to=attacker）。
+    _fix_rolls(monkeypatch, [90, 5], die=2)   # 反击伤害 1D3(die=2)=2 < 半血，不触发 CON 检定
+    out = asyncio.run(combat_service.resolve_reaction(db, sid, hero.id, "fight_back"))
+    assert any('"combat_state"' in c for c in out)
+    st = combat_service.get_combat(db.get(GameSession, sid))
+    pr = st["pending_roll"]
+    assert pr and pr["kind"] == "damage" and pr["actor_id"] == hero.id and pr["victim_id"] == "e1"
+    assert pr.get("no_advance") is True
+    e1 = combat_service._find(st, "e1")
+    assert e1["hp"] == e1["max_hp"]                 # 反击伤害尚未结算，等玩家掷
+    # 玩家亲手掷反击伤害 → e1 扣血
+    _roll(db, sid, hero.id)
+    st2 = combat_service.get_combat(db.get(GameSession, sid))
+    e1b = combat_service._find(st2, "e1")
+    assert e1b["hp"] < e1b["max_hp"]
+
+
 def test_extinguish_action_removes_burning(db_factory):
     db = db_factory(); sid, hero = _seed(db)
     state = _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A")])
