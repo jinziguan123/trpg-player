@@ -329,9 +329,10 @@ async def _begin_player_attack(
     if actor.get("aim"):
         actor["aim"] = False   # 瞄准一次性消费
 
-    # 第一段：把命中检定作为 3D 骰事件下发（玩家亲手触发的这一掷）
+    # 第一段：把命中检定作为 3D 骰事件下发（玩家亲手触发的这一掷），并附对抗卡数据
     hit_content = _combat_dice_content(actor, target, weapon, res)
-    out = [_combat_roll_event(db, session_id, hit_content, _hit_dice_detail(res["attacker_check"]))]
+    out = [_combat_roll_event(db, session_id, hit_content, _hit_dice_detail(res["attacker_check"]),
+                              opposed=_opposed_detail(res, actor["name"], target["name"]))]
 
     if res["hit"] and res["damage"] and res.get("damage_to"):
         # 命中 → 挂 pending_roll，等玩家亲自掷伤害；不立即扣血、不推进先攻。
@@ -535,7 +536,12 @@ async def resolve_reaction(db: Session, session_id: str, defender_id: str, choic
             defender_data=_char_data(defender), defense=choice, ranged=pr["ranged"],
             attacker_disarmed=atk_disarmed,
         )
-        out.append(_combat_dice(db, session_id, attacker, defender, pr["weapon"], res))
+        # 玩家亲手做的这次反应检定 → 走 3D 骰动画 + 对抗卡（守方是玩家，动画呈现守方这一掷）
+        react_content = _combat_dice_content(attacker, defender, pr["weapon"], res)
+        out.append(_combat_roll_event(
+            db, session_id, react_content,
+            _hit_dice_detail(res.get("defender_check") or res["attacker_check"]),
+            opposed=_opposed_detail(res, attacker["name"], defender["name"])))
         verb = {"fight_back": "反击", "dodge": "闪避", "cover": "扑向掩体"}.get(choice, choice)
         if res["hit"] and res["damage"] and res["damage_to"] == "attacker":
             # 守方（玩家）反击命中攻方 → 让玩家亲手掷反击伤害（两段式）：先清反应、推进攻方回合，
@@ -883,6 +889,33 @@ def _hit_dice_detail(chk) -> dict:
             "units": chk.units, "bonus": chk.bonus, "penalty": chk.penalty}
 
 
+def _check_side(chk, name: str) -> dict:
+    """一方的检定结果投影（供前端对抗卡并排渲染）。"""
+    return {"name": name, "roll": chk.roll, "target": chk.skill_value,
+            "skill": chk.skill_name, "outcome": chk.outcome}
+
+
+def _opposed_detail(res: dict, actor_name: str, target_name: str) -> dict:
+    """攻守两方检定的结构化对抗数据（前端据此画「两边并排 + VS + 高亮胜方」的对抗卡）。
+
+    winner/result 按引擎结果给：命中=攻方胜、反击得手=守方胜、被闪开/防住=守方胜、未命中=无守方。
+    远程无守方检定（defender=None）时只呈现攻方一侧。
+    """
+    atk = res["attacker_check"]
+    dfn = res.get("defender_check")
+    d: dict = {"attacker": _check_side(atk, actor_name),
+               "defender": _check_side(dfn, target_name) if dfn is not None else None}
+    if res["hit"]:
+        if res.get("damage_to") == "defender":
+            d["winner"], d["result"] = "attacker", "命中"
+        else:
+            d["winner"], d["result"] = "defender", "反击得手"
+    else:
+        d["winner"] = "defender" if dfn is not None else None
+        d["result"] = "被闪开/防住" if dfn is not None else "未命中"
+    return d
+
+
 def _damage_dice_detail(dmg: dict) -> dict:
     """武器伤害（骰池）→ 前端 3D 骰契约（kind=pool）。sides 取骰式首段（多骰种时近似）。"""
     notation = dmg.get("notation") or ""
@@ -895,16 +928,20 @@ def _damage_dice_detail(dmg: dict) -> dict:
             "modifier": total - sum(rolls), "total": total}
 
 
-def _combat_roll_event(db: Session, session_id: str, content: str, dice_detail: dict) -> str:
+def _combat_roll_event(db: Session, session_id: str, content: str, dice_detail: dict,
+                       opposed: dict | None = None) -> str:
     """玩家亲自掷的战斗骰（命中/伤害）：落成 dice 事件并带 metadata.dice → 走主线 3D 骰动画。
 
     不打 combat_log 标记（那会被前端分流进日志抽屉、不触发动画）；combat_roll 仅作信息标注。
+    opposed 非空时附上攻守两方检定投影 → 前端画「两边并排 + VS + 高亮胜方」的对抗卡。
     **即时广播**：点掷骰后随即让 3D 动画起来，不必等后续 NPC 驱动/子代理叙述（LLM）跑完——
     那些延迟以前会卡在「点了按钮到骰子动」之间。端点随整批返回时会再广播一次，前端按 id 幂等去重。
     """
-    ev = session_service.add_event(db, session_id, "dice", content, actor_name="战斗",
-                                   metadata={"dice": dice_detail, "combat_roll": True})
-    chunk = _chunk("dice", content, id=ev.id, metadata={"dice": dice_detail, "combat_roll": True})
+    meta: dict = {"dice": dice_detail, "combat_roll": True}
+    if opposed:
+        meta["opposed"] = opposed
+    ev = session_service.add_event(db, session_id, "dice", content, actor_name="战斗", metadata=meta)
+    chunk = _chunk("dice", content, id=ev.id, metadata=meta)
     room_hub.broadcast(session_id, chunk)
     return chunk
 

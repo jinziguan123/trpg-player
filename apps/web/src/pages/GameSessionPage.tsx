@@ -17,7 +17,7 @@ import { ImprovisedNpcModal } from '../components/game/ImprovisedNpcModal'
 import { CombatStage, type CombatState, type PendingReaction, type CombatLogEntry } from '../components/game/CombatStage'
 import { ChasePanel, type ChaseState } from '../components/game/ChasePanel'
 import { Modal } from '../components/ui/modal'
-import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter } from 'react-icons/gi'
+import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter, GiCrossedSwords, GiLaurelCrown } from 'react-icons/gi'
 import { Copy, Bot, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { parseChaseState, parseCombatState, parsePendingReaction } from '../lib/liveState'
@@ -99,6 +99,90 @@ function diceAccent(outcome: string): string {
   if (s.includes('success') || s === '成功') return 'var(--color-success)'    // 其余成功：绿
   if (s.includes('fail') || s.includes('失败')) return 'var(--color-danger)'  // 普通失败：红
   return 'var(--color-text-secondary)'
+}
+
+/** 检定 outcome 枚举 → 中文短标签（对抗卡每侧的成败注脚）。 */
+function outcomeLabel(outcome: string): string {
+  const s = String(outcome || '')
+  if (s.includes('critical') || s === '大成功') return '大成功'
+  if (s.includes('fumble') || s === '大失败') return '大失败'
+  if (s.includes('hard_success')) return '困难成功'
+  if (s.includes('success') || s === '成功') return '成功'
+  if (s.includes('fail') || s.includes('失败')) return '失败'
+  return outcome
+}
+
+interface OpposedSide {
+  name: string
+  roll: number
+  target: number
+  skill: string
+  outcome: string
+}
+interface OpposedData {
+  attacker: OpposedSide
+  defender: OpposedSide | null
+  winner: 'attacker' | 'defender' | null
+  result: string
+}
+
+/** 对抗判定卡：攻守两方并排 + 中央 VS + 高亮胜方（参考博得之门3的对抗结算呈现）。
+ *  远程无守方检定时降级为单侧命中卡。 */
+function OpposedCard({ data, fresh, ts }: { data: OpposedData; fresh: boolean; ts?: string }) {
+  const resultAccent = data.result === '命中' || data.result === '反击得手'
+    ? 'var(--color-danger)'                       // 有人吃伤害 → 血色
+    : data.result === '被闪开/防住'
+      ? 'var(--color-success)'                     // 守方全身而退 → 绿
+      : 'var(--color-text-secondary)'              // 未命中（无守方）→ 中性
+
+  const Side = ({ s, won }: { s: OpposedSide; won: boolean }) => {
+    const accent = diceAccent(s.outcome)
+    return (
+      <div className="flex flex-col items-center px-3 py-1.5 rounded-md transition-all"
+        style={{
+          minWidth: '5.5rem',
+          background: won ? 'color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent)' : 'transparent',
+          border: won ? `1px solid ${accent}` : '1px solid transparent',
+          boxShadow: won ? `0 0 10px -2px ${accent}` : 'none',
+          opacity: won || data.winner === null ? 1 : 0.6,
+        }}>
+        <div className="flex items-center gap-1 max-w-[7rem]">
+          {won && <GiLaurelCrown style={{ color: accent, fontSize: '0.8rem', flexShrink: 0 }} />}
+          <span className="text-xs font-semibold truncate" style={{ color: 'var(--color-text-primary)' }}>{s.name}</span>
+        </div>
+        <div className="font-bold leading-none my-0.5" style={{ fontSize: '1.5rem', color: accent }}>{s.roll}</div>
+        <div style={{ fontSize: '0.6rem', color: 'var(--color-text-secondary)' }}>{s.skill} / {s.target}</div>
+        <div style={{ fontSize: '0.65rem', color: accent }}>{outcomeLabel(s.outcome)}</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="chat-msg py-1">
+      <div className={`dice-card rounded-md px-3 py-2 ${fresh ? 'dice-enter' : ''}`}
+        style={{ borderLeft: `3px solid ${resultAccent}`, width: 'fit-content', maxWidth: '100%' }}>
+        <div className="flex items-center gap-1.5 mb-1" style={{ color: 'var(--color-text-secondary)', fontSize: '0.65rem' }}>
+          <GiCrossedSwords style={{ fontSize: '0.8rem' }} />
+          <span>对抗判定</span>
+        </div>
+        <div className="flex items-stretch gap-1">
+          <Side s={data.attacker} won={data.winner === 'attacker'} />
+          {data.defender && (
+            <>
+              <div className="flex items-center px-1">
+                <span className="font-bold italic" style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', opacity: 0.7 }}>VS</span>
+              </div>
+              <Side s={data.defender} won={data.winner === 'defender'} />
+            </>
+          )}
+        </div>
+        <div className="text-center mt-1 font-semibold" style={{ fontSize: '0.8rem', color: resultAccent }}>
+          {data.result}
+          {ts && <span className="ml-2" style={{ fontSize: '0.6rem', opacity: 0.5, color: 'var(--color-text-secondary)' }}>{ts}</span>}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 interface Character {
@@ -1167,6 +1251,11 @@ export function GameSessionPage() {
               // diceAnimating 在 layout effect 里于 paint 前置入，故结果卡首帧即隐藏、绝不先于动画闪现。
               if (msg.id && diceAnimating.has(msg.id) && !revealedDice.has(msg.id)) {
                 return <div key={msg.id} className="chat-msg py-1" style={{ minHeight: 0 }} />
+              }
+              // 对抗卡：命中/反击/闪避这类攻守对抗 → 两边并排 + VS + 高亮胜方（参考 BG3 对抗判定）
+              if (msg.metadata?.opposed) {
+                return <OpposedCard key={msg.id} data={msg.metadata.opposed as unknown as OpposedData}
+                         fresh={isFresh(msg)} ts={fmtTime(msg.ts)} />
               }
               // 暗投/暗骰：结果对玩家隐藏 → 用中性灰、不按成败着色
               const blind = !!msg.metadata?.blind
