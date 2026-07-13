@@ -1544,6 +1544,8 @@ export function GameSessionPage() {
           </div>
           <CharacterPanel
             character={panelChar}
+            sessionId={currentSession.id}
+            refreshKey={refreshTick}
             onSkillCheck={shownCharId === myCharId ? rollCheck : undefined}
             inventoryActions={shownCharId === myCharId && myCharId ? {
               sessionId: currentSession.id,

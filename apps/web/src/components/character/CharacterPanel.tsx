@@ -42,6 +42,9 @@ interface CharacterPanelProps {
    * intent 是玩家顺带说明的检定目标（可选，如「书桌暗格」），场景里线索不止一处时帮 KP 判断具体目标 */
   onSkillCheck?: (skill: string, intent: string) => void
   inventoryActions?: InventoryActions
+  /** 会话内提供：「道具」页从后端拉活库存（惰性播种旧存档）；refreshKey 变化即重拉。 */
+  sessionId?: string
+  refreshKey?: number
 }
 
 const ATTR_LABELS: Record<string, string> = {
@@ -369,15 +372,26 @@ const INV_KIND_LABEL: Record<string, string> = {
   consumable: '消耗品', gear: '装备', key: '关键物', document: '文件', weapon: '武器',
 }
 
-function InventoryTab({ character, actions }: { character: CharacterData; actions?: InventoryActions }) {
+function InventoryTab({ character, actions, sessionId, refreshKey }: {
+  character: CharacterData; actions?: InventoryActions; sessionId?: string; refreshKey?: number
+}) {
   const [busy, setBusy] = useState(false)
+  // 会话内：从后端拉活库存（惰性播种旧存档）；refreshKey 变化（本局事件/库存变更）即重拉。
+  const [fetched, setFetched] = useState<InvItem[] | null>(null)
+  useEffect(() => {
+    if (!sessionId || !character.id) { setFetched(null); return }
+    api.get<{ items: InvItem[] }>(`/sessions/${sessionId}/inventory?char_id=${character.id}`)
+      .then((r) => setFetched(r.items || []))
+      .catch(() => {})
+  }, [sessionId, character.id, refreshKey])
+
   const post = async (path: string, body: Record<string, unknown>) => {
     if (busy || !actions) return
     setBusy(true)
     try {
       await api.post(`/sessions/${actions.sessionId}/inventory/${path}`,
         { ...body, acting_character_id: actions.charId })
-      // 成功后不手动刷新——后端广播 inventory_update，GameSessionPage 会重拉角色卡。
+      // 成功后不手动刷新——后端广播 inventory_update，GameSessionPage 会 bump refreshKey → 重拉。
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : '操作失败')
     } finally {
@@ -385,9 +399,9 @@ function InventoryTab({ character, actions }: { character: CharacterData; action
     }
   }
   const sd = character.system_data || {}
-  // 活库存（游戏中获取/使用/消耗的权威列表）；开局已把静态 equipment 播种进来。
-  const inventory = (Array.isArray(sd.inventory) ? sd.inventory : []) as InvItem[]
-  // 无活库存时（如角色页、尚未开局）回落展示静态 equipment。
+  // 会话内用后端拉到的权威库存；会话外（角色页）回落 system_data.inventory。
+  const inventory = fetched ?? ((Array.isArray(sd.inventory) ? sd.inventory : []) as InvItem[])
+  // 无活库存时（角色页且未播种）回落展示静态 equipment。
   const equipment = inventory.length > 0
     ? []
     : (Array.isArray(sd.equipment) ? sd.equipment : []).map(equipmentName).filter(Boolean)
@@ -565,7 +579,7 @@ function ProfileTab({ character }: { character: CharacterData }) {
   )
 }
 
-export function CharacterPanel({ character, onSkillCheck, inventoryActions }: CharacterPanelProps) {
+export function CharacterPanel({ character, onSkillCheck, inventoryActions, sessionId, refreshKey }: CharacterPanelProps) {
   return (
     <Tabs defaultValue="基本信息" className="flex flex-col h-full">
       <TabsList>

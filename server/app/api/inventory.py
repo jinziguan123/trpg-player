@@ -34,10 +34,15 @@ def get_inventory(
     session_id: str, char_id: str, db: Session = Depends(get_db),
     token: str | None = Depends(player_token),
 ):
-    """读取某角色的活库存（供前端「道具」页签渲染）。"""
+    """读取某角色的活库存（供前端「道具」页签渲染）。
+
+    惰性播种：旧存档/未开场角色的活库存为空时，从角色卡静态 equipment 播种一次——
+    这样开场前建的会话也能立刻有带 id 的活库存（可用/给/丢），无需先走一回合。
+    """
     char = db.get(Character, char_id)
     if char is None:
         raise HTTPException(404, "角色不存在")
+    inventory_service.seed_from_equipment(db, char)   # 幂等：非空则跳过
     return {"items": inventory_service.get_inventory(char)}
 
 

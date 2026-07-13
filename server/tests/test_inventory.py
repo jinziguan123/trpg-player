@@ -119,6 +119,40 @@ def test_planner_items_guard_removes_lost(db_factory):
 
 # ── 玩家侧端点 ──
 
+def test_get_inventory_lazy_seeds_equipment(db_factory):
+    """旧存档：角色只有静态 equipment、无活库存 → GET 惰性播种，返回带 id 的可操作条目。"""
+    from fastapi.testclient import TestClient
+    from app.database import get_db
+    from app.main import app
+
+    db = db_factory()
+    module = Module(title="M", rule_system="coc", npcs=[], scenes=[])
+    hero = Character(name="龙牙", rule_system="coc", is_player=True,
+                     system_data={"equipment": ["打火机", "香烟", "手机"]})
+    db.add_all([module, hero]); db.flush()
+    s = GameSession(module_id=module.id, player_character_id=hero.id, status="active", world_state={})
+    db.add(s); db.commit()
+    sid, hid = s.id, hero.id
+
+    TS = sessionmaker(bind=db.get_bind())
+
+    def override():
+        d = TS()
+        try:
+            yield d
+        finally:
+            d.close()
+
+    app.dependency_overrides[get_db] = override
+    try:
+        r = TestClient(app).get(f"/api/sessions/{sid}/inventory?char_id={hid}").json()
+        names = {it["name"] for it in r["items"]}
+        assert names == {"打火机", "香烟", "手机"}
+        assert all(it.get("id") for it in r["items"])   # 带 id → 前端才能用/给/丢
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_inventory_endpoints_use_drop_give(tmp_path):
     from fastapi.testclient import TestClient
     from app.database import get_db
