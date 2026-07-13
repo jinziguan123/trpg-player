@@ -79,6 +79,38 @@ def test_medicine_heals_1d3(db_factory, monkeypatch):
     assert _hp(pc) == 8   # 5 + 1D3(=3)
 
 
+def _mk(name, hp, max_hp=11, status="active"):
+    return Character(name=name, rule_system="coc",
+                     system_data={"hitPoints": {"current": hp, "max": max_hp}}, status=status)
+
+
+def test_infer_heal_target_prefers_dying_ally():
+    medic = _mk("江户川龙牙", 13); medic.id = "medic"
+    dying = _mk("山田健太", 0, status="dying"); dying.id = "yamada"
+    healthy = _mk("路人", 11); healthy.id = "x"
+    # 施救者未给 target → 推断出濒死的山田（排除施救者本人）
+    assert cs._infer_heal_target("medic", medic, [dying, healthy]) is dying
+
+
+def test_infer_heal_target_single_wounded():
+    medic = _mk("医生", 11); medic.id = "m"
+    hurt = _mk("伤员", 6); hurt.id = "h"
+    assert cs._infer_heal_target("m", medic, [hurt]) is hurt
+
+
+def test_infer_heal_target_ambiguous_returns_none():
+    medic = _mk("医生", 11); medic.id = "m"
+    a = _mk("甲", 5); a.id = "a"
+    b = _mk("乙", 4); b.id = "b"
+    # 多人受伤且无唯一濒死 → 不猜（要求 KP 明确 target）
+    assert cs._infer_heal_target("m", medic, [a, b]) is None
+
+
+def test_infer_heal_target_excludes_medic_self():
+    medic = _mk("独行侠", 3); medic.id = "solo"   # 施救者自己受伤，但没有别的目标
+    assert cs._infer_heal_target("solo", medic, []) is None
+
+
 def test_new_damage_clears_first_aid_flag(db_factory):
     """受新伤 = 新的急救机会：_exec_hp_change 扣血时清 firstAidUsed。"""
     db = db_factory(); sid, pc = _seed(db, hp=8, flag=True)

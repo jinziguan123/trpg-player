@@ -3053,6 +3053,26 @@ def _heal_kind(skill: str) -> str | None:
     return None
 
 
+def _infer_heal_target(
+    medic_id: str | None, player_char: Character, teammates: list[Character] | None,
+) -> Character | None:
+    """治疗检定没显式给 target 时推断被治疗者：排除施救者后，优先唯一的濒死者，否则唯一的受伤者。
+
+    多人濒死/多人受伤（且无唯一濒死）时不猜——宁可不治也不治错人（要求 KP 明确 target）。
+    这样急救不再依赖 KP 记得写 target：施救对象通常就是那个倒下/流血的队友。
+    """
+    def _hp(c: Character) -> tuple[int, int]:
+        hp = (c.system_data or {}).get("hitPoints") or {}
+        return int(hp.get("current") or 0), int(hp.get("max") or 0)
+
+    cands = [c for c in ([player_char] + list(teammates or [])) if c and c.id != medic_id]
+    dying = [c for c in cands if _hp(c)[0] <= 0 or c.status in ("dying", "unconscious")]
+    if dying:
+        return dying[0] if len(dying) == 1 else None
+    wounded = [c for c in cands if _hp(c)[0] < _hp(c)[1]]
+    return wounded[0] if len(wounded) == 1 else None
+
+
 def _apply_heal_on_success(
     db: Session, session_id: str, target: Character | None, skill: str, outcome: str,
 ) -> list[str]:
@@ -3257,9 +3277,13 @@ async def _exec_dice_check(
             "char_ref": char_ref, "char_id": char_id, "actor_name": disp_name,
             "source": source, "bonus": bonus, "penalty": penalty,
         }
-        # 治疗类检定：记下被治疗者，投骰成功后由系统确定性回血（run_roll_generation 结算）。
+        # 治疗类检定：确定被治疗者（KP 显式 target 优先；缺失/误写成施救者自己 → 推断濒死/受伤队友），
+        # 投骰成功后由系统确定性回血——不再依赖 KP 记得写 target。
         if _heal_kind(skill_name):
-            heal_target = _resolve_hp_target(kv.get("target") or "", player_char, teammates)
+            tgt_str = (kv.get("target") or "").strip()
+            heal_target = _resolve_hp_target(tgt_str, player_char, teammates) if tgt_str else None
+            if heal_target is None or heal_target.id == char_id:
+                heal_target = _infer_heal_target(char_id, player_char, teammates) or heal_target
             if heal_target is not None:
                 pending["heal_target_id"] = heal_target.id
         session_service.add_pending_check(db, session_id, pending)
