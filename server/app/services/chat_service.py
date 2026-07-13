@@ -2073,6 +2073,51 @@ async def _ensure_planned_combat(
         yield chunk
 
 
+def _san_rolled_this_turn(db: Session, session_id: str, pre_gen_seq: int) -> bool:
+    """本轮生成里是否已产生过 SAN 骰点事件（seq > 生成前基线且 metadata.skill=='SAN'）——
+    用于让确定性 SAN 守卫在 KP 已自行掷过 SAN 时幂等跳过，不重复扣。"""
+    for ev in session_service.get_session_events(db, session_id):
+        if (
+            (ev.sequence_num or 0) > pre_gen_seq
+            and ev.event_type == "dice"
+            and (ev.metadata_ or {}).get("skill") == "SAN"
+        ):
+            return True
+    return False
+
+
+async def _ensure_planned_sanity(
+    db: Session,
+    session_id: str,
+    game_session: GameSession,
+    player_char: Character,
+    teammates: list[Character] | None,
+    plan: turn_planner.TurnPlan | None,
+    pre_gen_seq: int,
+) -> AsyncIterator[str]:
+    """确保规划器裁定的『目睹恐怖』一定落成理智检定，补偿 KP 漏发 SAN_CHECK。
+
+    模型仍负责识别本轮是否目睹恐怖及其强度；一旦结构化计划肯定裁定，SAN 检定就由后端确定性
+    发出（系统自动掷、结算损失与疯狂）。若 KP 本轮已自行掷过 SAN（任意恐怖源），本守卫幂等跳过；
+    同一角色对同一恐怖源的去重仍由 _exec_san_check（world_state.san_checked）保证。
+    """
+    if plan is None or not plan.sanity.trigger:
+        return
+    if _san_rolled_this_turn(db, session_id, pre_gen_seq):
+        return
+    kv = {
+        "success_loss": plan.sanity.success_loss or "0",
+        "failure_loss": plan.sanity.failure_loss or "1d6",
+        "source": (plan.sanity.source or "本轮目睹的恐怖").strip(),
+        "chars": "/".join(plan.sanity.witnesses) if plan.sanity.witnesses else "",
+    }
+    chunks, _descs = await _exec_san_check(
+        db, session_id, game_session, kv, player_char, teammates,
+    )
+    for chunk in chunks:
+        yield chunk
+
+
 async def _run_generation(
     db: Session,
     session_id: str,
@@ -2092,6 +2137,8 @@ async def _run_generation(
     module_rag_enabled = bool(events) and getattr(module, "rag_status", "") == "ready"
     party_ids = {player_char.id} | {t.id for t in (teammates or [])}
     matcher_npcs = _matcher_npcs(module, teammates, game_session)
+    # 生成前基线序号：供确定性 SAN 守卫判断「本轮 KP 是否已自行掷过 SAN」（幂等，防重复扣）。
+    pre_gen_seq = session_service.get_next_sequence_num(db, session_id) - 1
 
     # 回合裁定计划：主链路（run_chat_generation）已在队友回合之前先跑好 plan 并记过线索台账，
     # 通过 plan 参数传入 → 此处不重复调用。其他入口（run_travel_generation / _run_kp_turn 尾部）
@@ -2229,6 +2276,12 @@ async def _run_generation(
     ):
         room_hub.broadcast(session_id, chunk)
 
+    # 确定性 SAN 守卫：计划裁定本轮目睹恐怖但 KP 漏发 SAN → 后端补发（幂等）。
+    async for chunk in _ensure_planned_sanity(
+        db, session_id, game_session, player_char, teammates, plan, pre_gen_seq,
+    ):
+        room_hub.broadcast(session_id, chunk)
+
     await _finish_generation(db, session_id, llm)
 
 
@@ -2295,6 +2348,8 @@ async def _run_split_generation(
     # 「玩家行动 + KP 叙事」自成一体（而非行动全挤在主线、叙事另起一列）。
     # 位置已由显式移动（玩家大地图 / 队友 travel 动作）确定性写入，此处不再据分组反推搬人。
     _tag_turn_events_by_group(db, _current_turn_events(events), groups)
+    # 生成前基线序号：供确定性 SAN 守卫判断本轮 KP 是否已自行掷过 SAN（幂等）。
+    pre_gen_seq = session_service.get_next_sequence_num(db, session_id) - 1
     plan_message = turn_planner.build_turn_plan_message(plan) if plan is not None else None
 
     # 模组原文 RAG：与单场景路径同一门槛（索引就绪才广告 [MODULE_LOOKUP]/注入摘录）
@@ -2352,6 +2407,12 @@ async def _run_split_generation(
 
     async for chunk in _ensure_planned_combat(
         db, session_id, game_session, module, player_char, teammates, llm, plan,
+    ):
+        room_hub.broadcast(session_id, chunk)
+
+    # 确定性 SAN 守卫：计划裁定本轮目睹恐怖但 KP 漏发 SAN → 后端补发（幂等）。
+    async for chunk in _ensure_planned_sanity(
+        db, session_id, game_session, player_char, teammates, plan, pre_gen_seq,
     ):
         room_hub.broadcast(session_id, chunk)
 

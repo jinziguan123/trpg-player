@@ -95,6 +95,17 @@ class SafetyPolicy(BaseModel):
     do_not_control_players: bool = True
 
 
+class SanityPolicy(BaseModel):
+    """本轮是否有角色目睹/得知会动摇理智的恐怖——由 planner 裁定，引擎据此确定性发 SAN 检定，
+    不依赖 KP 临场记得。trigger=False 时其余字段忽略。"""
+
+    trigger: bool = False
+    source: str = ""              # 恐怖源标识（去重键，如「墓室腐尸」）
+    success_loss: str = "0"       # 成功损失（骰式/数字），按冲击程度：尸体 0、血腥/怪物 1、神话生物 1d6
+    failure_loss: str = "1d6"     # 失败损失：尸体 1d3、血腥/怪物 1d6、强大神话生物 1d20
+    witnesses: StrList = Field(default_factory=list)  # 目睹者名单（缺省=在场全体）
+
+
 class DirectionPolicy(BaseModel):
     """导演层：本轮的节奏经营意图。只影响「怎么讲」，不改变世界状态。
 
@@ -136,7 +147,7 @@ class DirectionPolicy(BaseModel):
 # 各嵌套子模型字段：LLM 常把它们写成一句话（safety→「安全，无即时威胁」、check→「不需要」），
 # 形状错误只应让该字段退到默认，绝不能连累整份计划被丢弃回退旧流程。
 _SUBMODEL_FIELDS = (
-    "check", "clue_policy", "npc_policy", "scene_policy", "combat", "safety", "direction",
+    "check", "clue_policy", "npc_policy", "scene_policy", "combat", "safety", "sanity", "direction",
 )
 _TURN_KINDS = frozenset(
     ("investigate", "social", "move", "combat", "knowledge", "roleplay", "mixed")
@@ -154,6 +165,7 @@ class TurnPlan(BaseModel):
     combat: CombatPlan = Field(default_factory=CombatPlan)
     narration_brief: StrList = Field(default_factory=list)
     safety: SafetyPolicy = Field(default_factory=SafetyPolicy)
+    sanity: SanityPolicy = Field(default_factory=SanityPolicy)
     direction: DirectionPolicy = Field(default_factory=DirectionPolicy)
 
     @model_validator(mode="before")
@@ -361,6 +373,11 @@ def build_turn_plan_messages(
                 "威胁、戒备、瞄准、谈判或尚未接敌时保持 false。开战时 enemies 必须列出本轮实际参战敌方的名字，"
                 "优先使用 visible_npcs 中的原名，trigger 用一句话说明开战原因。结构化战斗会自行结算攻击，"
                 "因此规划开战时不要再把本次攻击裁定为普通 dice_check。\n"
+                "sanity.trigger 在**本轮有角色目睹或得知会动摇心智的恐怖**时为 true："
+                "尸体/血腥惨状/怪物/超自然异象/亵渎的神话真相等；仅世俗惊吓（普通打斗、坏消息、"
+                "寻常尸体已见过）不触发。true 时给 source（恐怖源标识，如「墓室腐尸」，同一源只检一次）、"
+                "success_loss/failure_loss（按冲击：尸体 0/1d3，血腥或怪物 1/1d6，强大神话生物 1d6/1d20），"
+                "witnesses 缺省=在场全体。后端会据此确定性发理智检定，不靠 KP 记得。\n"
                 "npc_policy.speakers 与 direction.nudge 里的 NPC **只能用 canonical_npcs 里的名字**；"
                 "improvised_npcs 是 KP 此前临场添加的龙套——**绝不安排他们携带线索、透露情报或推动剧情**，"
                 "最多作为氛围出现，追问时指回模组内容。\n"
@@ -469,6 +486,7 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
         "combat": plan.combat.model_dump(),
         "narration_brief": plan.narration_brief,
         "safety": plan.safety.model_dump(),
+        "sanity": plan.sanity.model_dump(),
         "direction": plan.direction.model_dump(),
     }
 
