@@ -257,6 +257,7 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
   const [weaponSel, setWeaponSel] = useState<string>(UNARMED)
   const [weaponCustom, setWeaponCustom] = useState<string>('')
   const [submitting, setSubmitting] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
   const [logOpen, setLogOpen] = useState(false)
 
   // 武器下拉项：拳头置顶（永远有）+ 角色卡武器栏（去重、保留伤害提示）+ 其它(手填)。
@@ -368,11 +369,28 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
 
   return (
     <div className="card mx-3 mb-2 !px-3 !py-2.5">
-      {/* 顶部：轮次 + B1 先攻轨 */}
-      <div className="flex items-center gap-2 mb-2">
-        <GiCrossedSwords style={{ color: 'var(--color-danger)', fontSize: '1.05rem', flexShrink: 0 }} />
-        <span className="text-sm font-semibold" style={{ color: 'var(--color-text-accent)' }}>战斗 · 第 {combat.round} 轮</span>
+      {/* 顶部：轮次 + 收起/展开 */}
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <GiCrossedSwords style={{ color: 'var(--color-danger)', fontSize: '1.05rem', flexShrink: 0 }} />
+          <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--color-text-accent)' }}>战斗 · 第 {combat.round} 轮</span>
+          {collapsed && (
+            <span className="text-xs truncate" style={{ color: 'var(--color-text-secondary)' }}>· 轮到 {active?.name ?? '……'}</span>
+          )}
+          {collapsed && (myTurn || rollForMe || reactionForMe) && (
+            <span className="text-[10px] px-1 rounded flex-shrink-0" style={{ color: 'var(--color-text-accent)', border: '1px solid var(--color-accent)' }}>待你操作</span>
+          )}
+        </div>
+        <button
+          onClick={() => setCollapsed((v) => !v)}
+          className="flex-shrink-0"
+          style={{ color: 'var(--color-text-secondary)' }}
+          title={collapsed ? '展开战斗面板' : '收起战斗面板'}
+        >
+          {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+        </button>
       </div>
+      {!collapsed && (<>
       {/* B1 先攻轨：横排，高亮当前、标下一个、走过者淡化 */}
       <InitiativeTrack order={order} turn={combat.turn} myCharId={myCharId} />
 
@@ -575,6 +593,7 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
           </div>
         </div>
       )}
+      </>)}
     </div>
   )
 }
