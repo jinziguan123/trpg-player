@@ -1545,6 +1545,13 @@ export function GameSessionPage() {
           <CharacterPanel
             character={panelChar}
             onSkillCheck={shownCharId === myCharId ? rollCheck : undefined}
+            inventoryActions={shownCharId === myCharId && myCharId ? {
+              sessionId: currentSession.id,
+              charId: myCharId,
+              teammates: (currentSession.participants || [])
+                .filter((p) => p.character_id && p.character_id !== myCharId)
+                .map((p) => ({ id: p.character_id as string, name: p.character_name || '队友' })),
+            } : undefined}
           />
         </aside>
       )}

@@ -255,6 +255,28 @@ body {
   color: var(--color-text-secondary);
 }
 
+/* 库存条目的小动作按钮：用 / 给 / 丢 */
+.inv-act {
+  font-size: 0.68rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 3px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-input-bg);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.inv-act:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-text-accent);
+}
+.inv-act:disabled { opacity: 0.5; cursor: not-allowed; }
+.inv-give { appearance: none; -webkit-appearance: none; padding-right: 0.5rem; }
+.inv-drop:hover:not(:disabled) {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
 .btn-primary {
   padding: 0.375rem 1rem;
   border: 1px solid var(--color-accent);

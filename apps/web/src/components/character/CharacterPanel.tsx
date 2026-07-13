@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react'
+import { toast } from 'sonner'
 import { RadarChart } from './RadarChart'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ConfirmDialog } from '../ui/confirm-dialog'
+import { api } from '../../api/client'
 
 /** 模糊匹配：先看子串，再退化为「按顺序出现的子序列」（如「图使」命中「图书馆使用」）。 */
 function fuzzyMatch(query: string, target: string): boolean {
@@ -27,11 +29,19 @@ interface CharacterData {
   status: string
 }
 
+/** 提供时（查看自己的卡、在场）「道具」页可主动用/丢/给——确定性执行，效果由 KP 叙述。 */
+export interface InventoryActions {
+  sessionId: string
+  charId: string
+  teammates: { id: string; name: string }[]
+}
+
 interface CharacterPanelProps {
   character: CharacterData
   /** 提供时（在场、查看自己的卡）技能可点击「申请检定」——难度由 KP 裁定，玩家不指定。
    * intent 是玩家顺带说明的检定目标（可选，如「书桌暗格」），场景里线索不止一处时帮 KP 判断具体目标 */
   onSkillCheck?: (skill: string, intent: string) => void
+  inventoryActions?: InventoryActions
 }
 
 const ATTR_LABELS: Record<string, string> = {
@@ -359,7 +369,21 @@ const INV_KIND_LABEL: Record<string, string> = {
   consumable: '消耗品', gear: '装备', key: '关键物', document: '文件', weapon: '武器',
 }
 
-function InventoryTab({ character }: { character: CharacterData }) {
+function InventoryTab({ character, actions }: { character: CharacterData; actions?: InventoryActions }) {
+  const [busy, setBusy] = useState(false)
+  const post = async (path: string, body: Record<string, unknown>) => {
+    if (busy || !actions) return
+    setBusy(true)
+    try {
+      await api.post(`/sessions/${actions.sessionId}/inventory/${path}`,
+        { ...body, acting_character_id: actions.charId })
+      // 成功后不手动刷新——后端广播 inventory_update，GameSessionPage 会重拉角色卡。
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : '操作失败')
+    } finally {
+      setTimeout(() => setBusy(false), 400)
+    }
+  }
   const sd = character.system_data || {}
   // 活库存（游戏中获取/使用/消耗的权威列表）；开局已把静态 equipment 播种进来。
   const inventory = (Array.isArray(sd.inventory) ? sd.inventory : []) as InvItem[]
@@ -384,16 +408,33 @@ function InventoryTab({ character }: { character: CharacterData }) {
           <h4 className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>随身物品</h4>
           <div className="space-y-1">
             {inventory.map((it, i) => (
-              <div key={it.id || `${it.name}-${i}`} className="text-xs px-2 py-1.5 rounded flex items-center justify-between gap-2"
+              <div key={it.id || `${it.name}-${i}`} className="text-xs px-2 py-1.5 rounded"
                 style={{ background: 'var(--color-bg-tertiary)' }} title={it.note || undefined}>
-                <span className="font-semibold truncate">
-                  {it.name}{(it.qty || 1) > 1 ? <span style={{ color: 'var(--color-text-secondary)' }}> ×{it.qty}</span> : null}
-                </span>
-                {it.kind && INV_KIND_LABEL[it.kind] && (
-                  <span className="text-[10px] px-1 rounded flex-shrink-0"
-                    style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}>
-                    {INV_KIND_LABEL[it.kind]}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold truncate">
+                    {it.name}{(it.qty || 1) > 1 ? <span style={{ color: 'var(--color-text-secondary)' }}> ×{it.qty}</span> : null}
                   </span>
+                  {it.kind && INV_KIND_LABEL[it.kind] && (
+                    <span className="text-[10px] px-1 rounded flex-shrink-0"
+                      style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}>
+                      {INV_KIND_LABEL[it.kind]}
+                    </span>
+                  )}
+                </div>
+                {actions && it.id && (
+                  <div className="flex items-center gap-1.5 mt-1">
+                    <button className="inv-act" disabled={busy}
+                      onClick={() => void post('use', { item_id: it.id })}>用</button>
+                    {actions.teammates.length > 0 && (
+                      <select className="inv-act inv-give" disabled={busy} value=""
+                        onChange={(e) => { const to = e.target.value; if (to) void post('give', { item_id: it.id, to_character_id: to }) }}>
+                        <option value="">给…</option>
+                        {actions.teammates.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                      </select>
+                    )}
+                    <button className="inv-act inv-drop" disabled={busy}
+                      onClick={() => void post('drop', { item_id: it.id })}>丢</button>
+                  </div>
                 )}
               </div>
             ))}
@@ -524,7 +565,7 @@ function ProfileTab({ character }: { character: CharacterData }) {
   )
 }
 
-export function CharacterPanel({ character, onSkillCheck }: CharacterPanelProps) {
+export function CharacterPanel({ character, onSkillCheck, inventoryActions }: CharacterPanelProps) {
   return (
     <Tabs defaultValue="基本信息" className="flex flex-col h-full">
       <TabsList>

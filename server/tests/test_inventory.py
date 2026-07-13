@@ -115,3 +115,63 @@ def test_planner_items_guard_removes_lost(db_factory):
     plan = TurnPlan(items_lost=[ItemDelta(name="火把")])
     _run(cs._ensure_planned_items(db, sid, db.get(GameSession, sid), pc, [], plan))
     assert not inv.get_inventory(pc)
+
+
+# ── 玩家侧端点 ──
+
+def test_inventory_endpoints_use_drop_give(tmp_path):
+    from fastapi.testclient import TestClient
+    from app.database import get_db
+    from app.main import app
+    from app.models import SessionParticipant
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'inv_api.db'}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    TS = sessionmaker(bind=engine)
+
+    def override_get_db():
+        d = TS()
+        try:
+            yield d
+        finally:
+            d.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    db = TS()
+    module = Module(title="M", rule_system="coc", npcs=[], scenes=[])
+    hero = Character(name="龙牙", rule_system="coc", is_player=True, system_data={})
+    ally = Character(name="健太", rule_system="coc", is_player=False, system_data={})
+    db.add_all([module, hero, ally]); db.flush()
+    s = GameSession(module_id=module.id, player_character_id=hero.id, status="active", world_state={})
+    db.add(s); db.flush()
+    db.add_all([
+        SessionParticipant(session_id=s.id, character_id=hero.id, role="human", is_primary=True,
+                           owner_token=None, claimed=True, ready=True),
+        SessionParticipant(session_id=s.id, character_id=ally.id, role="ai", is_primary=False,
+                           claimed=True, ready=True),
+    ])
+    inv.add_item(db, hero, "火柴", qty=2, kind="consumable")
+    inv.add_item(db, hero, "钥匙", kind="key")
+    db.commit()
+    sid, hid, aid = s.id, hero.id, ally.id
+    # 取物品 id
+    match_id = next(it["id"] for it in inv.get_inventory(hero) if it["name"] == "火柴")
+    key_id = next(it["id"] for it in inv.get_inventory(hero) if it["name"] == "钥匙")
+    db.close()
+
+    try:
+        c = TestClient(app)
+        # 使用消耗品 → -1 + 落一条 pending_turn 动作
+        assert c.post(f"/api/sessions/{sid}/inventory/use", json={"item_id": match_id}).status_code == 200
+        r = c.get(f"/api/sessions/{sid}/inventory?char_id={hid}").json()
+        assert next(it["qty"] for it in r["items"] if it["name"] == "火柴") == 1
+        # 转让钥匙给队友
+        assert c.post(f"/api/sessions/{sid}/inventory/give",
+                      json={"item_id": key_id, "to_character_id": aid}).status_code == 200
+        assert not any(it["name"] == "钥匙" for it in
+                       c.get(f"/api/sessions/{sid}/inventory?char_id={hid}").json()["items"])
+        assert any(it["name"] == "钥匙" for it in
+                   c.get(f"/api/sessions/{sid}/inventory?char_id={aid}").json()["items"])
+    finally:
+        app.dependency_overrides.clear()
