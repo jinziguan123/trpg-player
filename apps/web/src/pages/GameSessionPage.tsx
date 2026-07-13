@@ -390,6 +390,7 @@ export function GameSessionPage() {
     if (t === 'combat_state') { setCombat(parseCombatState(chunk.metadata)); setPendingReaction(null); return }  // 续跑广播新态 → 清反应提示
     if (t === 'combat_reaction_prompt') { setPendingReaction(parsePendingReaction(chunk.metadata)); return }  // NPC 攻击真人：弹反应按钮
     if (t === 'combat_end') { setCombat(null); setPendingReaction(null); return }  // 结果那句话已由后端落库为消息，不额外处理
+    if (t === 'inventory_update') { setRefreshTick((x) => x + 1); return }  // 库存变更 → 刷新角色卡「道具」页
     if (t === 'chase_start' || t === 'chase_state') { setChase(parseChaseState(chunk.metadata)); return }
     if (t === 'chase_end') { setChase(null); return }  // 结果那句话已由后端落库为消息，不额外处理
     if (t === 'event_delete') { if (chunk.id) removeMessage(chunk.id); return }

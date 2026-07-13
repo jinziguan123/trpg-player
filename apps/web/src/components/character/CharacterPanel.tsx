@@ -353,14 +353,23 @@ function equipmentName(item: unknown): string {
   return ''
 }
 
+interface InvItem { id?: string; name: string; qty?: number; kind?: string; note?: string }
+
+const INV_KIND_LABEL: Record<string, string> = {
+  consumable: '消耗品', gear: '装备', key: '关键物', document: '文件', weapon: '武器',
+}
+
 function InventoryTab({ character }: { character: CharacterData }) {
   const sd = character.system_data || {}
-  const equipment = (Array.isArray(sd.equipment) ? sd.equipment : [])
-    .map(equipmentName)
-    .filter(Boolean)
+  // 活库存（游戏中获取/使用/消耗的权威列表）；开局已把静态 equipment 播种进来。
+  const inventory = (Array.isArray(sd.inventory) ? sd.inventory : []) as InvItem[]
+  // 无活库存时（如角色页、尚未开局）回落展示静态 equipment。
+  const equipment = inventory.length > 0
+    ? []
+    : (Array.isArray(sd.equipment) ? sd.equipment : []).map(equipmentName).filter(Boolean)
   const weapons = (Array.isArray(sd.weapons) ? sd.weapons : []) as WeaponItem[]
 
-  if (equipment.length === 0 && weapons.length === 0) {
+  if (equipment.length === 0 && weapons.length === 0 && inventory.length === 0) {
     return (
       <div className="text-center py-8">
         <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>暂无物品</p>
@@ -370,6 +379,27 @@ function InventoryTab({ character }: { character: CharacterData }) {
 
   return (
     <div className="space-y-3">
+      {inventory.length > 0 && (
+        <div>
+          <h4 className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>随身物品</h4>
+          <div className="space-y-1">
+            {inventory.map((it, i) => (
+              <div key={it.id || `${it.name}-${i}`} className="text-xs px-2 py-1.5 rounded flex items-center justify-between gap-2"
+                style={{ background: 'var(--color-bg-tertiary)' }} title={it.note || undefined}>
+                <span className="font-semibold truncate">
+                  {it.name}{(it.qty || 1) > 1 ? <span style={{ color: 'var(--color-text-secondary)' }}> ×{it.qty}</span> : null}
+                </span>
+                {it.kind && INV_KIND_LABEL[it.kind] && (
+                  <span className="text-[10px] px-1 rounded flex-shrink-0"
+                    style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}>
+                    {INV_KIND_LABEL[it.kind]}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {weapons.length > 0 && (
         <div>
           <h4 className="text-xs font-semibold mb-1" style={{ color: 'var(--color-text-accent)' }}>武器</h4>
