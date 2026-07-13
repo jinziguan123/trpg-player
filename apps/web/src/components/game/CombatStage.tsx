@@ -364,8 +364,6 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
     }
   }
 
-  // 日志抽屉：折叠时露最近 2 条，展开显示全部。
-  const recentLog = log.slice(-2)
 
   return (
     <div className="card mx-3 mb-2 !px-3 !py-2.5">
@@ -575,22 +573,24 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
             <GiScrollUnfurled size={13} style={{ color: 'var(--color-text-accent)' }} />
             <span style={{ color: 'var(--color-text-accent)' }}>战斗日志 ({log.length})</span>
           </button>
-          <div className="mt-1.5 flex flex-col gap-1 max-h-56 overflow-y-auto chat-scroll">
-            {(logOpen ? log : recentLog).map((e) => (
-              <div
-                key={e.id}
-                className="text-[11px] px-2 py-1 rounded"
-                style={{
-                  background: 'var(--color-bg-secondary)',
-                  border: '1px solid var(--color-border)',
-                  color: e.kind === 'dice' ? 'var(--color-dice-gold)' : 'var(--color-text-secondary)',
-                  fontFamily: e.kind === 'dice' ? 'var(--font-body)' : undefined,
-                }}
-              >
-                {e.content}
-              </div>
-            ))}
-          </div>
+          {logOpen && (
+            <div className="mt-1.5 flex flex-col gap-1 max-h-56 overflow-y-auto chat-scroll">
+              {log.map((e) => (
+                <div
+                  key={e.id}
+                  className="text-[11px] px-2 py-1 rounded"
+                  style={{
+                    background: 'var(--color-bg-secondary)',
+                    border: '1px solid var(--color-border)',
+                    color: e.kind === 'dice' ? 'var(--color-dice-gold)' : 'var(--color-text-secondary)',
+                    fontFamily: e.kind === 'dice' ? 'var(--font-body)' : undefined,
+                  }}
+                >
+                  {e.content}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
       </>)}
