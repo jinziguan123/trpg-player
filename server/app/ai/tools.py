@@ -101,6 +101,13 @@ REGISTRY: tuple[ToolSpec, ...] = (
                 "type": "string",
                 "description": "检定针对的具体对象/目标（如「书桌暗格」「管家的说辞」），便于结果归属",
             },
+            "target": {
+                "type": "string",
+                "description": (
+                    "仅治疗类检定（急救/医学）填：被治疗者（主角或队友名）。检定成功后由系统"
+                    "确定性回血（急救回 1 点、濒死则稳住；医学回 1D3），你无需再发 HP_CHANGE。"
+                ),
+            },
             "bonus": {
                 "type": "integer",
                 "description": (

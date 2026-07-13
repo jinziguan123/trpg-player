@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import re
 import uuid
 from collections.abc import AsyncIterator
@@ -2636,10 +2637,20 @@ async def run_roll_generation(session_id: str, check_id: str) -> None:
             _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id),
         )
 
+        # 治疗类检定成功 → 引擎确定性回血（不靠 KP 自觉发 HP_CHANGE）。广播结算，并把结果并进
+        # 回灌 KP 的描述，让 KP 据「已回 N 点」续写而非自己臆断/漏结算。
+        heal_note = ""
+        heal_target_id = check.get("heal_target_id")
+        if heal_target_id:
+            target_char = db.get(Character, heal_target_id)
+            for chunk in _apply_heal_on_success(db, session_id, target_char, skill, result.outcome):
+                room_hub.broadcast(session_id, chunk)
+                heal_note = "；系统已按规则确定性结算回血"
+
         desc = (
             f"{disp_name} {skill}（{difficulty}），达成 {tier_cn}"
             + (f"（针对：{source}）" if source else "")
-            + f"：{result.description}"
+            + f"：{result.description}{heal_note}"
         )
         await _run_kp_turn(
             db, session_id, game_session, module, player_char, party_others,
@@ -2970,6 +2981,67 @@ def _resolve_hp_target(
     return None
 
 
+# ── 规则固定的治疗效果确定性结算（不依赖 KP 自觉发 HP_CHANGE）──
+_HEAL_SUCCESS_OUTCOMES = ("critical_success", "hard_success", "success")
+
+
+def _heal_kind(skill: str) -> str | None:
+    """技能名 → 治疗类型：急救 / 医学 / None（非治疗技能）。"""
+    s = skill or ""
+    if "急救" in s:
+        return "first_aid"
+    if "医学" in s:
+        return "medicine"
+    return None
+
+
+def _apply_heal_on_success(
+    db: Session, session_id: str, target: Character | None, skill: str, outcome: str,
+) -> list[str]:
+    """急救/医学检定成功 → 引擎确定性给目标回血（规则固定效果，KP 不必也不该再发 HP_CHANGE）。
+
+    急救：回 1 点，濒死（HP≤0/昏迷）则稳住并唤醒；医学：回 1D3。每处伤只成功处理一次
+    （system_data.firstAidUsed，受新伤时由 _exec_hp_change 清零）。失败/非治疗技能/无目标不结算。
+    返回可读结算 chunks（system 事件，已落库）。
+    """
+    kind = _heal_kind(skill)
+    if kind is None or outcome not in _HEAL_SUCCESS_OUTCOMES or target is None:
+        return []
+    sd = dict(target.system_data or {})
+    if sd.get("firstAidUsed"):
+        line = f"{target.name} 这处伤已被成功处理过（每处伤急救/医学各只能成功一次），本次不叠加。"
+        ev = session_service.add_event(db, session_id, "system", line, actor_name="系统",
+                                       metadata={"heal": 0, "actor": target.name})
+        return [_make_chunk("system", line, event_id=ev.id)]
+    hp = dict(sd.get("hitPoints") or {})
+    old = int(hp.get("current") or 0)
+    max_hp = int(hp.get("max") or old or 1)
+    dying = old <= 0 or target.status in ("dying", "unconscious")
+    heal = 1 if kind == "first_aid" else random.randint(1, 3)
+    new_hp = min(max_hp, max(old, 0) + heal)
+    if dying:
+        new_hp = max(new_hp, 1)   # 濒死稳住：至少留 1 点临时生命
+
+    _update_character_stat(db, target, "hitPoints.current", new_hp)
+    sd = dict(target.system_data or {})
+    sd["firstAidUsed"] = True          # once-per-wound：直到受新伤才清
+    target.system_data = sd
+    if dying and new_hp > 0 and target.status in ("dying", "unconscious"):
+        target.status = "active"        # 成功急救稳住濒死 / 唤醒昏迷
+    db.add(target)
+    db.commit()
+
+    label = "急救" if kind == "first_aid" else "医学"
+    gained = new_hp - max(old, 0)
+    line = f"{target.name} 经{label}恢复 {gained} 点生命（HP {old} → {new_hp}）"
+    if dying:
+        line += "，伤势稳住、脱离濒死"
+    ev = session_service.add_event(db, session_id, "system", line, actor_name="系统",
+                                   metadata={"heal": gained, "old_hp": old, "new_hp": new_hp,
+                                             "actor": target.name})
+    return [_make_chunk("system", line, event_id=ev.id)]
+
+
 async def _exec_hp_change(
     db: Session, session_id: str, player_char: Character,
     target_str: str, delta_str: str, reason: str,
@@ -2997,6 +3069,10 @@ async def _exec_hp_change(
     new_hp = max(0, min(max_hp, old_hp + delta))
 
     _update_character_stat(db, char, "hitPoints.current", new_hp)
+    if delta < 0 and (char.system_data or {}).get("firstAidUsed"):
+        # 受新伤 = 新的急救机会：清 once-per-wound 标记，否则之前被急救过的人再受伤后救不了。
+        sd = dict(char.system_data or {}); sd["firstAidUsed"] = False
+        char.system_data = sd; db.add(char); db.commit()
 
     chunks: list[str] = []
     if delta < 0:
@@ -3123,6 +3199,11 @@ async def _exec_dice_check(
             "char_ref": char_ref, "char_id": char_id, "actor_name": disp_name,
             "source": source, "bonus": bonus, "penalty": penalty,
         }
+        # 治疗类检定：记下被治疗者，投骰成功后由系统确定性回血（run_roll_generation 结算）。
+        if _heal_kind(skill_name):
+            heal_target = _resolve_hp_target(kv.get("target") or "", player_char, teammates)
+            if heal_target is not None:
+                pending["heal_target_id"] = heal_target.id
         session_service.add_pending_check(db, session_id, pending)
         prompt_text = _check_prompt_text(disp_name, skill_name, difficulty)
         meta = {"check_request": True, **pending}
