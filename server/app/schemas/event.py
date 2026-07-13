@@ -67,6 +67,30 @@ class TravelRequest(BaseModel):
     stash: bool = False
 
 
+class InventoryUseRequest(BaseModel):
+    """玩家主动使用一件库存物品（消耗品自动 -1，效果由 KP 据本回合暂存动作叙述）。"""
+
+    item_id: str
+    acting_character_id: str | None = None
+
+
+class InventoryDropRequest(BaseModel):
+    """玩家丢弃/销毁一件库存物品（qty 缺省=整条移除）。"""
+
+    item_id: str
+    qty: int | None = None
+    acting_character_id: str | None = None
+
+
+class InventoryGiveRequest(BaseModel):
+    """把一件库存物品转让给同队的另一角色。"""
+
+    item_id: str
+    to_character_id: str
+    qty: int = 1
+    acting_character_id: str | None = None
+
+
 class StreamChunk(BaseModel):
     type: Literal[
         "narration", "dialogue", "action", "dice", "system",

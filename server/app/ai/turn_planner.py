@@ -95,6 +95,34 @@ class SafetyPolicy(BaseModel):
     do_not_control_players: bool = True
 
 
+def _coerce_item_deltas(v: Any) -> list:
+    """把物品增减列表归一：非 list→[]；字符串元素→{name}；dict 需有 name；
+    已是 ItemDelta 实例（直接构造/内部传入）原样放行；其余丢弃。"""
+    if not isinstance(v, list):
+        return []
+    out: list = []
+    for x in v:
+        if isinstance(x, BaseModel):
+            out.append(x)
+        elif isinstance(x, dict) and str(x.get("name") or "").strip():
+            out.append(x)
+        elif isinstance(x, str) and x.strip():
+            out.append({"name": x.strip()})
+    return out
+
+
+class ItemDelta(BaseModel):
+    """一件物品的获得/失去。who=获得者或失去者角色名（缺省=本轮行动的玩家）。"""
+
+    name: str = ""
+    qty: int = 1
+    kind: str = ""   # 获得时可选 consumable/gear/key/document；失去时忽略
+    who: str = ""
+
+
+ItemDeltaList = Annotated[list[ItemDelta], BeforeValidator(_coerce_item_deltas)]
+
+
 class SanityPolicy(BaseModel):
     """本轮是否有角色目睹/得知会动摇理智的恐怖——由 planner 裁定，引擎据此确定性发 SAN 检定，
     不依赖 KP 临场记得。trigger=False 时其余字段忽略。"""
@@ -166,6 +194,8 @@ class TurnPlan(BaseModel):
     narration_brief: StrList = Field(default_factory=list)
     safety: SafetyPolicy = Field(default_factory=SafetyPolicy)
     sanity: SanityPolicy = Field(default_factory=SanityPolicy)
+    items_gained: ItemDeltaList = Field(default_factory=list)  # 本轮玩家获得的物品 → 确定性入库
+    items_lost: ItemDeltaList = Field(default_factory=list)     # 本轮确定性失去/消耗/损毁的物品
     direction: DirectionPolicy = Field(default_factory=DirectionPolicy)
 
     @model_validator(mode="before")
@@ -378,6 +408,10 @@ def build_turn_plan_messages(
                 "寻常尸体已见过）不触发。true 时给 source（恐怖源标识，如「墓室腐尸」，同一源只检一次）、"
                 "success_loss/failure_loss（按冲击：尸体 0/1d3，血腥或怪物 1/1d6，强大神话生物 1d6/1d20），"
                 "witnesses 缺省=在场全体。后端会据此确定性发理智检定，不靠 KP 记得。\n"
+                "items_gained/items_lost：本轮玩家**确实**获得或失去/用掉/损毁的物品——后端据此"
+                "确定性增减库存，不靠 KP 记账。每项给 name、qty（缺省 1）、who（获得/失去者角色名，"
+                "缺省=本轮行动玩家）；获得时 kind 可选 consumable/gear/key/document。只记**已然发生**"
+                "的（捡起、被给、用掉最后一根火柴、绳子被割断）；仅打算拿、还没到手的不记。\n"
                 "npc_policy.speakers 与 direction.nudge 里的 NPC **只能用 canonical_npcs 里的名字**；"
                 "improvised_npcs 是 KP 此前临场添加的龙套——**绝不安排他们携带线索、透露情报或推动剧情**，"
                 "最多作为氛围出现，追问时指回模组内容。\n"
@@ -487,6 +521,8 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
         "narration_brief": plan.narration_brief,
         "safety": plan.safety.model_dump(),
         "sanity": plan.sanity.model_dump(),
+        "items_gained": [it.model_dump() for it in plan.items_gained],
+        "items_lost": [it.model_dump() for it in plan.items_lost],
         "direction": plan.direction.model_dump(),
     }
 

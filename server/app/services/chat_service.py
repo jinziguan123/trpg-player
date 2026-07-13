@@ -32,6 +32,7 @@ from app.models.module import Module
 from app.models.session import GameSession
 from app.rules.registry import get_engine
 from app.services import (
+    inventory_service,
     module_rag_service,
     rag_stats,
     rulebook_service,
@@ -2118,6 +2119,74 @@ async def _ensure_planned_sanity(
         yield chunk
 
 
+async def _ensure_planned_items(
+    db: Session,
+    session_id: str,
+    game_session: GameSession,
+    player_char: Character,
+    teammates: list[Character] | None,
+    plan: turn_planner.TurnPlan | None,
+) -> AsyncIterator[str]:
+    """规划器裁定的物品增减确定性落库（获得入库、失去/消耗移除），补偿 KP 不记账——库存是权威状态。
+
+    幂等：按「本轮玩家行动锚序号 + 获/失 + 名字 + 角色」去重（存 world_state.item_delta_keys），
+    重新生成不会重复增减。物品效果仍由 KP 叙述——这里只保证库存数目可靠。
+    """
+    if plan is None or (not plan.items_gained and not plan.items_lost):
+        return
+    turn = _current_turn_events(session_service.get_session_events(db, session_id))
+    anchor = max(
+        (e.sequence_num or 0 for e in turn if e.event_type in ("action", "dialogue")),
+        default=0,
+    )
+    ws = dict(game_session.world_state or {})
+    done = set(ws.get("item_delta_keys") or [])
+    changed = False
+
+    def _who(name: str) -> Character:
+        return _resolve_hp_target((name or "").strip(), player_char, teammates) or player_char
+
+    for ig in plan.items_gained:
+        name = (ig.name or "").strip()
+        if not name:
+            continue
+        target = _who(ig.who)
+        key = f"g|{anchor}|{name}|{target.id}"
+        if key in done:
+            continue
+        inventory_service.add_item(db, target, name, qty=ig.qty or 1, kind=(ig.kind or None))
+        done.add(key); changed = True
+        suffix = f"×{ig.qty}" if (ig.qty or 1) > 1 else ""
+        ev = session_service.add_event(
+            db, session_id, "system", f"{target.name} 获得了 {name}{suffix}",
+            actor_name="系统", metadata={"item_gain": True, "char_id": target.id},
+        )
+        yield _make_chunk("system", ev.content, event_id=ev.id, metadata={"item_gain": True})
+        yield _make_chunk("inventory_update", metadata={"char_id": target.id})
+
+    for il in plan.items_lost:
+        name = (il.name or "").strip()
+        if not name:
+            continue
+        target = _who(il.who)
+        key = f"l|{anchor}|{name}|{target.id}"
+        if key in done:
+            continue
+        done.add(key); changed = True   # 记键即便无匹配，避免重生成反复尝试
+        if inventory_service.remove_by_name(db, target, name, qty=il.qty or 1):
+            ev = session_service.add_event(
+                db, session_id, "system", f"{target.name} 失去了 {name}",
+                actor_name="系统", metadata={"item_loss": True, "char_id": target.id},
+            )
+            yield _make_chunk("system", ev.content, event_id=ev.id, metadata={"item_loss": True})
+            yield _make_chunk("inventory_update", metadata={"char_id": target.id})
+
+    if changed:
+        ws["item_delta_keys"] = list(done)
+        game_session.world_state = ws
+        db.commit()
+
+
 async def _run_generation(
     db: Session,
     session_id: str,
@@ -2282,6 +2351,12 @@ async def _run_generation(
     ):
         room_hub.broadcast(session_id, chunk)
 
+    # 确定性库存守卫：计划裁定的物品获得/失去 → 后端确定性增减（幂等），库存是权威状态。
+    async for chunk in _ensure_planned_items(
+        db, session_id, game_session, player_char, teammates, plan,
+    ):
+        room_hub.broadcast(session_id, chunk)
+
     await _finish_generation(db, session_id, llm)
 
 
@@ -2413,6 +2488,12 @@ async def _run_split_generation(
     # 确定性 SAN 守卫：计划裁定本轮目睹恐怖但 KP 漏发 SAN → 后端补发（幂等）。
     async for chunk in _ensure_planned_sanity(
         db, session_id, game_session, player_char, teammates, plan, pre_gen_seq,
+    ):
+        room_hub.broadcast(session_id, chunk)
+
+    # 确定性库存守卫：计划裁定的物品获得/失去 → 后端确定性增减（幂等），库存是权威状态。
+    async for chunk in _ensure_planned_items(
+        db, session_id, game_session, player_char, teammates, plan,
     ):
         room_hub.broadcast(session_id, chunk)
 
@@ -2854,6 +2935,10 @@ async def run_opening_generation(session_id: str) -> None:
         party_others = session_service.get_party_members(
             db, session_id, exclude_id=game_session.player_character_id,
         )
+        # 开场把各角色卡的静态 equipment 播种进活库存（幂等：库存非空则跳过）。
+        for c in [player_char, *party_others]:
+            if c:
+                inventory_service.seed_from_equipment(db, c)
         # 开场不跑队友回合（尚无玩家行动），但把队伍信息带进 KP 上下文让其知道谁在场
         await _run_generation(
             db, session_id, game_session, module, player_char, [],
