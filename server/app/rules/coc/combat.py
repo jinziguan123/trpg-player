@@ -47,6 +47,14 @@ def resolve_weapon(name: str | None) -> dict:
     return _UNARMED
 
 
+def burst_capacity(weapon: str | dict) -> int:
+    """一轮最多射击发数：武器 round 字段括号内数字（如 '1(3)'→3）。
+    无括号（'1' 单发栓动）或慢速装填（'1/2'）→ 1，即不可连发。"""
+    w = resolve_weapon(weapon) if isinstance(weapon, str) else weapon
+    m = re.search(r"\((\d+)\)", str(w.get("round") or "1"))
+    return int(m.group(1)) if m else 1
+
+
 def _roll_expr(expr: str) -> tuple[int, list[int]]:
     """掷一个多项骰式（如 '1D8+1D6+3'、'1D8-2'、'2D6'）：返回 (总和, 各骰点)。
     非数字项（燃烧/晕/码 等注记）忽略。用于武器伤害。"""
@@ -236,6 +244,7 @@ def resolve_attack(
     difficulty: str = "normal",
     attacker_disarmed: bool = False,
     bonus: int = 0,
+    penalty: int = 0,
 ) -> dict:
     """解析一次攻击。返回结构化结果（谁命中谁、伤害多少、各自检定）。**不改状态、不落库。**
 
@@ -247,12 +256,13 @@ def resolve_attack(
 
     attacker_disarmed=True：攻方已被缴械 → 武器强制回落徒手格斗。
     bonus>0：给攻方命中检定加奖励骰（瞄准用，透传给 resolve_skill_check）。
+    penalty>0：给攻方命中检定加惩罚骰（连发换目标用，透传给 resolve_skill_check）。
     """
     if attacker_disarmed:
         weapon = _UNARMED
     w = resolve_weapon(weapon) if isinstance(weapon, str) else weapon
     atk_skill = w.get("skill") or "格斗(斗殴)"
-    atk = resolve_skill_check(attacker_data, atk_skill, difficulty, bonus=bonus)
+    atk = resolve_skill_check(attacker_data, atk_skill, difficulty, bonus=bonus, penalty=penalty)
 
     result: dict = {
         "weapon": w.get("name"), "attacker_check": atk, "defender_check": None,
@@ -266,7 +276,7 @@ def resolve_attack(
     # 远程：无反应 → 达标即命中；扑掩体/闪避 → 射手转困难难度（扑向掩体），无反击
     if ranged:
         if defense in ("dodge", "cover"):
-            atk = resolve_skill_check(attacker_data, atk_skill, "hard", bonus=bonus)
+            atk = resolve_skill_check(attacker_data, atk_skill, "hard", bonus=bonus, penalty=penalty)
             result["attacker_check"] = atk
         if atk.meets_difficulty:
             result["hit"] = True

@@ -298,6 +298,9 @@ async def resolve_player_action(
     # 两段式：真人攻击命中后由玩家亲自掷伤害（连命中判定也是玩家触发的这一掷）。
     atype = action.get("type") or action.get("action") or "other"
     if atype == "attack" and actor.get("is_human"):
+        # 连发：shots 给出每发目标 → 连射入口统一处理（≥2 发一次性多枪结算、否则内部降级为单发两段式）。
+        if any(action.get("shots") or []):
+            return await _begin_player_burst(db, session_id, state, actor, action, agent, scene_hint)
         return await _begin_player_attack(db, session_id, state, actor, action, agent, scene_hint)
 
     chunks, summary = _apply_one_action(db, session_id, state, actor, action)
@@ -382,6 +385,79 @@ async def _begin_player_attack(
     engine.advance_turn(state)
     drive_chunks, drive_beats = await drive_npcs(db, session_id, state, agent, scene_hint)
     beats = [f"{actor['name']} 用 {weapon} 攻击 {target['name']}：未命中/被防住"] + drive_beats
+    narr: list[str] = []
+    if agent and beats:
+        prose = await agent.narrate(state, beats, scene_hint)
+        if prose:
+            narr.append(_combat_narration(db, session_id, prose))
+    return narr + out + drive_chunks
+
+
+def _combat_burst_event(db: Session, session_id: str, actor: dict, weapon: str,
+                        shots: list[dict]) -> str:
+    """连发结果事件：一条 dice 事件带 metadata.burst（每发命中/伤害/惩罚骰）→ 前端「连射卡」。
+    不带 metadata.dice（不逐发触发 3D 骰动画，连射是一次性泼弹、整体展示）。"""
+    hits = sum(1 for s in shots if s.get("hit"))
+    content = f"{actor['name']}（{weapon}）连射 {len(shots)} 发 → 命中 {hits} 发"
+    meta = {"combat_burst": True, "weapon": weapon, "shots": shots}
+    ev = session_service.add_event(db, session_id, "dice", content, actor_name="战斗", metadata=meta)
+    chunk = _chunk("dice", content, id=ev.id, metadata=meta)
+    room_hub.broadcast(session_id, chunk)
+    return chunk
+
+
+async def _begin_player_burst(
+    db: Session, session_id: str, state: dict, actor: dict, action: dict,
+    agent=None, scene_hint: str = "",
+) -> list[str]:
+    """真人连发（半自动/连发火器一轮多枪）：按射速上限截发，逐发结算命中/伤害，
+    **换目标每换一个 +1 惩罚骰**（同目标连开不加罚，CoC7e RAW）。一次性结算、整体展示，
+    不走两段式手掷伤害（连射是泼弹、不逐发仪式）。命中即扣血（走护甲）。"""
+    weapon = action.get("weapon") or actor.get("weapon") or "徒手格斗"
+    cap = engine.burst_capacity(weapon)
+    shots = [t for t in (action.get("shots") or []) if t][:cap]
+    # 前置校验：需可连射的火器（cap≥2）且至少 2 发；否则降级为单发两段式攻击。
+    if cap < 2 or not _weapon_is_firearm(weapon) or len(shots) < 2:
+        single = {k: v for k, v in action.items() if k != "shots"}
+        single["target_id"] = shots[0] if shots else action.get("target_id")
+        return await _begin_player_attack(db, session_id, state, actor, single, agent, scene_hint)
+
+    aim_bonus = 1 if actor.get("aim") else 0
+    if actor.get("aim"):
+        actor["aim"] = False   # 瞄准一次性消费
+    order_seen: dict[str, int] = {}
+    shot_results: list[dict] = []
+    out: list[str] = []
+    for tid in shots:
+        if tid not in order_seen:
+            order_seen[tid] = len(order_seen)   # 目标首次出现顺序 = 该目标的换目标惩罚骰数
+        pen = order_seen[tid]
+        target = _find(state, tid)
+        if target is None or not engine.is_active(target):
+            shot_results.append({"target": target["name"] if target else "已倒下目标",
+                                 "hit": False, "penalty": pen, "damage": None, "gone": True})
+            continue
+        res = engine.resolve_attack(_char_data(actor), actor.get("db", "0"), weapon,
+                                    defender_data=None, ranged=True, bonus=aim_bonus, penalty=pen)
+        chk = res["attacker_check"]
+        rec = {"target": target["name"], "roll": chk.roll, "target_val": chk.skill_value,
+               "outcome": chk.outcome, "hit": res["hit"], "penalty": pen,
+               "damage": None, "flags": []}
+        if res["hit"] and res["damage"]:
+            rec["damage"] = res["damage"]["total"]
+            rec["flags"] = list(res["damage"].get("flags") or [])
+            for line in apply_damage(db, state, target, res["damage"]["total"],
+                                     reason=f"{actor['name']} 连射（{weapon}）"):
+                out.append(_combat_line(db, session_id, line))
+        shot_results.append(rec)
+
+    hits = sum(1 for r in shot_results if r.get("hit"))
+    out.insert(0, _combat_burst_event(db, session_id, actor, weapon, shot_results))
+    actor["acted_this_round"] = True
+    engine.advance_turn(state)
+    _save_combat(db, session_id, state)   # 先落库（推进）再驱动，避免覆盖 drive 里的结束清场
+    drive_chunks, drive_beats = await drive_npcs(db, session_id, state, agent, scene_hint)
+    beats = [f"{actor['name']} 用 {weapon} 连射 {len(shots)} 发，命中 {hits} 发"] + drive_beats
     narr: list[str] = []
     if agent and beats:
         prose = await agent.narrate(state, beats, scene_hint)

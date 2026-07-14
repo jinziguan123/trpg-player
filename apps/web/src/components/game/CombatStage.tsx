@@ -168,7 +168,7 @@ function CombatantCard({ c, mine, active, diff }: {
         filter: out ? 'grayscale(0.7)' : 'none',
         background: active ? 'var(--color-bg-tertiary)' : 'var(--color-bg-secondary)',
         border: active ? '1px solid var(--color-accent)' : '1px solid var(--color-border)',
-        boxShadow: active ? '0 0 10px rgba(212, 162, 78, 0.32)' : 'none',
+        boxShadow: active ? '0 0 10px color-mix(in srgb, var(--color-accent) 34%, transparent)' : 'none',
       }}
       title={`${c.name} · ${c.hp}/${c.max_hp}`}
     >
@@ -267,6 +267,7 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
   const [targetId, setTargetId] = useState<string>('')
   const [weaponSel, setWeaponSel] = useState<string>(UNARMED)
   const [weaponCustom, setWeaponCustom] = useState<string>('')
+  const [fireMode, setFireMode] = useState<'single' | 'burst' | 'sweep'>('single')   // 连发射击模式
   const [submitting, setSubmitting] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [logOpen, setLogOpen] = useState(false)
@@ -295,7 +296,10 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
   const candidates = actionMeta.target === 'enemy' ? enemyTargets : actionMeta.target === 'ally' ? woundedAllies : []
   const effectiveTarget = candidates.some((c) => c.id === targetId) ? targetId : (candidates[0]?.id ?? '')
 
-  type ActionBody = { type: string; target_id?: string; weapon?: string; kind?: string; defense?: string }
+  type ActionBody = { type: string; target_id?: string; weapon?: string; kind?: string; defense?: string; shots?: string[] }
+  const curWeapon = weaponSel === WEAPON_OTHER ? weaponCustom.trim() : weaponSel
+  // 火器名匹配（连射仅火器可用；最终由后端按武器射速 round 校验、非火器自动降级单发）
+  const isFirearm = /枪|步枪|左轮|冲锋|自动手枪|马格南|来复|卡宾|霰弹|散弹|沙漠之鹰|格洛克|贝瑞塔|鲁格/.test(curWeapon)
   const submit = async (body: ActionBody) => {
     if (submitting) return
     setSubmitting(true)
@@ -316,9 +320,16 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
     }
     switch (action) {
       case 'attack': {
-        const weapon = weaponSel === WEAPON_OTHER ? weaponCustom.trim() : weaponSel
-        if (!weapon) { toast.error('请填写武器'); return }
-        void submit({ type: 'attack', target_id: effectiveTarget, weapon })
+        if (!curWeapon) { toast.error('请填写武器'); return }
+        if (isFirearm && fireMode === 'burst') {
+          // 对同一目标连开 3 发（同目标不加惩罚骰）
+          void submit({ type: 'attack', weapon: curWeapon, shots: [effectiveTarget, effectiveTarget, effectiveTarget] })
+        } else if (isFirearm && fireMode === 'sweep' && candidates.length >= 2) {
+          // 扫射：每个存活敌人 1 发（换目标累加惩罚骰）
+          void submit({ type: 'attack', weapon: curWeapon, shots: candidates.map((c) => c.id) })
+        } else {
+          void submit({ type: 'attack', target_id: effectiveTarget, weapon: curWeapon })
+        }
         break
       }
       case 'first_aid':
@@ -554,6 +565,23 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
                       autoFocus
                     />
                   )}
+                  {isFirearm && (
+                    <label className="flex flex-col gap-1">
+                      <span className="combat-field-label">射击</span>
+                      <div className="combat-select-wrap">
+                        <select
+                          className="combat-select"
+                          value={fireMode}
+                          onChange={(e) => setFireMode(e.target.value as 'single' | 'burst' | 'sweep')}
+                        >
+                          <option value="single">单发</option>
+                          <option value="burst">连射3发（同目标）</option>
+                          <option value="sweep" disabled={candidates.length < 2}>扫射（每敌1发）</option>
+                        </select>
+                        <ChevronDown className="combat-select-caret" size={13} />
+                      </div>
+                    </label>
+                  )}
                 </>
               )}
               <button
@@ -642,7 +670,7 @@ function InitiativeTrack({ order, turn, myCharId }: { order: Combatant[]; turn: 
               opacity: out ? 0.4 : passed ? 0.5 : 1,
               background: isActive ? 'var(--color-bg-tertiary)' : 'transparent',
               border: isActive ? '1px solid var(--color-accent)' : '1px solid var(--color-border)',
-              boxShadow: isActive ? '0 0 8px rgba(212, 162, 78, 0.3)' : 'none',
+              boxShadow: isActive ? '0 0 8px color-mix(in srgb, var(--color-accent) 30%, transparent)' : 'none',
             }}
             title={isActive ? '当前行动' : isNext ? '下一个' : c.name}
           >

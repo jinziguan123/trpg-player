@@ -275,6 +275,66 @@ def test_impale_damage_flags_penetration():
     assert "贯穿" not in plain["flags"]
 
 
+def test_burst_capacity_parses_round():
+    """连发射速上限 = 武器 round 括号内数字；单发/慢速装填 → 1（不可连发）。"""
+    from app.rules.coc import combat as coc
+    assert coc.burst_capacity({"round": "1(3)"}) == 3
+    assert coc.burst_capacity({"round": "1"}) == 1
+    assert coc.burst_capacity({"round": "1/4"}) == 1
+
+
+def test_burst_switch_target_accumulates_penalty(db_factory, monkeypatch):
+    """连发换目标每换一个 +1 惩罚骰：打 [e1,e1,e2] → 命中检定 penalty 序列 [0,0,1]。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲"), _mk_enemy("e2", "乙")])
+    hp = combat_service._find(state, hero.id); hp["skills"] = {"射击(手枪)": 60}
+    combat_service._save_combat(db, sid, state)
+    seen_pen: list = []
+    orig = combat_service.engine.resolve_attack
+
+    def spy(*a, **k):
+        seen_pen.append(k.get("penalty"))
+        return orig(*a, **k)
+    monkeypatch.setattr(combat_service.engine, "resolve_attack", spy)
+    _fix_rolls(monkeypatch, [50] * 20, die=2)
+    action = {"type": "attack", "weapon": ".38(9mm)左轮", "shots": ["e1", "e1", "e2"]}
+    asyncio.run(combat_service.resolve_player_action(db, sid, hero.id, action))
+    assert seen_pen == [0, 0, 1]
+
+
+def test_burst_emits_shots_event(db_factory, monkeypatch):
+    """连发落一条带 metadata.burst 的事件，每发一条 shot（含命中/惩罚骰）。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲")])
+    hp = combat_service._find(state, hero.id); hp["skills"] = {"射击(手枪)": 60}
+    combat_service._save_combat(db, sid, state)
+    _fix_rolls(monkeypatch, [50] * 20, die=2)
+    action = {"type": "attack", "weapon": ".38(9mm)左轮", "shots": ["e1", "e1", "e1"]}
+    out = asyncio.run(combat_service.resolve_player_action(db, sid, hero.id, action))
+    burst = None
+    for c in out:
+        for line in c.splitlines():
+            if line.startswith("data: "):
+                d = json.loads(line[len("data: "):])
+                if (d.get("metadata") or {}).get("combat_burst"):
+                    burst = d["metadata"]
+    assert burst is not None and len(burst["shots"]) == 3
+    assert all(s["penalty"] == 0 for s in burst["shots"])   # 同目标连开不加罚
+
+
+def test_burst_single_shot_downgrades_to_normal(db_factory, monkeypatch):
+    """shots 不足 2 发 → 降级为单发两段式攻击（挂 pending_roll 等玩家掷伤害），不进连射。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲")])
+    hp = combat_service._find(state, hero.id); hp["skills"] = {"射击(手枪)": 60}
+    combat_service._save_combat(db, sid, state)
+    _fix_rolls(monkeypatch, [50] * 8, die=2)
+    action = {"type": "attack", "weapon": ".38(9mm)左轮", "shots": ["e1"]}
+    asyncio.run(combat_service.resolve_player_action(db, sid, hero.id, action))
+    st = combat_service.get_combat(db.get(GameSession, sid))
+    assert st.get("pending_roll") and st["pending_roll"]["kind"] == "damage"   # 走了单发两段式
+
+
 def test_extinguish_action_removes_burning(db_factory):
     db = db_factory(); sid, hero = _seed(db)
     state = _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A")])
