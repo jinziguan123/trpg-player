@@ -90,5 +90,23 @@ def test_flank_penalty():
     assert pos.flank_penalty(hero, [hero, e1, far]) == 0            # 不相邻不计入
 
 
+def test_line_of_sight_blocked_and_full_cover():
+    a = {"pos": {"x": 0, "y": 0}}
+    b = {"pos": {"x": 4, "y": 0}}
+    assert pos.has_line_of_sight(a, b, {"cols": 8, "rows": 8}) is True          # 空场有视线
+    assert pos.has_line_of_sight(a, b, {"blocked": ["2,0"]}) is False           # 墙挡断视线
+    assert pos.has_line_of_sight(a, b, {"cover": {"2,0": "full"}}) is False     # 全掩体挡视线
+    assert pos.has_line_of_sight(a, b, {"cover": {"2,0": "half"}}) is True      # 半掩体不断视线
+    assert pos.has_line_of_sight(a, b, {"blocked": ["4,0"]}) is True            # 端点(目标格)不算遮挡
+
+
+def test_cover_penalty_half():
+    a = {"pos": {"x": 0, "y": 0}}
+    b = {"pos": {"x": 4, "y": 0}}
+    assert pos.cover_penalty(a, b, {"cover": {"2,0": "half"}}) == 1             # 连线过半掩体 -1
+    assert pos.cover_penalty(a, b, {"cover": {"5,0": "half"}}) == 0             # 不在连线上不罚
+    assert pos.cover_penalty(a, b, {}) == 0
+
+
 def test_reachable_cells_zero_budget_empty():
     assert pos.reachable_cells(_u(0, 0), budget=0, grid={"cols": 4, "rows": 4}, occupied=set()) == set()

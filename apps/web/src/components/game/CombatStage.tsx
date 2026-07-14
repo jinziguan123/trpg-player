@@ -809,6 +809,27 @@ function CombatGrid({ grid, order, turn, myCharId, moveMode, targetId, onCellMov
         border: '1px solid var(--color-border-strong)',
         background: 'var(--color-bg-secondary)',
       }}>
+        {(grid.blocked || []).map((k) => {
+          const [x, y] = k.split(',').map(Number)
+          return (
+            <div key={`b${k}`} title="障碍（阻挡移动与视线）"
+              style={{ gridColumn: x + 1, gridRow: y + 1, background: 'var(--color-bg-tertiary)',
+                boxShadow: 'inset 0 0 0 1px var(--color-border-strong)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <GiBrickWall style={{ color: 'var(--color-text-secondary)', fontSize: CELL * 0.6 }} />
+            </div>
+          )
+        })}
+        {Object.entries(grid.cover || {}).map(([k, kind]) => {
+          const [x, y] = k.split(',').map(Number)
+          const full = kind === 'full'
+          return (
+            <div key={`c${k}`} title={full ? '全掩体（阻挡视线）' : '半掩体（射击 -1）'}
+              style={{ gridColumn: x + 1, gridRow: y + 1,
+                background: `repeating-linear-gradient(45deg, color-mix(in srgb, var(--color-text-secondary) ${full ? 40 : 22}%, transparent) 0 3px, transparent 3px 6px)`,
+                boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--color-border-strong) 60%, transparent)' }} />
+          )
+        })}
         {[...reach].map((k) => {
           const [x, y] = k.split(',').map(Number)
           return (

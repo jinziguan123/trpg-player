@@ -74,6 +74,10 @@ def _attack_geometry(state: dict, actor: dict, target: dict, weapon: str,
     bonus += positioning.point_blank_bonus(dist, ranged)   # 抵近射击奖励骰
     if not reachable:
         return bonus, penalty, False, ("目标超出射程" if ranged else "目标不在近战范围，需先移动接近")
+    if ranged:   # 射击：视线被墙/全掩体挡断 → 不可命中；半掩体 → -1 惩罚骰
+        if not positioning.has_line_of_sight(actor, target, grid):
+            return bonus, penalty, False, "没有射击视线（被遮挡）"
+        penalty += positioning.cover_penalty(actor, target, grid)
     return bonus, penalty, True, ""
 
 

@@ -427,6 +427,20 @@ def test_player_pointblank_bonus_applied(db_factory, monkeypatch):
     assert seen["b"] == 1   # 抵近相邻 +1（无瞄准）
 
 
+def test_player_firearm_blocked_los_rejected(db_factory):
+    """射击视线被墙挡断 → 拒绝并提示，不结算。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲")])
+    hp = combat_service._find(state, hero.id); e1 = combat_service._find(state, "e1")
+    hp["skills"] = {"射击(手枪)": 60}
+    hp["pos"] = {"x": 0, "y": 0}; e1["pos"] = {"x": 4, "y": 0}
+    state["grid"]["blocked"] = ["2,0"]
+    combat_service._save_combat(db, sid, state)
+    with pytest.raises(ValueError, match="视线"):
+        asyncio.run(combat_service.resolve_player_action(
+            db, sid, hero.id, {"type": "attack", "target_id": "e1", "weapon": ".38(9mm)左轮"}))
+
+
 def test_extinguish_action_removes_burning(db_factory):
     db = db_factory(); sid, hero = _seed(db)
     state = _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A")])

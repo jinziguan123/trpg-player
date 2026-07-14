@@ -64,6 +64,52 @@ def range_check(dist: int, range_cells: int, ranged: bool) -> tuple[int, int, bo
     return 0, 0, False
 
 
+def _line_cells(x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int]]:
+    """两格之间连线经过的格（Bresenham，**不含两端**）——用于视线/掩体遮挡判定。"""
+    cells: list[tuple[int, int]] = []
+    dx, dy = abs(x1 - x0), abs(y1 - y0)
+    sx, sy = (1 if x0 < x1 else -1), (1 if y0 < y1 else -1)
+    err = dx - dy
+    x, y = x0, y0
+    while not (x == x1 and y == y1):
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x += sx
+        if e2 < dx:
+            err += dx
+            y += sy
+        if (x, y) != (x1, y1):
+            cells.append((x, y))
+    return cells
+
+
+def has_line_of_sight(a: dict, b: dict, grid: dict) -> bool:
+    """a→b 是否有视线：连线经过 blocked 格或 full 掩体 → 断（射击不可命中）。缺坐标 → 视为有视线。"""
+    pa, pb = _xy(a), _xy(b)
+    if pa is None or pb is None:
+        return True
+    blocked = set(grid.get("blocked") or [])
+    cover = grid.get("cover") or {}
+    for x, y in _line_cells(pa[0], pa[1], pb[0], pb[1]):
+        k = f"{x},{y}"
+        if k in blocked or cover.get(k) == "full":
+            return False
+    return True
+
+
+def cover_penalty(a: dict, b: dict, grid: dict) -> int:
+    """a→b 连线经过半掩体（half）→ 命中 -1 惩罚骰（全掩体由 has_line_of_sight 判不可命中）。"""
+    pa, pb = _xy(a), _xy(b)
+    if pa is None or pb is None:
+        return 0
+    cover = grid.get("cover") or {}
+    for x, y in _line_cells(pa[0], pa[1], pb[0], pb[1]):
+        if cover.get(f"{x},{y}") == "half":
+            return 1
+    return 0
+
+
 _DOWN = {"dead", "dying", "unconscious", "fled"}
 
 
