@@ -64,16 +64,24 @@ def _attack_geometry(state: dict, actor: dict, target: dict, weapon: str,
                      ranged: bool) -> tuple[int, int, bool, str]:
     """方格几何折算 →（命中奖励骰, 命中惩罚骰, 是否可达, 不可达原因）。
     无 grid 或缺坐标 → 视为可达、无奖惩（向后兼容旧战斗态/无方格场景）。
-    MVP：近战须相邻、火器超基础射程 -1 惩罚 / 超 2× 不可及；抵近奖励与夹击留 P-Grid-2。"""
+    近战须相邻、火器超基础射程 -1 惩罚 / 超 2× 不可及；火器抵近（≤2 格）+1 奖励骰（P-Grid-2）。"""
     grid = state.get("grid")
     if not grid or not actor.get("pos") or not target.get("pos"):
         return 0, 0, True, ""
     dist = positioning.cell_distance(actor, target)
     range_cells = positioning.range_in_cells(weapon, grid.get("cell_m", _GRID_CELL_M))
     bonus, penalty, reachable = positioning.range_check(dist, range_cells, ranged)
+    bonus += positioning.point_blank_bonus(dist, ranged)   # 抵近射击奖励骰
     if not reachable:
         return bonus, penalty, False, ("目标超出射程" if ranged else "目标不在近战范围，需先移动接近")
     return bonus, penalty, True, ""
+
+
+def _flank_penalty(state: dict, defender: dict) -> int:
+    """防御者被夹击的惩罚骰（无 grid → 0）。供守方闪避/招架检定用。"""
+    if not state.get("grid"):
+        return 0
+    return positioning.flank_penalty(defender, state.get("initiative") or [])
 
 
 def _char_participant(char: Character, side: str, is_human: bool = True) -> dict:
@@ -431,6 +439,7 @@ async def _begin_player_attack(
         _char_data(actor), actor.get("db", "0"), weapon,
         defender_data=_char_data(target), defense=defense, ranged=ranged,
         attacker_disarmed=disarmed, bonus=aim_bonus + g_bonus, penalty=g_penalty,
+        defense_penalty=_flank_penalty(state, target),   # 目标被我方夹击 → 其闪避吃惩罚
     )
     if actor.get("aim"):
         actor["aim"] = False   # 瞄准一次性消费
@@ -712,10 +721,14 @@ async def resolve_reaction(db: Session, session_id: str, defender_id: str, choic
     if attacker and defender and engine.is_active(attacker) and engine.is_active(defender):
         # 攻方若已被缴械 → 强制徒手结算（与 _apply_one_action 的攻击分支一致）
         atk_disarmed = "disarmed" in (attacker.get("conditions") or [])
+        # 方格：攻方抵近射击 +1 奖励骰；守方（玩家）被夹击 → 反应检定吃夹击惩罚骰
+        atk_pb = (positioning.point_blank_bonus(positioning.cell_distance(attacker, defender), pr["ranged"])
+                  if state.get("grid") else 0)
         res = engine.resolve_attack(
             _char_data(attacker), attacker.get("db", "0"), pr["weapon"],
             defender_data=_char_data(defender), defense=choice, ranged=pr["ranged"],
-            attacker_disarmed=atk_disarmed,
+            attacker_disarmed=atk_disarmed, bonus=atk_pb,
+            defense_penalty=_flank_penalty(state, defender),
         )
         # 玩家亲手做的这次反应检定 → 走 3D 骰动画 + 对抗卡（守方是玩家，动画呈现守方这一掷）
         react_content = _combat_dice_content(attacker, defender, pr["weapon"], res)

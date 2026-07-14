@@ -245,6 +245,7 @@ def resolve_attack(
     attacker_disarmed: bool = False,
     bonus: int = 0,
     penalty: int = 0,
+    defense_penalty: int = 0,
 ) -> dict:
     """解析一次攻击。返回结构化结果（谁命中谁、伤害多少、各自检定）。**不改状态、不落库。**
 
@@ -300,7 +301,7 @@ def resolve_attack(
         return result
 
     if defense in ("dodge", "cover"):
-        dfn = resolve_skill_check(defender_data, "闪避", "normal")
+        dfn = resolve_skill_check(defender_data, "闪避", "normal", penalty=defense_penalty)
         result["defender_check"] = dfn
         # 攻方成功等级严格高于守方才命中（平手/守方更高 = 被闪开）
         if compare_checks(atk, dfn) == "a" and atk.meets_difficulty:
@@ -311,7 +312,7 @@ def resolve_attack(
 
     # fight_back：双方格斗，胜方伤害负方
     dfn_skill = _fight_skill_of(defender_data)
-    dfn = resolve_skill_check(defender_data, dfn_skill, "normal")
+    dfn = resolve_skill_check(defender_data, dfn_skill, "normal", penalty=defense_penalty)
     result["defender_check"] = dfn
     winner = compare_checks(atk, dfn)
     if winner == "a" and atk.meets_difficulty:

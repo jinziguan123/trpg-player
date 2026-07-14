@@ -64,6 +64,32 @@ def range_check(dist: int, range_cells: int, ranged: bool) -> tuple[int, int, bo
     return 0, 0, False
 
 
+_DOWN = {"dead", "dying", "unconscious", "fled"}
+
+
+def _can_fight(p: dict) -> bool:
+    """仍能参与夹击/被夹击的活跃单位（未死/未濒死/未昏迷/未逃）。"""
+    return p.get("hp", 0) > 0 and p.get("status") not in _DOWN
+
+
+def point_blank_bonus(dist: int, ranged: bool) -> int:
+    """抵近射击：火器且距离 ≤2 格 → 命中 +1 奖励骰（近战不吃此项，本就相邻）。"""
+    return 1 if (ranged and dist <= 2) else 0
+
+
+def flank_penalty(defender: dict, participants: list[dict]) -> int:
+    """夹击/腹背受敌：与防御者相邻的存活敌方数 adj → 防御检定惩罚骰 max(0, adj-1)，封顶 2。
+    首个相邻敌不罚（单挑），第二个起每个 +1。"""
+    d_enemy = defender.get("side") == "enemy"
+    adj = 0
+    for p in participants:
+        if p.get("id") == defender.get("id") or not _can_fight(p):
+            continue
+        if (p.get("side") == "enemy") != d_enemy and is_adjacent(defender, p):
+            adj += 1
+    return min(2, max(0, adj - 1))
+
+
 def _place_column(units: list[dict], col: int, rows: int) -> None:
     """把一队单位沿某列 y 轴居中、连续铺开，原地落 pos。n≤rows 不重叠。"""
     n = len(units)

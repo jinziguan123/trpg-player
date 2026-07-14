@@ -388,6 +388,45 @@ def test_start_combat_lays_grid_and_positions(db_factory):
     assert positioning.is_adjacent(hp, e1)
 
 
+def test_reaction_flank_penalty_applied(db_factory, monkeypatch):
+    """被 2 名相邻敌人夹击时，反应（闪避）检定吃 -1 夹击惩罚骰。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲"), _mk_enemy("e2", "乙")])
+    state["pending_reaction"] = {"attacker_id": "e1", "defender_id": hero.id, "attacker_name": "甲",
+                                 "defender_name": hero.name, "weapon": "徒手格斗", "ranged": False,
+                                 "allowed": ["fight_back", "dodge"]}
+    combat_service._save_combat(db, sid, state)
+    seen: dict = {}
+    orig = combat_service.engine.resolve_attack
+
+    def spy(*a, **k):
+        seen["dp"] = k.get("defense_penalty")
+        return orig(*a, **k)
+    monkeypatch.setattr(combat_service.engine, "resolve_attack", spy)
+    _fix_rolls(monkeypatch, [50] * 10, die=2)
+    asyncio.run(combat_service.resolve_reaction(db, sid, hero.id, "dodge"))
+    assert seen["dp"] == 1   # 默认紧凑布阵下 hero 与两敌都相邻 → 夹击 -1
+
+
+def test_player_pointblank_bonus_applied(db_factory, monkeypatch):
+    """火器抵近射击（≤2 格）→ 命中检定 +1 奖励骰。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲")])
+    combat_service._find(state, hero.id)["skills"] = {"射击(手枪)": 60}
+    combat_service._save_combat(db, sid, state)
+    seen: dict = {}
+    orig = combat_service.engine.resolve_attack
+
+    def spy(*a, **k):
+        seen["b"] = k.get("bonus")
+        return orig(*a, **k)
+    monkeypatch.setattr(combat_service.engine, "resolve_attack", spy)
+    _fix_rolls(monkeypatch, [50] * 8, die=2)
+    asyncio.run(combat_service.resolve_player_action(
+        db, sid, hero.id, {"type": "attack", "target_id": "e1", "weapon": ".38(9mm)左轮"}))
+    assert seen["b"] == 1   # 抵近相邻 +1（无瞄准）
+
+
 def test_extinguish_action_removes_burning(db_factory):
     db = db_factory(); sid, hero = _seed(db)
     state = _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A")])

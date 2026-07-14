@@ -69,5 +69,26 @@ def test_reachable_cells_budget_and_obstacles():
     assert "1,2" not in reach2                             # occupied
 
 
+def test_point_blank_bonus():
+    assert pos.point_blank_bonus(1, ranged=True) == 1     # 火器抵近
+    assert pos.point_blank_bonus(2, ranged=True) == 1
+    assert pos.point_blank_bonus(3, ranged=True) == 0     # 3 格外无奖励
+    assert pos.point_blank_bonus(1, ranged=False) == 0    # 近战不吃
+
+
+def test_flank_penalty():
+    hero = {"id": "h", "side": "player", "pos": {"x": 5, "y": 5}, "hp": 10, "status": "ok"}
+    e1 = {"id": "e1", "side": "enemy", "pos": {"x": 6, "y": 5}, "hp": 10, "status": "ok"}
+    e2 = {"id": "e2", "side": "enemy", "pos": {"x": 4, "y": 5}, "hp": 10, "status": "ok"}
+    e3 = {"id": "e3", "side": "enemy", "pos": {"x": 5, "y": 6}, "hp": 10, "status": "ok"}
+    assert pos.flank_penalty(hero, [hero, e1]) == 0                  # 单挑不罚
+    assert pos.flank_penalty(hero, [hero, e1, e2]) == 1             # 两面夹击 -1
+    assert pos.flank_penalty(hero, [hero, e1, e2, e3]) == 2         # 三面 -2（封顶）
+    dead = {"id": "e2", "side": "enemy", "pos": {"x": 4, "y": 5}, "hp": 0, "status": "dead"}
+    assert pos.flank_penalty(hero, [hero, e1, dead]) == 0           # 死者不计入夹击
+    far = {"id": "e2", "side": "enemy", "pos": {"x": 9, "y": 9}, "hp": 10, "status": "ok"}
+    assert pos.flank_penalty(hero, [hero, e1, far]) == 0            # 不相邻不计入
+
+
 def test_reachable_cells_zero_budget_empty():
     assert pos.reachable_cells(_u(0, 0), budget=0, grid={"cols": 4, "rows": 4}, occupied=set()) == set()

@@ -778,6 +778,7 @@ function CombatGrid({ grid, order, turn, myCharId, moveMode, targetId, onCellMov
   const occupied = new Set(order.filter((c) => c.pos && !isOut(c)).map((c) => `${c.pos!.x},${c.pos!.y}`))
   const blocked = new Set(grid.blocked || [])
   const reach = new Set<string>()
+  const threat = new Set<string>()   // 与存活敌方相邻的格：移动到此会进入近战/被夹击
   if (moveMode && me?.pos && (me.move_left ?? 0) > 0) {
     const b = me.move_left ?? 0
     for (let y = 0; y < grid.rows; y++) {
@@ -785,6 +786,14 @@ function CombatGrid({ grid, order, turn, myCharId, moveMode, targetId, onCellMov
         const k = `${x},${y}`
         if (k === `${me.pos.x},${me.pos.y}` || occupied.has(k) || blocked.has(k)) continue
         if (Math.max(Math.abs(x - me.pos.x), Math.abs(y - me.pos.y)) <= b) reach.add(k)
+      }
+    }
+    const meEnemyCamp = me.side === 'enemy'
+    for (const f of order) {
+      if (!f.pos || isOut(f) || (f.side === 'enemy') === meEnemyCamp) continue
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+        const nx = f.pos.x + dx, ny = f.pos.y + dy
+        if (nx >= 0 && nx < grid.cols && ny >= 0 && ny < grid.rows) threat.add(`${nx},${ny}`)
       }
     }
   }
@@ -803,9 +812,12 @@ function CombatGrid({ grid, order, turn, myCharId, moveMode, targetId, onCellMov
         {[...reach].map((k) => {
           const [x, y] = k.split(',').map(Number)
           return (
-            <button key={`r${k}`} onClick={() => onCellMove(x, y)} title="移动到此格"
+            <button key={`r${k}`} onClick={() => onCellMove(x, y)}
+              title={threat.has(k) ? '移动到此格（进入敌方近战范围）' : '移动到此格'}
               style={{ gridColumn: x + 1, gridRow: y + 1, border: 'none', cursor: 'pointer',
-                background: 'color-mix(in srgb, var(--color-accent) 22%, transparent)' }} />
+                background: threat.has(k)
+                  ? 'color-mix(in srgb, var(--color-danger) 26%, transparent)'
+                  : 'color-mix(in srgb, var(--color-accent) 22%, transparent)' }} />
           )
         })}
         {order.filter((c) => c.pos).map((c) => {
