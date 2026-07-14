@@ -112,6 +112,7 @@ def roll_weapon_damage(weapon: str | dict, db: str = "0", *, impale: bool = Fals
         # 贯穿：加上武器骰的最大点数（DB 不翻）——RAW「max + 掷一次」的可测版
         weapon_only = re.sub(r"([+-])(?![0-9]*[dD])[0-9]+", "", dam)  # 去掉纯定值项，只留骰
         total += _max_dice(_substitute_db(weapon_only, "0"))
+        flags = flags + ["贯穿"]   # 供叙述/战斗卡标注「贯穿!」
     return {"total": max(0, total), "rolls": rolls, "notation": dam, "flags": flags}
 
 

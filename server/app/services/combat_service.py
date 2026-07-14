@@ -37,6 +37,14 @@ def _weapon_is_firearm(weapon_name: str) -> bool:
     return w.get("category") in _FIREARM_CATEGORIES or (w.get("skill", "").startswith("射击"))
 
 
+def _coerce_armor(v) -> int:
+    """护甲值宽松解析成非负整数（缺省/非法 → 0）。角色卡/NPC 设定里护甲可能填成数字或字符串。"""
+    try:
+        return max(0, int(v))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _char_participant(char: Character, side: str, is_human: bool = True) -> dict:
     """把玩家/队友角色卡转成参战方。HP 与状态与角色卡同步。is_human=True 的回合会停下等操作。"""
     sd = char.system_data or {}
@@ -50,6 +58,7 @@ def _char_participant(char: Character, side: str, is_human: bool = True) -> dict
         "status": "ok", "weapon": weapon, "has_firearm": _weapon_is_firearm(weapon),
         "skills": char.skills or {}, "base_attributes": char.base_attributes or {},
         "system_data": sd, "db": (sd.get("damageBonus") or "0"),
+        "armor": _coerce_armor(sd.get("armor")),   # 护甲值：每次受到的物理伤害先扣它（CoC7e）
         "acted_this_round": False, "dodged_this_round": False,
         # P2 主动动作集：正交条件 / 瞄准 / 该处伤是否已急救（RAW 每处伤一次）
         "conditions": [], "aim": False, "first_aid_used": False,
@@ -74,7 +83,7 @@ def _npc_participant(npc: dict, side: str = "enemy") -> dict:
         "dex": attrs.get("DEX", 50), "hp": max_hp, "max_hp": max_hp, "status": "ok",
         "weapon": weapon, "has_firearm": _weapon_is_firearm(weapon),
         "skills": npc.get("skills") or {}, "base_attributes": attrs, "system_data": {},
-        "db": db, "combat_ai": npc.get("combat_ai"),
+        "db": db, "armor": _coerce_armor(npc.get("armor")), "combat_ai": npc.get("combat_ai"),
         # 有性格/秘密的关键 NPC → 战斗中走子代理决策+叙述；杂兵走启发式
         "is_key": bool(npc.get("personality") or npc.get("secrets")),
         "personality": npc.get("personality"),
@@ -156,6 +165,7 @@ def _combat_meta(state: dict) -> dict:
         "turn": actor.get("id") if actor else None,
         "order": [{"id": p["id"], "name": p["name"], "side": p["side"], "is_human": p.get("is_human", False),
                    "hp": p["hp"], "max_hp": p["max_hp"], "status": p["status"], "weapon": p.get("weapon"),
+                   "armor": int(p.get("armor") or 0),   # 护甲值 → 前端 HUD 护甲徽标
                    # P2 正交条件（grappled/disarmed）与瞄准态 → 前端 HUD 徽标（被擒/缴械/瞄准中）
                    "conditions": list(p.get("conditions") or []), "aim": bool(p.get("aim"))}
                   for p in state.get("initiative") or []],
@@ -186,9 +196,19 @@ def _find(state: dict, pid: str) -> dict | None:
     return next((p for p in state.get("initiative") or [] if p.get("id") == pid), None)
 
 
-def apply_damage(db: Session, state: dict, target: dict, amount: int, reason: str) -> list[str]:
+def apply_damage(db: Session, state: dict, target: dict, amount: int, reason: str,
+                 ignore_armor: bool = False) -> list[str]:
     """对参战方结算伤害：更新战斗态 HP/状态；玩家/队友同步角色卡 HP + 重伤体质检定判昏迷。
-    返回可读结算行（供叙述/日志）。"""
+    返回可读结算行（供叙述/日志）。
+
+    护甲（CoC7e）：物理伤害先扣目标护甲值再入血，重伤阈值也按扣减后的净伤判。
+    ignore_armor=True 用于火焰/持续燃烧等能量伤害（护甲挡不住）。
+    """
+    absorbed = 0
+    armor = 0 if ignore_armor else int(target.get("armor") or 0)
+    if armor > 0 and amount > 0:
+        absorbed = min(amount, armor)
+        amount = amount - absorbed
     r = engine.resolve_wound(target.get("hp", 0), target.get("max_hp") or 1, amount, _char_data(target))
     target["hp"] = r["new_hp"]
     target["status"] = r["status"]
@@ -200,8 +220,11 @@ def apply_damage(db: Session, state: dict, target: dict, amount: int, reason: st
     lines: list[str] = []
     for i, line in enumerate(r["lines"]):
         text = f"{target['name']} {line}"
-        if i == 0 and reason:
-            text += f"——{reason}"
+        if i == 0:
+            if absorbed > 0:
+                text += f"（护甲挡下 {absorbed} 点）"
+            if reason:
+                text += f"——{reason}"
         lines.append(text)
 
     # 玩家/队友：把 HP 与状态写回角色卡（敌人只在战斗态）
@@ -341,7 +364,8 @@ async def _begin_player_attack(
             "id": uuid.uuid4().hex, "actor_id": actor["id"], "kind": "damage",
             "victim_id": victim["id"], "weapon": weapon,
             "damage": {"total": res["damage"]["total"], "rolls": list(res["damage"]["rolls"]),
-                       "notation": res["damage"]["notation"]},
+                       "notation": res["damage"]["notation"],
+                       "flags": list(res["damage"].get("flags") or [])},
             "reason": f"{actor['name']} 的 {weapon}",
             "label": f"投掷伤害（{res['damage']['notation']}）",
         }
@@ -457,7 +481,8 @@ def stage_aoe_damage(
     state["pending_roll"] = {
         "id": uuid.uuid4().hex, "actor_id": thrower_id, "kind": "aoe_damage",
         "victim_ids": [v["id"] for v in victims], "weapon": weapon_name,
-        "damage": {"total": dmg["total"], "rolls": list(dmg["rolls"]), "notation": dmg["notation"]},
+        "damage": {"total": dmg["total"], "rolls": list(dmg["rolls"]), "notation": dmg["notation"],
+                   "flags": list(dmg.get("flags") or [])},
         "burning": burning,
         "reason": reason or f"{thrower['name'] if thrower else ''} 的 {weapon_name}",
         "label": f"投掷伤害（{dmg['notation']}）",
@@ -554,7 +579,7 @@ async def resolve_reaction(db: Session, session_id: str, defender_id: str, choic
                 "id": uuid.uuid4().hex, "actor_id": defender["id"], "kind": "damage",
                 "victim_id": attacker["id"], "weapon": "反击",
                 "damage": {"total": dmg["total"], "rolls": list(dmg["rolls"]),
-                           "notation": dmg["notation"]},
+                           "notation": dmg["notation"], "flags": list(dmg.get("flags") or [])},
                 "no_advance": True, "reason": f"{defender['name']} 反击",
                 "label": f"投掷反击伤害（{dmg['notation']}）",
             }
@@ -751,7 +776,7 @@ async def drive_npcs(db: Session, session_id: str, state: dict, agent=None, scen
         # 燃烧 tick：着火者回合开始先烧一次（1D6），可能致其濒死/死亡 → 须在 is_active 判断前。
         if "burning" in (actor.get("conditions") or []) and engine.is_active(actor):
             burn = engine.roll_weapon_damage({"dam": "1D6"}, "0")["total"]
-            for line in apply_damage(db, state, actor, burn, reason="持续燃烧"):
+            for line in apply_damage(db, state, actor, burn, reason="持续燃烧", ignore_armor=True):
                 chunks.append(_combat_line(db, session_id, line))
             _save_combat(db, session_id, state)
         # 濒死者回合开始先跑体质 tick（须在 is_active 跳过之前，否则永远不掷）
@@ -934,7 +959,8 @@ def _damage_dice_detail(dmg: dict) -> dict:
     total = int(dmg.get("total") or 0)
     return {"kind": "pool", "notation": notation,
             "dice": [{"sides": sides, "value": v} for v in rolls],
-            "modifier": total - sum(rolls), "total": total}
+            "modifier": total - sum(rolls), "total": total,
+            "flags": list(dmg.get("flags") or [])}   # 贯穿/燃烧/晕 → 前端伤害卡标注
 
 
 def _combat_roll_event(db: Session, session_id: str, content: str, dice_detail: dict,

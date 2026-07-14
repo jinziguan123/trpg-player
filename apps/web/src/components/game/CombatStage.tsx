@@ -20,6 +20,7 @@ interface Combatant {
   max_hp: number
   status: CombatStatus
   weapon?: string         // 当前武器名（后端 order 投影透传）
+  armor?: number          // 护甲值（每次物理伤害先扣它）
   conditions?: string[]   // 正交条件：grappled（被擒）/ disarmed（缴械）
   aim?: boolean           // 瞄准态（下一击加奖励骰）
 }
@@ -203,6 +204,13 @@ function CombatantCard({ c, mine, active, diff }: {
       <div className="flex items-center justify-between gap-1 mt-0.5">
         <span className="text-[10px] font-mono" style={{ color: 'var(--color-text-secondary)' }}>{c.hp}/{c.max_hp}</span>
         <div className="flex items-center gap-1 flex-wrap justify-end">
+          {!!c.armor && c.armor > 0 && !out && (
+            <span className="text-[10px] px-1 rounded inline-flex items-center gap-0.5 flex-shrink-0"
+              style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border-strong)' }}
+              title={`护甲 ${c.armor}：每次物理伤害先扣 ${c.armor} 点`}>
+              <GiShield size={10} /> {c.armor}
+            </span>
+          )}
           {c.aim && !out && (
             <span className="text-[10px] px-1 rounded inline-flex items-center gap-0.5 flex-shrink-0"
               style={{ color: 'var(--color-text-accent)', border: '1px solid var(--color-border-strong)' }}>

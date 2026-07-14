@@ -223,6 +223,58 @@ def test_reaction_opposed_card_attacker_whiff_is_未命中(db_factory, monkeypat
     assert op["winner"] is None and op["result"] == "未命中"
 
 
+def test_armor_reduces_physical_damage(db_factory):
+    """护甲从物理伤害里扣：armor=3 受 5 点 → 净伤 2 入血，并有『护甲挡下 3 点』提示。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "铁皮怪")])
+    e1 = combat_service._find(state, "e1"); e1["armor"] = 3
+    hp0 = e1["hp"]
+    lines = combat_service.apply_damage(db, state, e1, 5, reason="测试")
+    assert e1["hp"] == hp0 - 2
+    assert any("护甲挡下 3 点" in ln for ln in lines)
+
+
+def test_armor_fully_absorbs(db_factory):
+    """护甲≥伤害 → 完全挡下，HP 不变。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "重甲怪")])
+    e1 = combat_service._find(state, "e1"); e1["armor"] = 10
+    hp0 = e1["hp"]
+    lines = combat_service.apply_damage(db, state, e1, 5, reason="")
+    assert e1["hp"] == hp0
+    assert any("护甲挡下 5 点" in ln for ln in lines)
+
+
+def test_burning_ignores_armor(db_factory):
+    """持续燃烧等能量伤害无视护甲（ignore_armor=True）。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "披甲者")])
+    e1 = combat_service._find(state, "e1"); e1["armor"] = 10
+    hp0 = e1["hp"]
+    combat_service.apply_damage(db, state, e1, 4, reason="持续燃烧", ignore_armor=True)
+    assert e1["hp"] == hp0 - 4
+
+
+def test_participant_reads_armor_from_sheet_and_npc(db_factory):
+    """参战方护甲值从角色卡 system_data.armor / NPC dict.armor 读入。"""
+    db = db_factory(); sid, hero = _seed(db)
+    hero.system_data = dict(hero.system_data or {}) | {"armor": 2}
+    p = combat_service._char_participant(hero, "player")
+    assert p["armor"] == 2
+    npc = combat_service._npc_participant({"id": "e", "name": "甲兵", "armor": 5})
+    assert npc["armor"] == 5
+    assert combat_service._npc_participant({"id": "e2", "name": "裸奔"})["armor"] == 0
+
+
+def test_impale_damage_flags_penetration():
+    """贯穿武器大成功/极难加伤时，flags 带『贯穿』供前端标注；非贯穿武器不带。"""
+    from app.rules.coc import combat as coc
+    dmg = coc.roll_weapon_damage({"name": "步枪", "dam": "2D6+4", "tho": 1}, "0", impale=True)
+    assert "贯穿" in dmg["flags"]
+    plain = coc.roll_weapon_damage({"name": "棍", "dam": "1D6", "tho": 0}, "0", impale=True)
+    assert "贯穿" not in plain["flags"]
+
+
 def test_extinguish_action_removes_burning(db_factory):
     db = db_factory(); sid, hero = _seed(db)
     state = _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A")])
