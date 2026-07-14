@@ -335,6 +335,59 @@ def test_burst_single_shot_downgrades_to_normal(db_factory, monkeypatch):
     assert st.get("pending_roll") and st["pending_roll"]["kind"] == "damage"   # 走了单发两段式
 
 
+def test_resolve_move_updates_pos_and_budget(db_factory):
+    """移动：更新坐标、按 Chebyshev 距离扣 move_left、不推进先攻（同回合仍可攻击）。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲")])
+    hp = combat_service._find(state, hero.id)
+    start = dict(hp["pos"]); ml = hp["move_left"]
+    dest = {"x": start["x"] - 1, "y": start["y"]}       # 往左一格（空格、远离敌人）
+    combat_service.resolve_move(db, sid, hero.id, dest)
+    st = combat_service.get_combat(db.get(GameSession, sid))
+    h = combat_service._find(st, hero.id)
+    assert h["pos"] == dest
+    assert h["move_left"] == ml - 1
+    assert combat_service.current_actor(st)["id"] == hero.id   # 未推进先攻
+
+
+def test_resolve_move_rejects_occupied_and_over_budget(db_factory):
+    """移动拒绝：落在他人占用格 / 超出移动预算。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲")])
+    e1 = combat_service._find(state, "e1")
+    with pytest.raises(ValueError):
+        combat_service.resolve_move(db, sid, hero.id, dict(e1["pos"]))   # 敌人占用
+    hp = combat_service._find(state, hero.id)
+    hp["move_left"] = 1
+    combat_service._save_combat(db, sid, state)
+    far = {"x": hp["pos"]["x"], "y": (hp["pos"]["y"] + 3) % 8}
+    with pytest.raises(ValueError):
+        combat_service.resolve_move(db, sid, hero.id, far)               # 3 格 > 预算 1
+
+
+def test_player_melee_requires_adjacent(db_factory):
+    """近战攻击不相邻 → 拒绝并提示先移动接近（不结算、不推进）。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲")])
+    combat_service._find(state, hero.id)["pos"] = {"x": 0, "y": 0}
+    combat_service._find(state, "e1")["pos"] = {"x": 10, "y": 7}
+    combat_service._save_combat(db, sid, state)
+    with pytest.raises(ValueError, match="移动接近"):
+        asyncio.run(combat_service.resolve_player_action(
+            db, sid, hero.id, {"type": "attack", "target_id": "e1", "weapon": "徒手格斗"}))
+
+
+def test_start_combat_lays_grid_and_positions(db_factory):
+    """开战落方格：state.grid 存在，参战方都有 pos，敌我相邻（紧凑布阵）。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲")])
+    assert state["grid"]["cols"] == 12 and state["grid"]["rows"] == 8
+    hp = combat_service._find(state, hero.id); e1 = combat_service._find(state, "e1")
+    assert hp["pos"] and e1["pos"]
+    from app.rules.coc import positioning
+    assert positioning.is_adjacent(hp, e1)
+
+
 def test_extinguish_action_removes_burning(db_factory):
     db = db_factory(); sid, hero = _seed(db)
     state = _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A")])

@@ -23,6 +23,18 @@ interface Combatant {
   armor?: number          // 护甲值（每次物理伤害先扣它）
   conditions?: string[]   // 正交条件：grappled（被擒）/ disarmed（缴械）
   aim?: boolean           // 瞄准态（下一击加奖励骰）
+  pos?: { x: number; y: number } | null   // 方格坐标
+  mov?: number            // 移动力（格/轮）
+  move_left?: number      // 本回合剩余移动预算
+}
+
+// 方格战场（尺寸 + 障碍/掩体）。MVP 只用 cols/rows/cell_m。
+export interface CombatGridInfo {
+  cols: number
+  rows: number
+  cell_m: number
+  blocked?: string[]
+  cover?: Record<string, string>
 }
 
 // 两段式投骰：真人攻击命中后，等该玩家亲自掷伤害。actor_id 为该掷骰的玩家。
@@ -39,6 +51,7 @@ export interface CombatState {
   order: Combatant[]
   started_seq?: number  // 本场战斗日志起点 seq：日志抽屉只收本场（seq>started_seq）的结算行
   pending_roll?: PendingRoll | null
+  grid?: CombatGridInfo | null   // 方格战场
 }
 
 // 反应提示：NPC 攻击某真人时后端暂停并广播 combat_reaction_prompt 的 metadata。
@@ -271,6 +284,8 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
   const [submitting, setSubmitting] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [logOpen, setLogOpen] = useState(false)
+  const [moveMode, setMoveMode] = useState(false)   // 方格移动模式（高亮可达格、点格移动）
+  useEffect(() => { setMoveMode(false) }, [combat.turn])   // 回合切换 → 退出移动模式
 
   // 武器下拉项：拳头置顶（永远有）+ 角色卡武器栏（去重、保留伤害提示）+ 其它(手填)。
   const weaponOptions = useMemo(() => {
@@ -359,6 +374,25 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
     }
   }
 
+  // 方格移动：点可达格 → 提交移动（不推进先攻），成功后退出移动模式。
+  const doMove = async (x: number, y: number) => {
+    if (submitting) return
+    setSubmitting(true)
+    try {
+      await api.post(`/sessions/${sessionId}/combat/action`, { type: 'move', dest: { x, y } })
+      setMoveMode(false)
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : '移动失败')
+    } finally {
+      setTimeout(() => setSubmitting(false), 400)
+    }
+  }
+  // 点棋子：非移动模式下点敌方棋子 = 选为攻击目标（与目标下拉双向同步）。
+  const onPieceClick = (c: Combatant) => {
+    if (moveMode) return
+    if (c.side === 'enemy' && !isOut(c)) { setAction('attack'); setTargetId(c.id) }
+  }
+
   // 两段式投骰：我攻击命中后要亲自掷伤害。
   const pendingRoll = combat.pending_roll || null
   const rollForMe = !!(pendingRoll && myCharId && pendingRoll.actor_id === myCharId)
@@ -416,6 +450,39 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
       {!collapsed && (<>
       {/* B1 先攻轨：横排，高亮当前、标下一个、走过者淡化 */}
       <InitiativeTrack order={order} turn={combat.turn} myCharId={myCharId} />
+
+      {/* B1.5 方格战场：棋子 + 移动。移动模式仅本人回合可用。 */}
+      {combat.grid && (
+        <div className="mt-2">
+          <div className="flex items-center justify-between mb-0.5">
+            <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--color-text-secondary)' }}>战场</span>
+            {myTurn && (
+              <button
+                onClick={() => setMoveMode((v) => !v)}
+                disabled={submitting}
+                className="text-[11px] px-2 py-0.5 rounded inline-flex items-center gap-1"
+                style={{
+                  border: `1px solid ${moveMode ? 'var(--color-accent)' : 'var(--color-border-strong)'}`,
+                  color: moveMode ? 'var(--color-text-accent)' : 'var(--color-text-secondary)',
+                  ...(submitting ? { opacity: 0.5 } : {}),
+                }}
+              >
+                <GiRun size={12} /> {moveMode ? `移动中（剩 ${me?.move_left ?? 0} 格）` : '移动'}
+              </button>
+            )}
+          </div>
+          <CombatGrid
+            grid={combat.grid}
+            order={order}
+            turn={combat.turn}
+            myCharId={myCharId}
+            moveMode={moveMode}
+            targetId={effectiveTarget}
+            onCellMove={doMove}
+            onPieceClick={onPieceClick}
+          />
+        </div>
+      )}
 
       {/* B2 两栏参战方卡片（左己方 / 右敌方），带 HP 动画（B3） */}
       <div className="grid grid-cols-2 gap-2 mt-2">
@@ -689,6 +756,77 @@ function InitiativeTrack({ order, turn, myCharId }: { order: Combatant[]; turn: 
           </div>
         )
       })}
+    </div>
+  )
+}
+
+// 方格战场：CSS-grid 棋盘 + 棋子（阵营色/当前行动者外发光/出局灰化/选中目标描边）。
+// 移动模式下高亮可达格（Chebyshev ≤ 剩余移动力、避开占用/障碍），点格移动；点敌方棋子选目标。
+// 纯 --color-* 变量，gothic/parchment 两主题自适应，不引第三方战棋库。
+function CombatGrid({ grid, order, turn, myCharId, moveMode, targetId, onCellMove, onPieceClick }: {
+  grid: CombatGridInfo
+  order: Combatant[]
+  turn: string | null
+  myCharId: string | null
+  moveMode: boolean
+  targetId: string
+  onCellMove: (x: number, y: number) => void
+  onPieceClick: (c: Combatant) => void
+}) {
+  const CELL = 30
+  const me = myCharId ? order.find((c) => c.id === myCharId) : null
+  const occupied = new Set(order.filter((c) => c.pos && !isOut(c)).map((c) => `${c.pos!.x},${c.pos!.y}`))
+  const blocked = new Set(grid.blocked || [])
+  const reach = new Set<string>()
+  if (moveMode && me?.pos && (me.move_left ?? 0) > 0) {
+    const b = me.move_left ?? 0
+    for (let y = 0; y < grid.rows; y++) {
+      for (let x = 0; x < grid.cols; x++) {
+        const k = `${x},${y}`
+        if (k === `${me.pos.x},${me.pos.y}` || occupied.has(k) || blocked.has(k)) continue
+        if (Math.max(Math.abs(x - me.pos.x), Math.abs(y - me.pos.y)) <= b) reach.add(k)
+      }
+    }
+  }
+  return (
+    <div className="overflow-x-auto py-1">
+      <div className="relative mx-auto" style={{
+        width: grid.cols * CELL, height: grid.rows * CELL,
+        display: 'grid',
+        gridTemplateColumns: `repeat(${grid.cols}, ${CELL}px)`,
+        gridTemplateRows: `repeat(${grid.rows}, ${CELL}px)`,
+        backgroundImage: 'linear-gradient(var(--color-border) 1px, transparent 1px), linear-gradient(90deg, var(--color-border) 1px, transparent 1px)',
+        backgroundSize: `${CELL}px ${CELL}px`,
+        border: '1px solid var(--color-border-strong)',
+        background: 'var(--color-bg-secondary)',
+      }}>
+        {[...reach].map((k) => {
+          const [x, y] = k.split(',').map(Number)
+          return (
+            <button key={`r${k}`} onClick={() => onCellMove(x, y)} title="移动到此格"
+              style={{ gridColumn: x + 1, gridRow: y + 1, border: 'none', cursor: 'pointer',
+                background: 'color-mix(in srgb, var(--color-accent) 22%, transparent)' }} />
+          )
+        })}
+        {order.filter((c) => c.pos).map((c) => {
+          const out = isOut(c)
+          const col = c.side === 'enemy' ? 'var(--color-danger)' : 'var(--color-accent)'
+          const isTurn = c.id === turn
+          const isTarget = c.id === targetId
+          return (
+            <button key={c.id} onClick={() => onPieceClick(c)} title={`${c.name} ${c.hp}/${c.max_hp}`}
+              style={{ position: 'absolute', left: c.pos!.x * CELL + 3, top: c.pos!.y * CELL + 3,
+                width: CELL - 6, height: CELL - 6, borderRadius: '50%', padding: 0,
+                background: 'var(--color-bg-tertiary)', color: 'var(--color-text-primary)',
+                border: `2px solid ${col}`, opacity: out ? 0.4 : 1, filter: out ? 'grayscale(1)' : 'none',
+                boxShadow: isTurn ? `0 0 7px ${col}` : isTarget ? '0 0 0 2px var(--color-danger)' : 'none',
+                cursor: 'pointer', fontSize: '0.68rem', lineHeight: 1,
+                display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {c.name.slice(0, 1)}
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }

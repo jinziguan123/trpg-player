@@ -33,6 +33,7 @@ export function parseCombatState(value: unknown): CombatState | null {
     order: value.order,
     ...(value.started_seq === undefined ? {} : { started_seq: value.started_seq }),
     ...(pendingRoll ? { pending_roll: pendingRoll } : {}),
+    ...(isRecord(value.grid) ? { grid: value.grid as CombatState['grid'] } : {}),
   }
 }
 

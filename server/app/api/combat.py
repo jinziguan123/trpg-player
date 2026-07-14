@@ -53,6 +53,15 @@ async def combat_action(
     actor_id = char_id or session.player_character_id
     if not actor_id:
         raise HTTPException(403, "无法确定行动角色")
+    # 方格移动：不推进先攻、不驱动 NPC，单独走 resolve_move（同回合移动后仍可攻击）。
+    if data.type == "move":
+        try:
+            chunks = combat_service.resolve_move(db, session_id, actor_id, data.dest or {})
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        for chunk in chunks:
+            room_hub.broadcast(session_id, chunk)
+        return {"ok": True}
     try:
         agent = _combat_agent(db, session)
         chunks = await combat_service.resolve_player_action(

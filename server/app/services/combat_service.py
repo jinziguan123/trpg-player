@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.models.character import Character
 from app.models.session import GameSession
 from app.rules.coc import combat as engine
+from app.rules.coc import positioning
 from app.rules.coc.weapons import WEAPON_CATEGORY_ORDER
 from app.services import session_service
 from app.services.room_hub import room_hub
@@ -45,6 +46,36 @@ def _coerce_armor(v) -> int:
         return 0
 
 
+_DEFAULT_MOV = 8           # 移动力缺省（格/轮）
+_GRID_COLS, _GRID_ROWS = 12, 8   # 默认战术棋盘尺寸
+_GRID_CELL_M = 1.5         # 1 格 = 1.5 米
+
+
+def _coerce_mov(v) -> int:
+    """移动力宽松解析成正整数（缺省/非法 → 8）。"""
+    try:
+        n = int(v)
+        return n if n > 0 else _DEFAULT_MOV
+    except (TypeError, ValueError):
+        return _DEFAULT_MOV
+
+
+def _attack_geometry(state: dict, actor: dict, target: dict, weapon: str,
+                     ranged: bool) -> tuple[int, int, bool, str]:
+    """方格几何折算 →（命中奖励骰, 命中惩罚骰, 是否可达, 不可达原因）。
+    无 grid 或缺坐标 → 视为可达、无奖惩（向后兼容旧战斗态/无方格场景）。
+    MVP：近战须相邻、火器超基础射程 -1 惩罚 / 超 2× 不可及；抵近奖励与夹击留 P-Grid-2。"""
+    grid = state.get("grid")
+    if not grid or not actor.get("pos") or not target.get("pos"):
+        return 0, 0, True, ""
+    dist = positioning.cell_distance(actor, target)
+    range_cells = positioning.range_in_cells(weapon, grid.get("cell_m", _GRID_CELL_M))
+    bonus, penalty, reachable = positioning.range_check(dist, range_cells, ranged)
+    if not reachable:
+        return bonus, penalty, False, ("目标超出射程" if ranged else "目标不在近战范围，需先移动接近")
+    return bonus, penalty, True, ""
+
+
 def _char_participant(char: Character, side: str, is_human: bool = True) -> dict:
     """把玩家/队友角色卡转成参战方。HP 与状态与角色卡同步。is_human=True 的回合会停下等操作。"""
     sd = char.system_data or {}
@@ -59,6 +90,9 @@ def _char_participant(char: Character, side: str, is_human: bool = True) -> dict
         "skills": char.skills or {}, "base_attributes": char.base_attributes or {},
         "system_data": sd, "db": (sd.get("damageBonus") or "0"),
         "armor": _coerce_armor(sd.get("armor")),   # 护甲值：每次受到的物理伤害先扣它（CoC7e）
+        # 方格位置：pos 开战由 default_deployment 落；mov 移动力、move_left 本回合剩余移动预算
+        "pos": None, "mov": _coerce_mov(sd.get("MOV") or sd.get("move")),
+        "move_left": _coerce_mov(sd.get("MOV") or sd.get("move")),
         "acted_this_round": False, "dodged_this_round": False,
         # P2 主动动作集：正交条件 / 瞄准 / 该处伤是否已急救（RAW 每处伤一次）
         "conditions": [], "aim": False, "first_aid_used": False,
@@ -84,6 +118,7 @@ def _npc_participant(npc: dict, side: str = "enemy") -> dict:
         "weapon": weapon, "has_firearm": _weapon_is_firearm(weapon),
         "skills": npc.get("skills") or {}, "base_attributes": attrs, "system_data": {},
         "db": db, "armor": _coerce_armor(npc.get("armor")), "combat_ai": npc.get("combat_ai"),
+        "pos": None, "mov": _coerce_mov(npc.get("mov")), "move_left": _coerce_mov(npc.get("mov")),
         # 有性格/秘密的关键 NPC → 战斗中走子代理决策+叙述；杂兵走启发式
         "is_key": bool(npc.get("personality") or npc.get("secrets")),
         "personality": npc.get("personality"),
@@ -124,6 +159,9 @@ def start_combat(db: Session, session_id: str, player_side: list[dict], enemies:
     """建立战斗态：合并双方为参战方、排先攻、round=1。player_side/enemies 已是参战方 dict。"""
     participants = list(player_side) + list(enemies)
     order = engine.roll_initiative(participants)
+    # 方格战场：造默认棋盘 + 确定性布阵（我方左、敌方右，沿 y 居中）。几何被摆出来、不还原叙事。
+    grid = {"cols": _GRID_COLS, "rows": _GRID_ROWS, "cell_m": _GRID_CELL_M, "blocked": [], "cover": {}}
+    positioning.default_deployment(order, grid)
     # 本场起点：开打前会话最大事件 seq（= 下一个 seq - 1）。一个会话可有多场战斗，落库的
     # combat_log 事件本身无场次边界；前端据此让日志抽屉只收本场（seq > started_seq）的结算行，
     # 重连（走 GET /combat 恢复、不经 combat_start 分支）也能拿到边界、不掺上一场。
@@ -131,6 +169,7 @@ def start_combat(db: Session, session_id: str, player_side: list[dict], enemies:
     state = {
         "active": True, "round": 1, "turn_index": 0, "initiative": order,
         "log": [], "trigger": trigger, "flee_to_chase": None, "started_seq": started_seq,
+        "grid": grid,
     }
     _save_combat(db, session_id, state)
     return state
@@ -166,6 +205,9 @@ def _combat_meta(state: dict) -> dict:
         "order": [{"id": p["id"], "name": p["name"], "side": p["side"], "is_human": p.get("is_human", False),
                    "hp": p["hp"], "max_hp": p["max_hp"], "status": p["status"], "weapon": p.get("weapon"),
                    "armor": int(p.get("armor") or 0),   # 护甲值 → 前端 HUD 护甲徽标
+                   # 方格坐标/移动力/本回合剩余移动 → 前端棋盘画棋子与可达高亮
+                   "pos": p.get("pos"), "mov": int(p.get("mov") or _DEFAULT_MOV),
+                   "move_left": int(p.get("move_left") or 0),
                    # P2 正交条件（grappled/disarmed）与瞄准态 → 前端 HUD 徽标（被擒/缴械/瞄准中）
                    "conditions": list(p.get("conditions") or []), "aim": bool(p.get("aim"))}
                   for p in state.get("initiative") or []],
@@ -175,6 +217,7 @@ def _combat_meta(state: dict) -> dict:
         "pending_roll": _pending_roll_public(state.get("pending_roll")),
         # 本场战斗日志起点 seq：前端据此让日志抽屉只收本场结算行（重连也能拿到边界，防掺上一场）。
         "started_seq": state.get("started_seq"),
+        "grid": state.get("grid"),   # 方格战场（尺寸/障碍/掩体）→ 前端画棋盘
     }
 
 
@@ -275,6 +318,40 @@ def apply_heal(db: Session, state: dict, target: dict, amount: int) -> list[str]
     return lines
 
 
+def resolve_move(db: Session, session_id: str, actor_id: str, dest: dict) -> list[str]:
+    """方格移动：把当前行动者移到 dest 格。校验轮到本人、无待掷、未被擒、目标格在移动预算内且
+    可达（BFS 绕障碍/占用）。**不推进先攻**（移动后同回合仍可攻击/技能）——扣 move_left。"""
+    session = db.get(GameSession, session_id)
+    state = get_combat(session)
+    if not state:
+        raise ValueError("当前不在战斗中")
+    if state.get("pending_roll"):
+        raise ValueError("请先完成待掷的骰子")
+    actor = current_actor(state)
+    if not actor or actor.get("id") != actor_id:
+        raise ValueError("现在不是你的先攻回合")
+    grid = state.get("grid")
+    if not grid or not actor.get("pos"):
+        raise ValueError("本场战斗无方格")
+    if "grappled" in (actor.get("conditions") or []):
+        raise ValueError("被擒抱中，先挣脱才能移动")
+    try:
+        dx, dy = int(dest["x"]), int(dest["y"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("落点非法")
+    dest_key = f"{dx},{dy}"
+    occupied = {f'{p["pos"]["x"]},{p["pos"]["y"]}' for p in (state.get("initiative") or [])
+                if p.get("pos") and p["id"] != actor_id and engine.is_active(p)}
+    budget = int(actor.get("move_left") or 0)
+    if dest_key not in positioning.reachable_cells(actor, budget, grid, occupied):
+        raise ValueError("目标格超出移动力或不可达")
+    cost = positioning.cell_distance(actor, {"x": dx, "y": dy})
+    actor["pos"] = {"x": dx, "y": dy}
+    actor["move_left"] = max(0, budget - cost)
+    _save_combat(db, session_id, state)
+    return [_combat_state_chunk(state)]
+
+
 async def resolve_player_action(
     db: Session, session_id: str, actor_id: str, action: dict,
     agent=None, scene_hint: str = "",
@@ -347,10 +424,13 @@ async def _begin_player_attack(
     defense = None if ranged else (
         action.get("defense")
         or engine.heuristic_defense(target, is_firearm=False, defender_grappled=target_grappled))
+    g_bonus, g_penalty, reachable, reason = _attack_geometry(state, actor, target, weapon, ranged)
+    if not reachable:
+        raise ValueError(reason)   # 够不着 → 不结算、不推进，前端提示先移动接近或换目标
     res = engine.resolve_attack(
         _char_data(actor), actor.get("db", "0"), weapon,
         defender_data=_char_data(target), defense=defense, ranged=ranged,
-        attacker_disarmed=disarmed, bonus=aim_bonus,
+        attacker_disarmed=disarmed, bonus=aim_bonus + g_bonus, penalty=g_penalty,
     )
     if actor.get("aim"):
         actor["aim"] = False   # 瞄准一次性消费
