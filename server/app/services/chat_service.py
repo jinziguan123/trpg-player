@@ -2791,13 +2791,20 @@ async def run_chat_generation(session_id: str) -> None:
 async def _run_kp_turn(
     db, session_id, game_session, module, player_char, party_others, user_prompt: str,
     then_team_turn: list[Character] | None = None,
+    sanity_guard: bool = False,
 ) -> None:
     """跑一轮 KP：注入 user_prompt → 流式叙事 → 处理指令（待定检定/掷骰/场景等）→ done。
 
     ``then_team_turn`` 给定时（如玩家大地图前往后），在 KP 叙事与指令处理之后、``done`` 之前
     再跑一轮 AI 队友回合——否则这条路（不经 run_chat_generation）的队友永远没有发言机会。
+
+    ``sanity_guard`` 给定时（检定后续写等路径）：本函数默认不跑 planner/SAN 守卫，但检定成功
+    揭示的恐怖是在**叙事生成时**才出现的（回合起点的 plan 看不到），故在叙事之后现跑一次 planner
+    （此时上下文已含刚揭示的恐怖）→ 确定性补发 SAN；KP 已自发掷过 SAN 则幂等跳过、不重复扣。
     """
     llm = get_llm()
+    # SAN 守卫基线：本次续写生成前的最大 seq，用于判断 KP 是否已自行掷过 SAN（幂等）。
+    pre_gen_seq = session_service.get_next_sequence_num(db, session_id) - 1
     events = session_service.get_session_events(db, session_id)
     rules_enabled = rulebook_service.has_rulebook(db, module.rule_system)
     module_rag_enabled = getattr(module, "rag_status", "") == "ready"
@@ -2834,6 +2841,21 @@ async def _run_kp_turn(
         teammates=party_others,
     ):
         room_hub.broadcast(session_id, chunk)
+
+    # 确定性 SAN 守卫（检定后续写等路径）：若 KP 未自发掷 SAN，就在叙事之后现跑一次 planner
+    # ——此时上下文已含刚揭示的恐怖，planner 能正确裁定「本轮目睹恐怖」→ 后端确定性补发理智检定。
+    if sanity_guard and not _san_rolled_this_turn(db, session_id, pre_gen_seq):
+        post_events = session_service.get_session_events(db, session_id)
+        rules_enabled = bool(post_events) and rulebook_service.has_rulebook(db, module.rule_system)
+        plan_messages = turn_planner.build_turn_plan_messages(
+            game_session, module, player_char, post_events, teammates=party_others,
+            rules_lookup_enabled=rules_enabled,
+        )
+        plan = await turn_planner.run_turn_planner(llm, plan_messages)
+        async for chunk in _ensure_planned_sanity(
+            db, session_id, game_session, player_char, party_others, plan, pre_gen_seq,
+        ):
+            room_hub.broadcast(session_id, chunk)
 
     if then_team_turn:
         db.refresh(game_session)  # 叙事里可能有 [SCENE_CHANGE]/[MOVE] 改了位置，重取再判分头
@@ -2986,6 +3008,7 @@ async def run_roll_generation(session_id: str, check_id: str) -> None:
         await _run_kp_turn(
             db, session_id, game_session, module, player_char, party_others,
             KP_DICE_CONTINUATION_PROMPT.format(dice_results=desc),
+            sanity_guard=True,   # 检定成功揭示的恐怖 → 叙事后现跑 planner 确定性补发 SAN
         )
     except asyncio.CancelledError:
         logger.info("投骰生成被取消: session=%s", session_id)

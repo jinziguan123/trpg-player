@@ -88,3 +88,76 @@ def test_guard_noop_when_trigger_false(db_factory):
     pre = session_service.get_next_sequence_num(db, sid) - 1
     plan = TurnPlan(sanity=SanityPolicy(trigger=False))
     assert _run(cs._ensure_planned_sanity(db, sid, db.get(GameSession, sid), pc, [], plan, pre)) == []
+
+
+def test_check_continuation_fires_san_via_run_kp_turn(db_factory, monkeypatch):
+    """检定后续写(sanity_guard=True)：KP 漏发 SAN，但叙事后现跑 planner 裁定目睹恐怖 → 确定性补发。
+
+    复现问题二：恐怖由『侦查检定成功』才揭示，回合起点的 plan 看不到；本修复在叙事之后补跑
+    planner（此时上下文已含刚揭示的恐怖）驱动确定性 SAN 守卫。
+    """
+    db = db_factory(); sid, pc = _seed(db)
+    gs = db.get(GameSession, sid)
+    module = db.get(Module, gs.module_id)
+    monkeypatch.setattr("app.rules.coc.checks.roll_percentile", lambda: 99)   # SAN 失败 → 扣损失
+
+    async def _fake_stream(kp, messages, res, **kw):
+        res[0] = "手电照亮了那具扭曲的尸体，面部中央裂开一道缝……"   # 恐怖描写，但**不发 [SAN_CHECK]**
+        res[1] = res[0]
+        for _ in ():
+            yield ""   # 空异步生成器
+
+    async def _fake_planner(llm, messages):
+        return TurnPlan(sanity=SanityPolicy(
+            trigger=True, source="扭曲的尸体", success_loss="0", failure_loss="1d6"))
+
+    async def _noop_finish(db, sid, llm):
+        return None
+
+    monkeypatch.setattr(cs, "KPAgent", lambda llm: object())
+    monkeypatch.setattr(cs, "get_llm", lambda: object())
+    monkeypatch.setattr(cs, "_stream_narration_filtered", _fake_stream)
+    monkeypatch.setattr(cs, "build_kp_context", lambda *a, **k: [{"role": "system", "content": "x"}])
+    monkeypatch.setattr(cs, "_module_excerpts_for_context", lambda *a, **k: [])
+    monkeypatch.setattr(cs.turn_planner, "run_turn_planner", _fake_planner)
+    monkeypatch.setattr(cs, "_finish_generation", _noop_finish)
+
+    asyncio.run(cs._run_kp_turn(db, sid, gs, module, pc, [], "续写", sanity_guard=True))
+
+    evs = session_service.get_session_events(db, sid)
+    assert any(e.event_type == "dice" and (e.metadata_ or {}).get("skill") == "SAN" for e in evs)
+    db.refresh(pc)
+    assert pc.system_data["sanity"]["current"] < 60   # 确定性扣了 SAN
+
+
+def test_check_continuation_no_guard_when_flag_off(db_factory, monkeypatch):
+    """默认 sanity_guard=False（普通 KP 续写）：即便 planner 会触发也不补跑、不发 SAN。"""
+    db = db_factory(); sid, pc = _seed(db)
+    gs = db.get(GameSession, sid)
+    module = db.get(Module, gs.module_id)
+    ran = {"planner": False}
+
+    async def _fake_stream(kp, messages, res, **kw):
+        res[0] = res[1] = "一段平静的旁白。"
+        for _ in ():
+            yield ""
+
+    async def _fake_planner(llm, messages):
+        ran["planner"] = True
+        return TurnPlan(sanity=SanityPolicy(trigger=True))
+
+    monkeypatch.setattr(cs, "KPAgent", lambda llm: object())
+    monkeypatch.setattr(cs, "get_llm", lambda: object())
+    monkeypatch.setattr(cs, "_stream_narration_filtered", _fake_stream)
+    monkeypatch.setattr(cs, "build_kp_context", lambda *a, **k: [{"role": "system", "content": "x"}])
+    monkeypatch.setattr(cs, "_module_excerpts_for_context", lambda *a, **k: [])
+    monkeypatch.setattr(cs.turn_planner, "run_turn_planner", _fake_planner)
+
+    async def _noop_finish(db, sid, llm):
+        return None
+    monkeypatch.setattr(cs, "_finish_generation", _noop_finish)
+
+    asyncio.run(cs._run_kp_turn(db, sid, gs, module, pc, [], "续写"))   # 无 sanity_guard
+    assert ran["planner"] is False                                     # 没有多跑 planner
+    evs = session_service.get_session_events(db, sid)
+    assert not any((e.metadata_ or {}).get("skill") == "SAN" for e in evs)
