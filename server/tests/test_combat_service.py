@@ -469,6 +469,22 @@ def test_npc_walks_toward_unreachable_target(db_factory):
     assert st.get("pending_reaction") is None   # 是走位、不是攻击暂停
 
 
+def test_dash_uses_full_mov_and_ends_turn(db_factory):
+    """冲刺：用满 mov 移动（常规预算 ⌈mov/2⌉ 够不到的距离），且独占本回合（推进先攻、清空 move_left）。"""
+    db = db_factory(); sid, hero = _seed(db)
+    state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲")])
+    combat_service._find(state, hero.id)["pos"] = {"x": 1, "y": 4}
+    combat_service._save_combat(db, sid, state)
+    dest = {"x": 8, "y": 4}   # 距 (1,4) 7 格：mov 8 冲刺可达，常规预算 4 够不到
+    with pytest.raises(ValueError):
+        combat_service.resolve_move(db, sid, hero.id, dest, dash=False)
+    combat_service.resolve_move(db, sid, hero.id, dest, dash=True)
+    st = combat_service.get_combat(db.get(GameSession, sid))
+    h = combat_service._find(st, hero.id)
+    assert h["pos"] == dest and h["move_left"] == 0
+    assert st["turn_index"] != 0   # 冲刺独占回合 → 已推进先攻
+
+
 def test_extinguish_action_removes_burning(db_factory):
     db = db_factory(); sid, hero = _seed(db)
     state = _start_multi(db, sid, hero, [_mk_enemy("e1", "循声者A")])

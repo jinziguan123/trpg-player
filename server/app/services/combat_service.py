@@ -60,6 +60,11 @@ def _coerce_mov(v) -> int:
         return _DEFAULT_MOV
 
 
+def _regular_budget(mov: int) -> int:
+    """常规移动每轮预算 = ⌈mov/2⌉ 格（移动后仍可攻击）；冲刺(dash)才用满 mov 但独占本回合。"""
+    return (int(mov) + 1) // 2
+
+
 def _attack_geometry(state: dict, actor: dict, target: dict, weapon: str,
                      ranged: bool) -> tuple[int, int, bool, str]:
     """方格几何折算 →（命中奖励骰, 命中惩罚骰, 是否可达, 不可达原因）。
@@ -102,9 +107,9 @@ def _char_participant(char: Character, side: str, is_human: bool = True) -> dict
         "skills": char.skills or {}, "base_attributes": char.base_attributes or {},
         "system_data": sd, "db": (sd.get("damageBonus") or "0"),
         "armor": _coerce_armor(sd.get("armor")),   # 护甲值：每次受到的物理伤害先扣它（CoC7e）
-        # 方格位置：pos 开战由 default_deployment 落；mov 移动力、move_left 本回合剩余移动预算
+        # 方格位置：pos 开战由 default_deployment 落；mov 移动力、move_left 本回合常规移动预算(⌈mov/2⌉)
         "pos": None, "mov": _coerce_mov(sd.get("MOV") or sd.get("move")),
-        "move_left": _coerce_mov(sd.get("MOV") or sd.get("move")),
+        "move_left": _regular_budget(_coerce_mov(sd.get("MOV") or sd.get("move"))),
         "acted_this_round": False, "dodged_this_round": False,
         # P2 主动动作集：正交条件 / 瞄准 / 该处伤是否已急救（RAW 每处伤一次）
         "conditions": [], "aim": False, "first_aid_used": False,
@@ -130,7 +135,8 @@ def _npc_participant(npc: dict, side: str = "enemy") -> dict:
         "weapon": weapon, "has_firearm": _weapon_is_firearm(weapon),
         "skills": npc.get("skills") or {}, "base_attributes": attrs, "system_data": {},
         "db": db, "armor": _coerce_armor(npc.get("armor")), "combat_ai": npc.get("combat_ai"),
-        "pos": None, "mov": _coerce_mov(npc.get("mov")), "move_left": _coerce_mov(npc.get("mov")),
+        "pos": None, "mov": _coerce_mov(npc.get("mov")),
+        "move_left": _regular_budget(_coerce_mov(npc.get("mov"))),
         # 有性格/秘密的关键 NPC → 战斗中走子代理决策+叙述；杂兵走启发式
         "is_key": bool(npc.get("personality") or npc.get("secrets")),
         "personality": npc.get("personality"),
@@ -336,9 +342,11 @@ def apply_heal(db: Session, state: dict, target: dict, amount: int) -> list[str]
     return lines
 
 
-def resolve_move(db: Session, session_id: str, actor_id: str, dest: dict) -> list[str]:
-    """方格移动：把当前行动者移到 dest 格。校验轮到本人、无待掷、未被擒、目标格在移动预算内且
-    可达（BFS 绕障碍/占用）。**不推进先攻**（移动后同回合仍可攻击/技能）——扣 move_left。"""
+def resolve_move(db: Session, session_id: str, actor_id: str, dest: dict,
+                 dash: bool = False) -> list[str]:
+    """方格移动：把当前行动者移到 dest 格。校验轮到本人、无待掷、未被擒、目标格可达（BFS 绕障碍/占用）。
+    常规移动（dash=False）：预算 = move_left（⌈mov/2⌉），**不推进先攻**、同回合仍可攻击，扣 move_left。
+    冲刺（dash=True）：预算 = 满 mov，但**独占本回合**（推进先攻、清空 move_left）。"""
     session = db.get(GameSession, session_id)
     state = get_combat(session)
     if not state:
@@ -360,12 +368,17 @@ def resolve_move(db: Session, session_id: str, actor_id: str, dest: dict) -> lis
     dest_key = f"{dx},{dy}"
     occupied = {f'{p["pos"]["x"]},{p["pos"]["y"]}' for p in (state.get("initiative") or [])
                 if p.get("pos") and p["id"] != actor_id and engine.is_active(p)}
-    budget = int(actor.get("move_left") or 0)
+    budget = int(actor.get("mov") or _DEFAULT_MOV) if dash else int(actor.get("move_left") or 0)
     if dest_key not in positioning.reachable_cells(actor, budget, grid, occupied):
         raise ValueError("目标格超出移动力或不可达")
     cost = positioning.cell_distance(actor, {"x": dx, "y": dy})
     actor["pos"] = {"x": dx, "y": dy}
-    actor["move_left"] = max(0, budget - cost)
+    if dash:
+        actor["move_left"] = 0
+        actor["acted_this_round"] = True
+        engine.advance_turn(state)      # 冲刺独占本回合 → 推进先攻
+    else:
+        actor["move_left"] = max(0, budget - cost)
     _save_combat(db, session_id, state)
     return [_combat_state_chunk(state)]
 
@@ -986,8 +999,8 @@ async def drive_npcs(db: Session, session_id: str, state: dict, agent=None, scen
                 if not reachable:
                     occ = {f'{p["pos"]["x"]},{p["pos"]["y"]}' for p in (state.get("initiative") or [])
                            if p.get("pos") and p["id"] != actor["id"] and engine.is_active(p)}
-                    dest = positioning.step_toward(
-                        actor, tgt, int(actor.get("move_left") or actor.get("mov") or 0),
+                    dest = positioning.step_toward(   # 走位接近即 NPC 的整回合行动 → 用满 mov（冲刺）
+                        actor, tgt, int(actor.get("mov") or _DEFAULT_MOV),
                         state["grid"], occ)
                     if dest:
                         actor["pos"] = {"x": dest[0], "y": dest[1]}

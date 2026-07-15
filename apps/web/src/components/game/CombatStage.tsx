@@ -284,8 +284,9 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
   const [submitting, setSubmitting] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [logOpen, setLogOpen] = useState(false)
-  const [moveMode, setMoveMode] = useState(false)   // 方格移动模式（高亮可达格、点格移动）
-  useEffect(() => { setMoveMode(false) }, [combat.turn])   // 回合切换 → 退出移动模式
+  // 方格移动模式：'move' 常规（⌈mov/2⌉，可再攻击）/ 'dash' 冲刺（满 mov，独占回合）/ 'none'
+  const [moveMode, setMoveMode] = useState<'none' | 'move' | 'dash'>('none')
+  useEffect(() => { setMoveMode('none') }, [combat.turn])   // 回合切换 → 退出移动模式
 
   // 武器下拉项：拳头置顶（永远有）+ 角色卡武器栏（去重、保留伤害提示）+ 其它(手填)。
   const weaponOptions = useMemo(() => {
@@ -339,9 +340,16 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
         if (isFirearm && fireMode === 'burst') {
           // 对同一目标连开 3 发（同目标不加惩罚骰）
           void submit({ type: 'attack', weapon: curWeapon, shots: [effectiveTarget, effectiveTarget, effectiveTarget] })
-        } else if (isFirearm && fireMode === 'sweep' && candidates.length >= 2) {
-          // 扫射：每个存活敌人 1 发（换目标累加惩罚骰）
-          void submit({ type: 'attack', weapon: curWeapon, shots: candidates.map((c) => c.id) })
+        } else if (isFirearm && fireMode === 'sweep') {
+          // 扫射：主目标 + 与主目标相邻（成排）的其它存活敌人各 1 发（换目标累加惩罚骰）。
+          // 有坐标时按方格相邻收窄；无坐标（旧战斗态）回落到全体敌人。
+          const primPos = candidates.find((c) => c.id === effectiveTarget)?.pos
+          const swept = primPos
+            ? candidates.filter((c) => c.id === effectiveTarget
+                || (c.pos && Math.max(Math.abs(c.pos.x - primPos.x), Math.abs(c.pos.y - primPos.y)) <= 1)).map((c) => c.id)
+            : candidates.map((c) => c.id)
+          if (swept.length >= 2) void submit({ type: 'attack', weapon: curWeapon, shots: swept })
+          else void submit({ type: 'attack', target_id: effectiveTarget, weapon: curWeapon })
         } else {
           void submit({ type: 'attack', target_id: effectiveTarget, weapon: curWeapon })
         }
@@ -374,13 +382,13 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
     }
   }
 
-  // 方格移动：点可达格 → 提交移动（不推进先攻），成功后退出移动模式。
+  // 方格移动：点可达格 → 提交移动/冲刺，成功后退出移动模式。
   const doMove = async (x: number, y: number) => {
-    if (submitting) return
+    if (submitting || moveMode === 'none') return
     setSubmitting(true)
     try {
-      await api.post(`/sessions/${sessionId}/combat/action`, { type: 'move', dest: { x, y } })
-      setMoveMode(false)
+      await api.post(`/sessions/${sessionId}/combat/action`, { type: moveMode, dest: { x, y } })
+      setMoveMode('none')
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : '移动失败')
     } finally {
@@ -389,7 +397,7 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
   }
   // 点棋子：非移动模式下点敌方棋子 = 选为攻击目标（与目标下拉双向同步）。
   const onPieceClick = (c: Combatant) => {
-    if (moveMode) return
+    if (moveMode !== 'none') return
     if (c.side === 'enemy' && !isOut(c)) { setAction('attack'); setTargetId(c.id) }
   }
 
@@ -457,18 +465,34 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
           <div className="flex items-center justify-between mb-0.5">
             <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--color-text-secondary)' }}>战场</span>
             {myTurn && (
-              <button
-                onClick={() => setMoveMode((v) => !v)}
-                disabled={submitting}
-                className="text-[11px] px-2 py-0.5 rounded inline-flex items-center gap-1"
-                style={{
-                  border: `1px solid ${moveMode ? 'var(--color-accent)' : 'var(--color-border-strong)'}`,
-                  color: moveMode ? 'var(--color-text-accent)' : 'var(--color-text-secondary)',
-                  ...(submitting ? { opacity: 0.5 } : {}),
-                }}
-              >
-                <GiRun size={12} /> {moveMode ? `移动中（剩 ${me?.move_left ?? 0} 格）` : '移动'}
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setMoveMode((m) => (m === 'move' ? 'none' : 'move'))}
+                  disabled={submitting}
+                  title={`常规移动 ⌈mov/2⌉=${me?.move_left ?? 0} 格，移动后仍可攻击`}
+                  className="text-[11px] px-2 py-0.5 rounded inline-flex items-center gap-1"
+                  style={{
+                    border: `1px solid ${moveMode === 'move' ? 'var(--color-accent)' : 'var(--color-border-strong)'}`,
+                    color: moveMode === 'move' ? 'var(--color-text-accent)' : 'var(--color-text-secondary)',
+                    ...(submitting ? { opacity: 0.5 } : {}),
+                  }}
+                >
+                  <GiRun size={12} /> {moveMode === 'move' ? `移动中（${me?.move_left ?? 0} 格）` : '移动'}
+                </button>
+                <button
+                  onClick={() => setMoveMode((m) => (m === 'dash' ? 'none' : 'dash'))}
+                  disabled={submitting}
+                  title={`冲刺满 mov=${me?.mov ?? 0} 格，但独占本回合（不能再攻击）`}
+                  className="text-[11px] px-2 py-0.5 rounded inline-flex items-center gap-1"
+                  style={{
+                    border: `1px solid ${moveMode === 'dash' ? 'var(--color-danger)' : 'var(--color-border-strong)'}`,
+                    color: moveMode === 'dash' ? 'var(--color-danger)' : 'var(--color-text-secondary)',
+                    ...(submitting ? { opacity: 0.5 } : {}),
+                  }}
+                >
+                  <GiRun size={12} /> {moveMode === 'dash' ? `冲刺中（${me?.mov ?? 0} 格）` : '冲刺'}
+                </button>
+              </div>
             )}
           </div>
           <CombatGrid
@@ -476,7 +500,9 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
             order={order}
             turn={combat.turn}
             myCharId={myCharId}
-            moveMode={moveMode}
+            moveActive={moveMode !== 'none'}
+            budget={moveMode === 'dash' ? (me?.mov ?? 0) : (me?.move_left ?? 0)}
+            dash={moveMode === 'dash'}
             targetId={effectiveTarget}
             onCellMove={doMove}
             onPieceClick={onPieceClick}
@@ -763,12 +789,14 @@ function InitiativeTrack({ order, turn, myCharId }: { order: Combatant[]; turn: 
 // 方格战场：CSS-grid 棋盘 + 棋子（阵营色/当前行动者外发光/出局灰化/选中目标描边）。
 // 移动模式下高亮可达格（Chebyshev ≤ 剩余移动力、避开占用/障碍），点格移动；点敌方棋子选目标。
 // 纯 --color-* 变量，gothic/parchment 两主题自适应，不引第三方战棋库。
-function CombatGrid({ grid, order, turn, myCharId, moveMode, targetId, onCellMove, onPieceClick }: {
+function CombatGrid({ grid, order, turn, myCharId, moveActive, budget, dash, targetId, onCellMove, onPieceClick }: {
   grid: CombatGridInfo
   order: Combatant[]
   turn: string | null
   myCharId: string | null
-  moveMode: boolean
+  moveActive: boolean
+  budget: number
+  dash: boolean
   targetId: string
   onCellMove: (x: number, y: number) => void
   onPieceClick: (c: Combatant) => void
@@ -779,8 +807,8 @@ function CombatGrid({ grid, order, turn, myCharId, moveMode, targetId, onCellMov
   const blocked = new Set(grid.blocked || [])
   const reach = new Set<string>()
   const threat = new Set<string>()   // 与存活敌方相邻的格：移动到此会进入近战/被夹击
-  if (moveMode && me?.pos && (me.move_left ?? 0) > 0) {
-    const b = me.move_left ?? 0
+  if (moveActive && me?.pos && budget > 0) {
+    const b = budget
     for (let y = 0; y < grid.rows; y++) {
       for (let x = 0; x < grid.cols; x++) {
         const k = `${x},${y}`
@@ -834,11 +862,14 @@ function CombatGrid({ grid, order, turn, myCharId, moveMode, targetId, onCellMov
           const [x, y] = k.split(',').map(Number)
           return (
             <button key={`r${k}`} onClick={() => onCellMove(x, y)}
-              title={threat.has(k) ? '移动到此格（进入敌方近战范围）' : '移动到此格'}
+              title={threat.has(k) ? (dash ? '冲刺到此格（进入敌方近战范围、独占本回合）' : '移动到此格（进入敌方近战范围）')
+                : (dash ? '冲刺到此格（独占本回合）' : '移动到此格')}
               style={{ gridColumn: x + 1, gridRow: y + 1, border: 'none', cursor: 'pointer',
                 background: threat.has(k)
                   ? 'color-mix(in srgb, var(--color-danger) 26%, transparent)'
-                  : 'color-mix(in srgb, var(--color-accent) 22%, transparent)' }} />
+                  : dash
+                    ? 'color-mix(in srgb, var(--color-danger) 13%, transparent)'
+                    : 'color-mix(in srgb, var(--color-accent) 22%, transparent)' }} />
           )
         })}
         {order.filter((c) => c.pos).map((c) => {

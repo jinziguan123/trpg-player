@@ -121,5 +121,15 @@ def test_step_toward_moves_closer_and_stops_adjacent():
     assert pos.step_toward(adj, target, 4, g, occ) is None
 
 
+def test_sweep_targets_primary_plus_adjacent():
+    shooter = {"id": "h", "side": "player", "pos": {"x": 0, "y": 0}}
+    prim = {"id": "e1", "side": "enemy", "pos": {"x": 5, "y": 5}, "hp": 10, "status": "ok"}
+    adj = {"id": "e2", "side": "enemy", "pos": {"x": 6, "y": 5}, "hp": 10, "status": "ok"}
+    far = {"id": "e3", "side": "enemy", "pos": {"x": 9, "y": 9}, "hp": 10, "status": "ok"}
+    ally = {"id": "a", "side": "ally", "pos": {"x": 5, "y": 6}, "hp": 10, "status": "ok"}
+    ids = pos.sweep_targets(shooter, prim, [shooter, prim, adj, far, ally])
+    assert set(ids) == {"e1", "e2"}   # 主目标 + 相邻敌人；远敌/友军不入
+
+
 def test_reachable_cells_zero_budget_empty():
     assert pos.reachable_cells(_u(0, 0), budget=0, grid={"cols": 4, "rows": 4}, occupied=set()) == set()

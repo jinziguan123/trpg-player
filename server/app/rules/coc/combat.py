@@ -404,8 +404,8 @@ def advance_turn(state: dict) -> dict:
             for p in order:
                 p["acted_this_round"] = False
                 p["dodged_this_round"] = False
-                if "mov" in p:                       # 新一轮重置移动预算（方格战场）
-                    p["move_left"] = p.get("mov")
+                if "mov" in p:                       # 新一轮重置常规移动预算 ⌈mov/2⌉（方格战场）
+                    p["move_left"] = (int(p.get("mov") or 8) + 1) // 2
             state["initiative"] = roll_initiative(order)
             order = state["initiative"]
         if is_active(order[state["turn_index"]]):

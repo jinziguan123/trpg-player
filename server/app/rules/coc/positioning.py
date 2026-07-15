@@ -136,6 +136,20 @@ def flank_penalty(defender: dict, participants: list[dict]) -> int:
     return min(2, max(0, adj - 1))
 
 
+def sweep_targets(shooter: dict, primary: dict, participants: list[dict]) -> list[str]:
+    """一次连射扫射可覆盖的目标 id：主目标 + 与主目标相邻（成排）的其它存活敌方。
+    位置层只产候选（几何事实），换目标惩罚骰/弹药由连发线按这份名单叠加。"""
+    prim_id = primary.get("id")
+    s_enemy = shooter.get("side") == "enemy"
+    out = [prim_id]
+    for p in participants:
+        if p.get("id") == prim_id or not _can_fight(p):
+            continue
+        if (p.get("side") == "enemy") != s_enemy and is_adjacent(p, primary):
+            out.append(p.get("id"))
+    return out
+
+
 def _place_column(units: list[dict], col: int, rows: int) -> None:
     """把一队单位沿某列 y 轴居中、连续铺开，原地落 pos。n≤rows 不重叠。"""
     n = len(units)
