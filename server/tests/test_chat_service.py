@@ -398,6 +398,47 @@ def test_say_marker_extracts_dialogue():
     assert "望向门口" in result[0]
 
 
+def test_leaked_dialogue_extracted_with_dup_prefix_and_role():
+    """漏进旁白的『名字：\\n名字（身份）：「台词」』(重复前缀+身份) → 抽成对话 mark、清掉重复前缀。"""
+    narr = "他张了张嘴，声音压得极低。京山人吉：\n京山人吉（乘务员）：“它……是死的吗？”\n\n龙牙没有回答。"
+    new_narr, marks = chat_service._extract_leaked_dialogue(narr, [], party_names=set())
+    assert "京山人吉：" not in new_narr and "是死的吗" not in new_narr   # 台词与重复前缀都清掉
+    assert "声音压得极低。" in new_narr and "龙牙没有回答" in new_narr    # 旁白其余保留
+    assert marks == [(marks[0][0], "京山人吉", "它……是死的吗？")]
+    assert new_narr[marks[0][0]:marks[0][0] + 2] == "\n\n"              # 插在删除点
+
+
+def test_leaked_dialogue_sign_label_not_extracted():
+    """招牌/标识『牌子：「禁止入内」』无身份、无重复前缀 → 弱信号，不抽、留旁白。"""
+    narr = "门上钉着块牌子：“禁止入内”。"
+    new_narr, marks = chat_service._extract_leaked_dialogue(narr, [], party_names=set())
+    assert new_narr == narr and not marks
+
+
+def test_leaked_dialogue_role_tag_alone_extracted():
+    """仅带身份标注(无重复前缀)也是强信号 → 抽。"""
+    narr = "医生（急诊）：“他撑不过今晚。”"
+    _, marks = chat_service._extract_leaked_dialogue(narr, [], party_names=set())
+    assert marks and marks[0][1] == "医生" and marks[0][2] == "他撑不过今晚。"
+
+
+def test_leaked_dialogue_party_name_never_extracted():
+    """玩家党名即便带身份也绝不抽(不替玩家/队友发声)。"""
+    narr = "江户川龙牙（侦探）：“交给我。”"
+    new_narr, marks = chat_service._extract_leaked_dialogue(narr, [], party_names={"江户川龙牙"})
+    assert new_narr == narr and not marks
+
+
+def test_leaked_dialogue_shifts_existing_marks():
+    """抽取删除旁白片段后，既有对话 mark 的偏移随之前移。"""
+    narr = "AAAA医生（急诊）：“撑不住了。”BBBB"
+    b_off = narr.index("BBBB")
+    new_narr, marks = chat_service._extract_leaked_dialogue(
+        narr, [(b_off, "护士", "好的")], party_names=set())
+    nurse = [m for m in marks if m[1] == "护士"][0]
+    assert new_narr[nurse[0]:nurse[0] + 4] == "BBBB"                    # 偏移前移到新旁白 BBBB 处
+
+
 def test_unnamed_npc_via_say():
     """无名 NPC（护工）用其身份作 who，归到该身份，不混入有名 NPC。"""
     npcs = [{"name": "史蒂芬·诺特"}]

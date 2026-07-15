@@ -1233,6 +1233,83 @@ def _classify_llm_error(exc: BaseException) -> str:
 # 渲染成旁白里孤零零的一个 ” / “（用户报的「双引号被分到旁白中」）。落库前整行剥除。
 _ORPHAN_QUOTE_LINE_RE = re.compile(r"(?m)^[ \t　]*[“”「」『』\"]+[ \t　]*(?:\n|$)")
 
+# 台词残留兜底：模型（尤其 deepseek）漏调 say()、把「名字[（身份）]：「台词」」写进叙述文本
+# （有时把名字写重一遍，如「京山人吉：\n京山人吉（乘务员）：“…”」）。只抽**显式署名**且带强信号
+# （有身份标注 或 重复同名前缀）的台词——裸引号、招牌标识、被提及、玩家党名一概不碰。
+_LEAKED_SAY_RE = re.compile(
+    r"(?P<name>[一-龥·]{2,8})(?P<role>（[^）\n]{1,10}）)?[：:][ \t　]*"
+    r"[“「『\"](?P<text>[^”」』\"\n]{1,200})[”」』\"]"
+)
+
+
+def _extract_leaked_dialogue(
+    narration: str, marks: list | None, party_names: set[str] | None,
+) -> tuple[str, list | None]:
+    """把漏进旁白的显式署名 NPC 台词抽成对话 mark、从旁白删除（含吞掉紧邻其前的「同名：」重复前缀）。
+
+    保守触发：仅当命中「名字（身份）：「台词」」有身份标注、或前面紧跟「同名：」重复前缀时才抽——
+    二者都是「漏调 say()」的强信号；无信号的裸引号/招牌一律留旁白（不猜、不误抽）。玩家党名不抽。
+    """
+    party = set(party_names or ())
+    hits: list[tuple[int, int, str, str]] = []   # (start, end, speaker, text)
+    last_end = 0
+    for m in _LEAKED_SAY_RE.finditer(narration):
+        name = (m.group("name") or "").strip()
+        if not name or name in party:
+            continue
+        s, e = m.start(), m.end()
+        dup = re.search(re.escape(name) + r"[：:][ \t　]*[\r\n]*[ \t　]*$", narration[:s])
+        if not (m.group("role") or dup):   # 无强信号 → 不抽（可能是招牌/标识/被提及）
+            continue
+        if dup:
+            s = dup.start()
+        s = max(s, last_end)               # 防与前一命中区间重叠
+        last_end = e
+        hits.append((s, e, name, (m.group("text") or "").strip()))
+    if not hits:
+        return narration, marks
+    logger.info("台词残留兜底：从旁白抽出 %d 条显式署名台词（模型漏调 say()）", len(hits))
+    removals = [(s, e) for s, e, _, _ in hits]
+
+    def _shift(off: int) -> int:
+        removed = 0
+        for s, e in removals:
+            if e <= off:
+                removed += e - s
+            elif s < off < e:
+                removed += off - s
+        return off - removed
+
+    kept: list[str] = []
+    inserted: list[tuple[int, str, str]] = []
+    cursor = 0
+    for s, e, name, text in hits:
+        kept.append(narration[cursor:s])
+        if text:
+            inserted.append((_shift(s), name, text))
+        cursor = e
+    kept.append(narration[cursor:])
+    new_narr = "".join(kept)
+    old = [(_shift(o), spk, txt) for o, spk, txt in (marks or [])]
+    return new_narr, sorted(old + inserted, key=lambda x: x[0])
+
+
+def _session_party_names(db: Session, session_id: str) -> set[str]:
+    """本局玩家 + AI 队友的角色名（台词兜底抽取时排除，绝不替玩家党发声）。"""
+    names: set[str] = set()
+    gs = db.get(GameSession, session_id)
+    if not gs:
+        return names
+    if gs.player_character_id:
+        pc = db.get(Character, gs.player_character_id)
+        if pc and pc.name:
+            names.add(pc.name)
+    for mate in session_service.get_party_members(db, session_id):
+        nm = getattr(mate, "name", None)
+        if nm:
+            names.add(nm)
+    return names
+
 
 def _strip_marked_lines(narration: str, marks: list | None, regex) -> tuple[str, list | None]:
     """按 regex 整段剥除旁白里的问题行，并同步修正 dialogue_marks 偏移：删除点之前的 mark
@@ -1271,6 +1348,8 @@ def _persist_narration(
     marks = result[3] if len(result) > 3 else None
     narration, marks = _strip_marked_lines(narration, marks, _FAKE_CHECK_RESULT_RE)
     narration, marks = _strip_marked_lines(narration, marks, _ORPHAN_QUOTE_LINE_RE)
+    # 台词残留兜底：模型漏调 say()、把显式署名台词写进旁白 → 抽成对话气泡、清掉重复前缀。
+    narration, marks = _extract_leaked_dialogue(narration, marks, _session_party_names(db, session_id))
     group_marks = sorted(result[4], key=lambda g: g[0]) if len(result) > 4 and result[4] else []
 
     def _group_at(offset: int) -> str | None:
