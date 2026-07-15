@@ -77,6 +77,10 @@ def env(tmp_path):
         db, sid,
         [combat_service._char_participant(hero, "player", is_human=True)],
         [combat_service._npc_participant(enemy, "enemy")])
+    # 摆到相邻：拉开布阵下 NPC 会先走位接近，这里让打手开局就够得着 hero → 直接攻击暂停
+    combat_service._find(state, hero.id)["pos"] = {"x": 5, "y": 5}
+    combat_service._find(state, "npc_thug")["pos"] = {"x": 6, "y": 5}
+    combat_service._save_combat(db, sid, state)
     asyncio.run(combat_service.drive_npcs(db, sid, state))
     assert state.get("pending_reaction")   # 已停在等真人反应
     db.close()

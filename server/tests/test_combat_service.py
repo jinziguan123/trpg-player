@@ -82,6 +82,15 @@ def _mk_enemy(eid, name):
             "skills": {"格斗(斗殴)": 30}, "weapon": "徒手格斗"}
 
 
+def _cluster_adjacent(db, sid, state):
+    """把参战方摆成一小簇相邻（覆盖拉开布阵）——供「NPC 攻击真人→暂停」类测试绕开走位接近，
+    让 NPC 开局就够得着、直接落 pending_reaction。"""
+    spots = [(5, 5), (6, 5), (5, 6), (6, 6), (6, 4), (4, 5)]
+    for p, (x, y) in zip(state.get("initiative") or [], spots):
+        p["pos"] = {"x": x, "y": y}
+    combat_service._save_combat(db, sid, state)
+
+
 def test_stage_aoe_damage_molotov_targets_enemies_and_burns(db_factory, monkeypatch):
     """燃烧弹：查武器表得 2D6+烧，挂成投掷者 pending_roll，波及多个敌人、附燃烧。"""
     db = db_factory(); sid, hero = _seed(db)
@@ -378,20 +387,21 @@ def test_player_melee_requires_adjacent(db_factory):
 
 
 def test_start_combat_lays_grid_and_positions(db_factory):
-    """开战落方格：state.grid 存在，参战方都有 pos，敌我相邻（紧凑布阵）。"""
+    """开战落方格：state.grid 存在，参战方都有 pos，敌我隔开（拉开布阵）。"""
     db = db_factory(); sid, hero = _seed(db)
     state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲")])
     assert state["grid"]["cols"] == 12 and state["grid"]["rows"] == 8
     hp = combat_service._find(state, hero.id); e1 = combat_service._find(state, "e1")
     assert hp["pos"] and e1["pos"]
     from app.rules.coc import positioning
-    assert positioning.is_adjacent(hp, e1)
+    assert not positioning.is_adjacent(hp, e1)   # 拉开布阵，开局不相邻
 
 
 def test_reaction_flank_penalty_applied(db_factory, monkeypatch):
     """被 2 名相邻敌人夹击时，反应（闪避）检定吃 -1 夹击惩罚骰。"""
     db = db_factory(); sid, hero = _seed(db)
     state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲"), _mk_enemy("e2", "乙")])
+    _cluster_adjacent(db, sid, state)   # hero 与两敌相邻，构成夹击
     state["pending_reaction"] = {"attacker_id": "e1", "defender_id": hero.id, "attacker_name": "甲",
                                  "defender_name": hero.name, "weapon": "徒手格斗", "ranged": False,
                                  "allowed": ["fight_back", "dodge"]}
@@ -413,7 +423,7 @@ def test_player_pointblank_bonus_applied(db_factory, monkeypatch):
     db = db_factory(); sid, hero = _seed(db)
     state = _start_multi(db, sid, hero, [_mk_enemy("e1", "甲")])
     combat_service._find(state, hero.id)["skills"] = {"射击(手枪)": 60}
-    combat_service._save_combat(db, sid, state)
+    _cluster_adjacent(db, sid, state)   # hero 与目标相邻（抵近 ≤2 格）
     seen: dict = {}
     orig = combat_service.engine.resolve_attack
 
@@ -439,6 +449,24 @@ def test_player_firearm_blocked_los_rejected(db_factory):
     with pytest.raises(ValueError, match="视线"):
         asyncio.run(combat_service.resolve_player_action(
             db, sid, hero.id, {"type": "attack", "target_id": "e1", "weapon": ".38(9mm)左轮"}))
+
+
+def test_npc_walks_toward_unreachable_target(db_factory):
+    """NPC 够不着真人（拉开距离）时先走位接近，不落 pending_reaction。"""
+    db = db_factory(); sid, hero = _seed(db)
+    enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 90, "CON": 50, "SIZ": 60},
+             "skills": {"格斗(斗殴)": 45}, "weapon": "徒手格斗"}
+    state = combat_service.start_combat(
+        db, sid, [combat_service._char_participant(hero, "player", is_human=True)],
+        [combat_service._npc_participant(enemy, "enemy")])
+    combat_service._find(state, hero.id)["pos"] = {"x": 1, "y": 4}
+    combat_service._find(state, "npc_thug")["pos"] = {"x": 10, "y": 4}   # 拉开，够不着近战
+    combat_service._save_combat(db, sid, state)
+    asyncio.run(combat_service.drive_npcs(db, sid, state))
+    st = combat_service.get_combat(db.get(GameSession, sid))
+    thug = combat_service._find(st, "npc_thug")
+    assert thug["pos"]["x"] < 10                # 朝 hero（左）移动了
+    assert st.get("pending_reaction") is None   # 是走位、不是攻击暂停
 
 
 def test_extinguish_action_removes_burning(db_factory):
@@ -515,7 +543,8 @@ def test_player_attack_two_step_hit_then_damage(db_factory, monkeypatch):
     sid, hero = _seed(db)
     enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 40, "CON": 50, "SIZ": 60},
              "skills": {"格斗(斗殴)": 45, "闪避": 20}, "weapon": "徒手格斗"}
-    _start(db, sid, hero, enemy)
+    state, _ = _start(db, sid, hero, enemy)
+    _cluster_adjacent(db, sid, state)          # 近战须相邻
     _fix_rolls(monkeypatch, [10, 80], die=3)   # 英雄攻中(10)/打手闪避失败(80) → 命中
     chunks = _act(db, sid, hero.id, {"type": "attack", "target_id": "npc_thug", "weapon": "徒手格斗"})
 
@@ -545,7 +574,8 @@ def test_player_attack_miss_no_pending_roll(db_factory, monkeypatch):
     sid, hero = _seed(db)
     enemy = {"id": "npc_thug", "name": "打手", "attributes": {"DEX": 40, "CON": 50, "SIZ": 60},
              "skills": {"格斗(斗殴)": 45, "闪避": 20}, "weapon": "徒手格斗"}
-    _start(db, sid, hero, enemy)
+    state, _ = _start(db, sid, hero, enemy)
+    _cluster_adjacent(db, sid, state)          # 近战须相邻
     _fix_rolls(monkeypatch, [99, 10], die=3)   # 英雄大失败(99) → 未命中
     chunks = _act(db, sid, hero.id, {"type": "attack", "target_id": "npc_thug", "weapon": "徒手格斗"})
     st = combat_service.get_combat(db.get(GameSession, sid))
@@ -570,7 +600,8 @@ def test_combat_ends_when_enemy_down(db_factory, monkeypatch):
     sid, hero = _seed(db)
     enemy = {"id": "npc_weak", "name": "虚弱者", "attributes": {"DEX": 30, "CON": 10, "SIZ": 10},
              "skills": {"格斗(斗殴)": 20, "闪避": 10}, "weapon": "徒手格斗"}
-    _start(db, sid, hero, enemy)
+    state, _ = _start(db, sid, hero, enemy)
+    _cluster_adjacent(db, sid, state)         # 近战须相邻
     _fix_rolls(monkeypatch, [1, 90], die=8)   # 英雄大成功命中、伤害拉满，秒掉 HP=2 的敌人
     _act(db, sid, hero.id, {"type": "attack", "target_id": "npc_weak", "weapon": "大棒(棒球棒、拨火棍)"})
     # 命中挂 pending_roll，战斗尚未结束（伤害待玩家掷）
@@ -622,7 +653,8 @@ def test_key_npc_uses_agent_decision(db_factory):
 
     agent = _Agent()
     state, chunks = asyncio.run(combat_service.start(
-        db, sid, [hero], [boss], {hero.id}, agent=agent))
+        db, sid, [hero], [boss], {hero.id}, agent=agent,
+        deployment={hero.id: {"x": 5, "y": 5}, "npc_boss": {"x": 6, "y": 5}}))   # 开局相邻
     assert agent.decided is True                              # 关键 NPC 走了子代理决策
     assert any('"combat_reaction_prompt"' in c for c in chunks)   # 决策的攻击路由到交互暂停
     pr = state.get("pending_reaction")
@@ -643,6 +675,7 @@ def test_drive_npcs_pauses_when_npc_attacks_human(db_factory):
         db, sid,
         [combat_service._char_participant(hero, "player", is_human=True)],
         [combat_service._npc_participant(enemy, "enemy")])
+    _cluster_adjacent(db, sid, state)   # 打手开局就够得着 hero → 直接攻击暂停
     assert combat_service.current_actor(state)["id"] == "npc_thug"   # 打手先手
     hp_before = hero.system_data["hitPoints"]["current"]
 
@@ -665,6 +698,7 @@ def _paused_by_npc_attack(db, sid, hero, enemy):
         db, sid,
         [combat_service._char_participant(hero, "player", is_human=True)],
         [combat_service._npc_participant(enemy, "enemy")])
+    _cluster_adjacent(db, sid, state)   # NPC 开局就够得着 hero → 攻击暂停
     asyncio.run(combat_service.drive_npcs(db, sid, state))
     assert state.get("pending_reaction")   # 已停在等真人反应
     return state
@@ -930,6 +964,7 @@ def test_grappled_human_reaction_only_fight_back(db_factory):
     state = combat_service.start_combat(
         db, sid, [combat_service._char_participant(hero, "player", is_human=True)],
         [combat_service._npc_participant(enemy, "enemy")])
+    _cluster_adjacent(db, sid, state)   # NPC 开局就够得着（被擒抱者也相邻）
     hero_p = combat_service._find(state, hero.id)
     hero_p["conditions"].append("grappled")   # 真人已被擒抱
     combat_service._save_combat(db, sid, state)

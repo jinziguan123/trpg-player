@@ -167,13 +167,18 @@ def _save_combat(db: Session, session_id: str, state: dict | None) -> None:
 
 
 def start_combat(db: Session, session_id: str, player_side: list[dict], enemies: list[dict],
-                 trigger: str = "") -> dict:
-    """建立战斗态：合并双方为参战方、排先攻、round=1。player_side/enemies 已是参战方 dict。"""
+                 trigger: str = "", deployment: dict | None = None) -> dict:
+    """建立战斗态：合并双方为参战方、排先攻、round=1。player_side/enemies 已是参战方 dict。
+    deployment（可选）：{参战方 id → {"x","y"}} 覆盖默认布阵（KP 摆位/测试用），越界项忽略。"""
     participants = list(player_side) + list(enemies)
     order = engine.roll_initiative(participants)
     # 方格战场：造默认棋盘 + 确定性布阵（我方左、敌方右，沿 y 居中）。几何被摆出来、不还原叙事。
     grid = {"cols": _GRID_COLS, "rows": _GRID_ROWS, "cell_m": _GRID_CELL_M, "blocked": [], "cover": {}}
     positioning.default_deployment(order, grid)
+    for p in order:                       # KP/测试可覆盖初始站位
+        d = (deployment or {}).get(p["id"]) or (deployment or {}).get(p.get("char_id"))
+        if d and 0 <= int(d.get("x", -1)) < _GRID_COLS and 0 <= int(d.get("y", -1)) < _GRID_ROWS:
+            p["pos"] = {"x": int(d["x"]), "y": int(d["y"])}
     # 本场起点：开打前会话最大事件 seq（= 下一个 seq - 1）。一个会话可有多场战斗，落库的
     # combat_log 事件本身无场次边界；前端据此让日志抽屉只收本场（seq > started_seq）的结算行，
     # 重连（走 GET /combat 恢复、不经 combat_start 分支）也能拿到边界、不掺上一场。
@@ -188,7 +193,8 @@ def start_combat(db: Session, session_id: str, player_side: list[dict], enemies:
 
 
 async def start(db: Session, session_id: str, party: list[Character], enemies: list[dict],
-                human_ids: set[str], trigger: str = "", agent=None, scene_hint: str = "") -> tuple[dict, list[str]]:
+                human_ids: set[str], trigger: str = "", agent=None, scene_hint: str = "",
+                deployment: dict | None = None) -> tuple[dict, list[str]]:
     """高层入口：从角色/敌人 spec 建参战方、起战斗、自动跑到第一个真人回合。返回 (state, chunks)。
 
     party：玩家方角色（human_ids 里的算真人玩家=会停下等操作，其余算 AI 队友=自动）。
@@ -199,7 +205,7 @@ async def start(db: Session, session_id: str, party: list[Character], enemies: l
         for c in party
     ]
     enemy_side = [_npc_participant(n, "enemy") for n in enemies]
-    state = start_combat(db, session_id, player_side, enemy_side, trigger)
+    state = start_combat(db, session_id, player_side, enemy_side, trigger, deployment=deployment)
     chunks = [_chunk("combat_start", trigger or "战斗爆发！", metadata=_combat_meta(state))]
     drive_chunks, beats = await drive_npcs(db, session_id, state, agent, scene_hint)
     if agent and beats:
@@ -970,8 +976,29 @@ async def drive_npcs(db: Session, session_id: str, state: dict, agent=None, scen
             action = _validate_npc_action(state, actor, await agent.decide(state, actor, scene_hint))
         if action is None:
             action = engine.heuristic_npc_action(state, actor)
-        # 攻击真人防御者 → 暂停驱动，落 pending_reaction、广播提示，等真人经端点回选择
         atype = action.get("type") or action.get("action")
+        # 方格：NPC 想攻击但目标够不着（近战不相邻/超射程/无视线）→ 本回合改为走位接近。
+        if atype == "attack" and state.get("grid") and actor.get("pos"):
+            tgt = _find(state, action.get("target_id"))
+            if tgt and engine.is_active(tgt):
+                wpn = action.get("weapon") or actor.get("weapon") or "徒手格斗"
+                _, _, reachable, _ = _attack_geometry(state, actor, tgt, wpn, _weapon_is_firearm(wpn))
+                if not reachable:
+                    occ = {f'{p["pos"]["x"]},{p["pos"]["y"]}' for p in (state.get("initiative") or [])
+                           if p.get("pos") and p["id"] != actor["id"] and engine.is_active(p)}
+                    dest = positioning.step_toward(
+                        actor, tgt, int(actor.get("move_left") or actor.get("mov") or 0),
+                        state["grid"], occ)
+                    if dest:
+                        actor["pos"] = {"x": dest[0], "y": dest[1]}
+                        actor["move_left"] = 0        # 走位即用掉本回合行动
+                        actor["acted_this_round"] = True
+                        beats.append(f'{actor["name"]} 向 {tgt["name"]} 移动接近')
+                        engine.advance_turn(state)
+                        _save_combat(db, session_id, state)
+                        chunks.append(_combat_state_chunk(state))
+                        continue
+        # 攻击真人防御者 → 暂停驱动，落 pending_reaction、广播提示，等真人经端点回选择
         if atype == "attack":
             target = _find(state, action.get("target_id"))
             if target and engine.is_active(target) and target.get("is_human"):

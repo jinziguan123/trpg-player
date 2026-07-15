@@ -49,12 +49,12 @@ def test_default_deployment_sides_and_no_overlap():
     pos.default_deployment(parts, grid)
     players = parts[:2]
     enemies = parts[2:]
-    assert all(p["pos"]["x"] == 5 for p in players)        # 我方中央左列(cols//2-1)
-    assert all(e["pos"]["x"] == 6 for e in enemies)        # 敌方中央右列(cols//2)，与我方相邻
+    assert all(p["pos"]["x"] == 1 for p in players)        # 我方贴左列
+    assert all(e["pos"]["x"] == 10 for e in enemies)       # 敌方贴右列(cols-2)
     coords = [(p["pos"]["x"], p["pos"]["y"]) for p in parts]
     assert len(set(coords)) == len(coords)                 # 无重叠
-    # 紧凑布阵：我方单位与最近敌方相邻（近战开局可打）
-    assert pos.is_adjacent(players[0], enemies[0])
+    # 拉开布阵：双方隔着交火区，开局不相邻（近战须走位接近）
+    assert not pos.is_adjacent(players[0], enemies[0])
 
 
 def test_reachable_cells_budget_and_obstacles():
@@ -106,6 +106,19 @@ def test_cover_penalty_half():
     assert pos.cover_penalty(a, b, {"cover": {"2,0": "half"}}) == 1             # 连线过半掩体 -1
     assert pos.cover_penalty(a, b, {"cover": {"5,0": "half"}}) == 0             # 不在连线上不罚
     assert pos.cover_penalty(a, b, {}) == 0
+
+
+def test_step_toward_moves_closer_and_stops_adjacent():
+    g = {"cols": 12, "rows": 8}
+    mover = {"pos": {"x": 0, "y": 0}}
+    target = {"pos": {"x": 9, "y": 0}}
+    occ = {"9,0"}   # 目标占位 → 不会走上目标格
+    dest = pos.step_toward(mover, target, 4, g, occ)
+    assert dest is not None
+    assert max(abs(dest[0] - 9), abs(dest[1])) == 5    # 走满 4 格 → 距目标 9-4=5
+    assert max(abs(dest[0]), abs(dest[1])) <= 4        # 未超预算
+    adj = {"pos": {"x": 8, "y": 0}}                     # 已相邻 → 无更近可站格
+    assert pos.step_toward(adj, target, 4, g, occ) is None
 
 
 def test_reachable_cells_zero_budget_empty():

@@ -145,16 +145,35 @@ def _place_column(units: list[dict], col: int, rows: int) -> None:
 
 
 def default_deployment(participants: list[dict], grid: dict) -> None:
-    """开战确定性布阵（不掷骰、不读叙事）：我方与敌方各占中央相邻两列（我方 x=cols//2-1、
-    敌方 x=cols//2），各自沿 y 居中铺开。原地给每个参战方落 pos。
+    """开战确定性布阵（不掷骰、不读叙事）：我方贴左列(x=1)、敌方贴右列(x=cols-2)，
+    各自沿 y 居中铺开、中间留交火区。原地给每个参战方落 pos。
 
-    MVP 取「相邻紧凑」布阵：双方一上来就在近战接触带，近战可立即开打、NPC 无需走位；
-    移动用于走位/拉开/绕后。拉开对峙 + 抵近奖励等留待 P-Grid-2（届时可加开局间隔参数）。"""
+    双方开局隔开（P-Grid-4）：近战方须走位接近、远程方可先开火，射程/掩体/抵近从第一轮就有意义；
+    NPC 够不着会自动 step_toward 接近（见 drive_npcs）。"""
     cols, rows = int(grid["cols"]), int(grid["rows"])
     players = [p for p in participants if p.get("side") in ("player", "ally")]
     enemies = [p for p in participants if p.get("side") == "enemy"]
-    _place_column(players, cols // 2 - 1, rows)
-    _place_column(enemies, cols // 2, rows)
+    _place_column(players, 1, rows)
+    _place_column(enemies, cols - 2, rows)
+
+
+def step_toward(mover: dict, target: dict, budget: int, grid: dict,
+                occupied: set[str]) -> tuple[int, int] | None:
+    """在预算内朝目标移动一步（选可达格里离目标最近、且严格比当前更近的那格）。
+    走不动/无更近格（被围/被墙堵）→ None。用于 NPC「够不着先靠近」。"""
+    tp = _xy(target)
+    mp = _xy(mover)
+    if tp is None or mp is None:
+        return None
+    reach = reachable_cells(mover, budget, grid, occupied)
+    best: tuple[int, int] | None = None
+    best_d = cell_distance(mover, target)   # 当前距离；只接受更近的落点
+    for k in reach:
+        x, y = (int(v) for v in k.split(","))
+        d = max(abs(x - tp[0]), abs(y - tp[1]))
+        if d < best_d:
+            best_d, best = d, (x, y)
+    return best
 
 
 def reachable_cells(start: dict, budget: int, grid: dict, occupied: set[str]) -> set[str]:
