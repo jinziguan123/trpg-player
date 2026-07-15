@@ -198,6 +198,54 @@ def test_roll_generation_rolls_pending_check(db_factory, monkeypatch):
     assert "chk1" not in pending
 
 
+def test_dice_continuation_sanity_guard_only_on_success(db_factory, monkeypatch):
+    """SAN 守卫成本收窄：检定**成功**续写才补跑 planner 判理智；**失败**不多跑（省调用）。"""
+    import asyncio as _asyncio
+
+    import app.database as database
+    from app.ai import turn_planner
+    from app.ai.turn_planner import TurnPlan
+    from app.services.room_hub import room_hub
+
+    called = {"n": 0}
+
+    async def spy_planner(llm, messages):
+        called["n"] += 1
+        return TurnPlan()   # trigger=False：只观测是否被调用，不实际发 SAN
+
+    async def fake_stream(kp, messages, result, npcs=None):
+        result[0] = result[1] = "旁白。"
+        return
+        yield
+
+    async def noop_finish(db, sid, llm):
+        return None
+
+    def _drive(roll: int) -> int:
+        db = db_factory()
+        module, hero, teammates, session = _seed(db)   # hero 侦查=60
+        session_service.add_pending_check(db, session.id, {
+            "id": "chk1", "skill": "侦查", "difficulty": "normal",
+            "char_ref": "", "char_id": hero.id, "actor_name": hero.name, "source": "",
+        })
+        monkeypatch.setattr(database, "SessionLocal", db_factory)
+        monkeypatch.setattr(chat_service, "get_llm", lambda: None)
+        monkeypatch.setattr(chat_service, "KPAgent", lambda llm: object())
+        monkeypatch.setattr(room_hub, "broadcast", lambda *a, **k: None)
+        monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+        monkeypatch.setattr(chat_service, "build_kp_context", lambda *a, **k: [{"role": "system", "content": "x"}])
+        monkeypatch.setattr(chat_service, "_module_excerpts_for_context", lambda *a, **k: [])
+        monkeypatch.setattr(chat_service, "_finish_generation", noop_finish)
+        monkeypatch.setattr(turn_planner, "run_turn_planner", spy_planner)
+        monkeypatch.setattr("app.rules.coc.checks.roll_percentile", lambda: roll)
+        called["n"] = 0
+        _asyncio.run(chat_service.run_roll_generation(session.id, "chk1"))
+        return called["n"]
+
+    assert _drive(10) == 1    # 成功(10≤60) → 补跑 planner 判理智
+    assert _drive(99) == 0    # 失败/大失败 → 不多跑，省成本
+
+
 def test_dice_continuation_fires_followup_san_check(db_factory, monkeypatch):
     """检定续写里 KP 追加的 [SAN_CHECK]（如读懂禁忌知识）应被处理、落 SAN 检定事件。"""
     db = db_factory()

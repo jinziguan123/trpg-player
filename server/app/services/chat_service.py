@@ -3005,10 +3005,13 @@ async def run_roll_generation(session_id: str, check_id: str) -> None:
             + (f"（针对：{source}）" if source else "")
             + f"：{result.description}{heal_note}"
         )
+        # 恐怖多在**检定成功**时才被揭示（看清那具尸体…）；仅成功时才在叙事后补跑 planner
+        # 判理智（失败不多花这次调用）。失败若也揭示了恐怖，仍可由 KP 自发 [SAN_CHECK] 兜底。
+        succeeded = result.outcome not in ("failure", "fumble")
         await _run_kp_turn(
             db, session_id, game_session, module, player_char, party_others,
             KP_DICE_CONTINUATION_PROMPT.format(dice_results=desc),
-            sanity_guard=True,   # 检定成功揭示的恐怖 → 叙事后现跑 planner 确定性补发 SAN
+            sanity_guard=succeeded,
         )
     except asyncio.CancelledError:
         logger.info("投骰生成被取消: session=%s", session_id)
