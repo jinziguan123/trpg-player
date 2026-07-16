@@ -31,9 +31,10 @@ class AIProfile(BaseModel):
     api_key: str = ""
     is_active: bool = False
     vision: bool = False  # 是否支持多模态（看图）。显式开关，覆盖按模型名的启发式判断
-    # KP 生成走 agent loop（标准工具调用）新路径的开关。默认关闭走旧正则指令路径；
-    # 开启且 Provider 支持工具（supports_tools）时才生效，见 chat_service._tool_loop_active。
-    use_tool_calls: bool = False
+    # KP 生成走 agent loop（标准工具调用）新路径的开关。**默认开启**（tool_use 为治本方向，
+    # 台词走 say() 结构化出口）；仅当 Provider 支持工具（supports_tools）时才实际生效，否则安全
+    # 回退旧正则指令路径，见 chat_service._tool_loop_active。
+    use_tool_calls: bool = True
     # 模型上下文窗口（token）。0 = 未知，由 resolve_context_window 按模型名启发式回落。
     # 用于「上下文占用预估」判断模型是否还撑得住继续跑团。
     context_window: int = 0
@@ -46,7 +47,7 @@ class AIProfileCreate(BaseModel):
     model_name: str = ""
     api_key: str = ""
     vision: bool = False
-    use_tool_calls: bool = False
+    use_tool_calls: bool = True
     context_window: int = 0
 
 

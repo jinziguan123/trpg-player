@@ -3897,14 +3897,14 @@ MAX_TOOL_LOOP_STEPS = 6
 def _tool_loop_active(llm) -> bool:
     """KP 生成是否走 agent loop（工具调用）新路径：配置开关 && Provider 支持工具。
 
-    开关默认关闭（use_tool_calls=false），任何读取异常一律回退旧路径（fail-open）。
+    开关**默认开启**（use_tool_calls=true）；无激活档/读取异常一律回退旧路径（fail-open）。
     """
     try:
         from app.api.ai_settings import load_active_profile
         profile = load_active_profile()
     except Exception:
         return False
-    if not profile or not getattr(profile, "use_tool_calls", False):
+    if not profile or not getattr(profile, "use_tool_calls", True):
         return False
     try:
         return bool(llm.supports_tools())
