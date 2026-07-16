@@ -175,6 +175,10 @@ async def run_case(case: ReplayCase, llm, use_judge: bool, tool_loop: bool = Fal
         narration = "".join([token async for token in kp.narrate(messages)])
 
     findings = checks.run_all_checks(narration, case.player_names)
+    # planner 裁定断言（虚构态势 → 难度/免检准则是否奏效）：免费、不调 LLM。
+    findings += checks.check_plan_adjudication(
+        plan.model_dump() if plan else None, case.plan_expect,
+    )
     judge_result = None
     if use_judge:
         judge_result = await judge.run_judge(llm, case, plan, narration)

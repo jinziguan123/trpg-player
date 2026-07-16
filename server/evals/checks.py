@@ -157,6 +157,57 @@ def check_antithesis_tic(narration: str) -> list[Finding]:
     )]
 
 
+def _dig(d: dict, path: str):
+    """按点分路径取值（check.penalty → d['check']['penalty']）；缺失返回 None。"""
+    cur = d
+    for key in path.split("."):
+        if not isinstance(cur, dict) or key not in cur:
+            return None
+        cur = cur[key]
+    return cur
+
+
+def _clause_ok(actual, op: str, value) -> bool:
+    if op == "==":
+        return actual == value
+    if op == "!=":
+        return actual != value
+    if op == "in":
+        return actual in value
+    if actual is None:
+        return False
+    if op == ">=":
+        return actual >= value
+    if op == "<=":
+        return actual <= value
+    if op == ">":
+        return actual > value
+    if op == "<":
+        return actual < value
+    return False
+
+
+def check_plan_adjudication(plan: dict | None, expect: dict | None) -> list[Finding]:
+    """对现跑出的 planner 计划做裁定断言：expect.any_of 里任一子句满足即通过，否则 error。
+
+    用于量化「虚构态势 → 难度调节 / 免检」准则是否奏效（如噪音后潜行应吃惩罚骰或直接失败、
+    精彩现实话术应奖励骰或免检）。子句形如 {"path": "check.penalty", "op": ">=", "value": 1}。
+    """
+    if not expect:
+        return []
+    clauses = expect.get("any_of") or []
+    if plan is None:
+        return [Finding(check="plan_adjudication", severity="error", detail="未产出 planner 计划，无法裁定")]
+    for c in clauses:
+        if _clause_ok(_dig(plan, c.get("path", "")), c.get("op", "=="), c.get("value")):
+            return []   # 任一满足即通过
+    got = {c.get("path"): _dig(plan, c.get("path", "")) for c in clauses}
+    return [Finding(
+        check="plan_adjudication", severity="error",
+        detail=f"裁定未达期望（{expect.get('note', '')}）：期望任一 {clauses}，实得 {got}",
+    )]
+
+
 def run_all_checks(narration: str, player_names: list[str]) -> list[Finding]:
     findings: list[Finding] = []
     findings += check_internal_ids(narration)

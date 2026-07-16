@@ -1,0 +1,183 @@
+{
+  "meta": {
+    "name": "synthetic_persuade_strong_rp",
+    "tags": [
+      "synthetic",
+      "adjudication",
+      "social"
+    ],
+    "note": "玩家用切中管家忠诚与家族名誉、并承诺保密的有理有据现实话术说服其开口——应给奖励骰/降档，足够精彩则免检直接成功。",
+    "source": {
+      "session_id": "sess_synth_manor2",
+      "turn": 4
+    }
+  },
+  "module": {
+    "id": "mod_synth_manor2",
+    "title": "灰雾庄园·证词（合成评测模组）",
+    "rule_system": "coc",
+    "theme": "default",
+    "description": "调查老主人之死，撬开守口如瓶的老管家。",
+    "world_setting": {
+      "era": "1925 年",
+      "location": "新英格兰乡间",
+      "tone": "哥特式悬疑",
+      "intro": "老韦尔登死在书房，管家格雷夫斯知道些什么，却守口如瓶。",
+      "player_brief": "你受family之托查明老主人的死因。"
+    },
+    "raw_content": "格雷夫斯侍奉韦尔登家三十年，案发当晚他听到书房里有第二个人的声音，但为了家族名誉守口如瓶。他最在意的是这个家的体面与对老主人的忠诚。",
+    "scenes": [
+      {
+        "id": "scene_study",
+        "title": "书房",
+        "description": "老韦尔登死去的地方，深色橡木书桌居中，药味未散。",
+        "danger": "uneasy",
+        "atmosphere": "压抑",
+        "connections": []
+      }
+    ],
+    "npcs": [
+      {
+        "id": "npc_butler_graves",
+        "name": "格雷夫斯",
+        "description": "侍奉韦尔登家三十年的老管家，言辞恭敬而滴水不漏。",
+        "personality": "谨慎、忠诚、习惯性回避正面回答，最在意家族体面与对老主人的忠诚",
+        "background": "替沉迷降神会的老主人遮掩多年",
+        "secrets": "案发当晚他听到书房里有第二个人的声音，为家族名誉守口如瓶。",
+        "initial_location": "scene_study",
+        "attributes": {
+          "STR": 45,
+          "CON": 50,
+          "SIZ": 55,
+          "DEX": 40,
+          "APP": 50,
+          "INT": 65,
+          "POW": 55,
+          "EDU": 60,
+          "LUCK": 50
+        },
+        "skills": {
+          "聆听": 60,
+          "话术": 55,
+          "心理学": 50
+        }
+      }
+    ],
+    "maps": [],
+    "clues": [],
+    "triggers": [],
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:00:00"
+  },
+  "session": {
+    "id": "sess_synth_manor2",
+    "module_id": "mod_synth_manor2",
+    "status": "active",
+    "room_code": null,
+    "player_character_id": "char_henry_m",
+    "current_scene_id": "scene_study",
+    "world_state": {
+      "visited_scenes": [
+        "scene_study"
+      ],
+      "flags": [],
+      "story_summary": "",
+      "story_summary_seq": 0
+    },
+    "turn_state": null,
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:10:00"
+  },
+  "player_char": {
+    "id": "char_henry_m",
+    "name": "亨利·卡特",
+    "module_id": "mod_synth_manor2",
+    "rule_system": "coc",
+    "is_player": true,
+    "owner_token": null,
+    "base_attributes": {
+      "STR": 50,
+      "CON": 55,
+      "SIZ": 60,
+      "DEX": 65,
+      "APP": 55,
+      "INT": 75,
+      "POW": 60,
+      "EDU": 70,
+      "LUCK": 50
+    },
+    "skills": {
+      "话术": 40,
+      "心理学": 50,
+      "侦查": 70
+    },
+    "system_data": {
+      "hp": {
+        "current": 11,
+        "max": 11
+      },
+      "san": {
+        "current": 55,
+        "max": 55
+      }
+    },
+    "backstory": "",
+    "status": "alive",
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:00:00"
+  },
+  "teammates": [],
+  "events": [
+    {
+      "id": "evt_1",
+      "session_id": "sess_synth_manor2",
+      "sequence_num": 1,
+      "event_type": "dialogue",
+      "actor_id": "npc_butler_graves",
+      "actor_name": "格雷夫斯",
+      "content": "「老爷的事，我实在无可奉告。这个家不需要更多流言了，先生。」他微微低头，双手交叠在身前，态度恭敬却像一堵墙。",
+      "visibility": [],
+      "metadata_": {
+        "scene_id": "scene_study"
+      },
+      "summary": null,
+      "created_at": "2026-07-01T12:01:00"
+    },
+    {
+      "id": "evt_2",
+      "session_id": "sess_synth_manor2",
+      "sequence_num": 2,
+      "event_type": "dialogue",
+      "actor_id": "char_henry_m",
+      "actor_name": "亨利·卡特",
+      "content": "「格雷夫斯，你守着这个家三十年。可你想过没有——真正毁掉韦尔登家名誉的，不是丑闻见光，而是让害死老爷的凶手逍遥法外，让这栋宅子背着一桩未破的命案一直烂下去。你那晚在书房外听到的第二个人的声音，正是还老爷清白、保住这个家最后体面的关键。我以名誉担保，你告诉我的每一个字都只用于查明真相，绝不外传，也绝不牵连这个家。」",
+      "visibility": [],
+      "metadata_": {
+        "scene_id": "scene_study"
+      },
+      "summary": null,
+      "created_at": "2026-07-01T12:02:00"
+    }
+  ],
+  "rules_lookup_enabled": false,
+  "plan_expect": {
+    "note": "有理有据、切中动机并承诺保密的精彩话术，应奖励骰/降档/免检",
+    "any_of": [
+      {
+        "path": "check.bonus",
+        "op": ">=",
+        "value": 1
+      },
+      {
+        "path": "auto_outcome",
+        "op": "==",
+        "value": "success"
+      },
+      {
+        "path": "requires_check",
+        "op": "==",
+        "value": false
+      }
+    ]
+  }
+}

@@ -1,0 +1,186 @@
+{
+  "meta": {
+    "name": "synthetic_stealth_after_noise",
+    "tags": [
+      "synthetic",
+      "adjudication",
+      "check"
+    ],
+    "note": "玩家用手机弄出巨响把『循声辨位』的怪引来后仍想潜行——声音已暴露位置，潜行应吃惩罚骰/升难度/直接失败。",
+    "source": {
+      "session_id": "sess_synth_tunnel",
+      "turn": 4
+    }
+  },
+  "module": {
+    "id": "mod_synth_tunnel",
+    "title": "常暗隧道（合成评测模组）",
+    "rule_system": "coc",
+    "theme": "default",
+    "description": "被困地铁隧道，与只凭声音捕猎的盲眼怪物周旋。",
+    "world_setting": {
+      "era": "现代",
+      "location": "废弃地铁隧道",
+      "tone": "生存恐怖",
+      "intro": "末班车抛锚在漆黑隧道里，车厢深处有什么东西在移动。",
+      "player_brief": "你被困在停摆的地铁里，必须在不惊动它的前提下逃出去。"
+    },
+    "raw_content": "常暗隧道：盲眼的循声者潜伏在黑暗中，仅凭声音定位猎物；任何响动都会立刻招来它。",
+    "scenes": [
+      {
+        "id": "scene_car3",
+        "title": "三号车厢",
+        "description": "一片漆黑的车厢，只有应急灯偶尔明灭。空气里有铁锈和腐臭味。",
+        "danger": "deadly",
+        "atmosphere": "死寂，任何声音都被放大",
+        "connections": [
+          "scene_car4"
+        ]
+      }
+    ],
+    "npcs": [
+      {
+        "id": "npc_sound_hunter",
+        "name": "循声者",
+        "description": "全盲的苍白怪物，没有眼睛，靠声音定位；一旦听到响动便循声扑向声源，绝不放过。",
+        "personality": "纯粹的捕食本能",
+        "background": "",
+        "secrets": "",
+        "initial_location": "scene_car3",
+        "attributes": {
+          "STR": 80,
+          "CON": 70,
+          "SIZ": 75,
+          "DEX": 70,
+          "APP": 10,
+          "INT": 40,
+          "POW": 60,
+          "EDU": 0,
+          "LUCK": 50
+        },
+        "skills": {
+          "聆听": 95
+        }
+      }
+    ],
+    "maps": [],
+    "clues": [],
+    "triggers": [],
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:00:00"
+  },
+  "session": {
+    "id": "sess_synth_tunnel",
+    "module_id": "mod_synth_tunnel",
+    "status": "active",
+    "room_code": null,
+    "player_character_id": "char_henry_t",
+    "current_scene_id": "scene_car3",
+    "world_state": {
+      "visited_scenes": [
+        "scene_car3"
+      ],
+      "flags": [],
+      "story_summary": "",
+      "story_summary_seq": 0
+    },
+    "turn_state": null,
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:10:00"
+  },
+  "player_char": {
+    "id": "char_henry_t",
+    "name": "亨利·卡特",
+    "module_id": "mod_synth_tunnel",
+    "rule_system": "coc",
+    "is_player": true,
+    "owner_token": null,
+    "base_attributes": {
+      "STR": 50,
+      "CON": 55,
+      "SIZ": 60,
+      "DEX": 65,
+      "APP": 55,
+      "INT": 75,
+      "POW": 60,
+      "EDU": 70,
+      "LUCK": 50
+    },
+    "skills": {
+      "潜行": 55,
+      "侦查": 60,
+      "闪避": 50
+    },
+    "system_data": {
+      "hp": {
+        "current": 11,
+        "max": 11
+      },
+      "san": {
+        "current": 55,
+        "max": 55
+      }
+    },
+    "backstory": "",
+    "status": "alive",
+    "created_at": "2026-07-01T12:00:00",
+    "updated_at": "2026-07-01T12:00:00"
+  },
+  "teammates": [],
+  "events": [
+    {
+      "id": "evt_1",
+      "session_id": "sess_synth_tunnel",
+      "sequence_num": 1,
+      "event_type": "narration",
+      "actor_id": null,
+      "actor_name": "KP",
+      "content": "应急灯灭了。三号车厢陷入彻底的黑暗。就在几步之外，你听见一种湿黏的呼吸声——那东西没有眼睛，苍白的脸只是一片空白，它微微偏着头，靠声音辨认周围的一切。你屏着呼吸，一动不敢动。",
+      "visibility": [],
+      "metadata_": {
+        "scene_id": "scene_car3"
+      },
+      "summary": null,
+      "created_at": "2026-07-01T12:01:00"
+    },
+    {
+      "id": "evt_2",
+      "session_id": "sess_synth_tunnel",
+      "sequence_num": 2,
+      "event_type": "action",
+      "actor_id": "char_henry_t",
+      "actor_name": "亨利·卡特",
+      "content": "我口袋里的手机突然大声响了一下，那东西的头猛地转向我这边、朝声音扑来。我赶紧屏住呼吸，蹑手蹑脚地贴着车壁，想悄悄绕到车厢另一头溜走。",
+      "visibility": [],
+      "metadata_": {
+        "scene_id": "scene_car3"
+      },
+      "summary": null,
+      "created_at": "2026-07-01T12:02:00"
+    }
+  ],
+  "rules_lookup_enabled": false,
+  "plan_expect": {
+    "note": "声音已把循声者引到玩家位置，潜行应显著变难或直接失败",
+    "any_of": [
+      {
+        "path": "check.penalty",
+        "op": ">=",
+        "value": 1
+      },
+      {
+        "path": "check.difficulty",
+        "op": "in",
+        "value": [
+          "hard",
+          "extreme"
+        ]
+      },
+      {
+        "path": "auto_outcome",
+        "op": "==",
+        "value": "failure"
+      }
+    ]
+  }
+}

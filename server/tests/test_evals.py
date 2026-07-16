@@ -27,6 +27,42 @@ def _errors(findings):
     return [f for f in findings if f.severity == "error"]
 
 
+class TestPlanAdjudication:
+    """planner 裁定断言：any_of 任一子句满足即通过，否则 error。"""
+
+    def test_惩罚骰满足期望通过(self):
+        plan = {"check": {"penalty": 1, "difficulty": "normal"}, "auto_outcome": "none",
+                "requires_check": True}
+        expect = {"any_of": [{"path": "check.penalty", "op": ">=", "value": 1},
+                             {"path": "auto_outcome", "op": "==", "value": "failure"}]}
+        assert not _errors(checks.check_plan_adjudication(plan, expect))
+
+    def test_升难度用in子句满足(self):
+        plan = {"check": {"penalty": 0, "difficulty": "extreme"}}
+        expect = {"any_of": [{"path": "check.difficulty", "op": "in",
+                              "value": ["hard", "extreme"]}]}
+        assert not _errors(checks.check_plan_adjudication(plan, expect))
+
+    def test_都不满足判错(self):
+        plan = {"check": {"penalty": 0, "difficulty": "normal"}, "auto_outcome": "none"}
+        expect = {"note": "应变难", "any_of": [
+            {"path": "check.penalty", "op": ">=", "value": 1},
+            {"path": "auto_outcome", "op": "==", "value": "failure"}]}
+        assert _errors(checks.check_plan_adjudication(plan, expect))
+
+    def test_无期望或无计划(self):
+        assert checks.check_plan_adjudication({"x": 1}, None) == []          # 无期望→跳过
+        assert _errors(checks.check_plan_adjudication(None, {"any_of": []}))  # 无计划→判错
+
+
+class TestAdjudicationFixtures:
+    def test_两条裁定fixture带plan_expect且无预存plan(self):
+        """裁定评测 fixture 必须现跑 planner（无预存 plan）并携带 plan_expect，否则评不到裁定。"""
+        for name in ("synthetic_stealth_after_noise", "synthetic_persuade_strong_rp"):
+            case = load_fixture(FIXTURES / f"{name}.json")
+            assert case.plan is None and case.plan_expect and case.plan_expect.get("any_of")
+
+
 class TestInternalIds:
     def test_泄漏flag标识判错(self):
         assert _errors(checks.check_internal_ids("你注意到 flag_secret_drawer 被触发了。"))

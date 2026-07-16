@@ -199,6 +199,10 @@ class TurnPlan(BaseModel):
     turn_kind: TurnKind = "mixed"
     player_intent: str = ""
     requires_check: bool = False
+    # 自动结局（虚构态势已让结果确定，无需掷骰）：none=照常裁定；success=直接成功（如现实话术
+    # 精彩到位免检）；failure=直接失败（如已暴露却仍想潜行）。与 requires_check 互斥。
+    auto_outcome: str = "none"
+    auto_outcome_reason: str = ""   # 免检直接判定的**入戏理由**，供 KP 演出来（不照念字段）
     check: CheckPlan = Field(default_factory=CheckPlan)
     clue_policy: CluePolicy = Field(default_factory=CluePolicy)
     npc_policy: NpcPolicy = Field(default_factory=NpcPolicy)
@@ -232,12 +236,24 @@ class TurnPlan(BaseModel):
                 data[name] = {}
         if data.get("turn_kind") not in _TURN_KINDS:
             data.pop("turn_kind", None)  # 交回默认 "mixed"
+        # 字符串软字段容错：模型常把 auto_outcome / 其理由写成 null（显式 null 会撞 str 类型、
+        # 令整份计划校验失败回退旧流程，反而丢掉全部裁定信号）。非字符串一律退回默认。
+        if "auto_outcome" in data and not isinstance(data["auto_outcome"], str):
+            data["auto_outcome"] = "none"
+        if "auto_outcome_reason" in data and not isinstance(data["auto_outcome_reason"], str):
+            data.pop("auto_outcome_reason", None)
         return data
 
     @model_validator(mode="after")
     def _combat_owns_resolution(self):
-        """结构化战斗自行结算攻防；开战轮不能同时挂普通检定。"""
+        """结算优先级与互斥：结构化战斗自行结算攻防（开战轮不挂普通检定、不走自动结局）；
+        自动结局（success/failure）与掷骰互斥——一旦裁定免检直接判定，就不再 requires_check。"""
+        if self.auto_outcome not in ("none", "success", "failure"):
+            self.auto_outcome = "none"
         if self.combat.should_start:
+            self.requires_check = False
+            self.auto_outcome = "none"
+        if self.auto_outcome in ("success", "failure"):
             self.requires_check = False
         return self
 
@@ -413,6 +429,21 @@ def build_turn_plan_messages(
                 "失败不给或给误导），不要干等玩家自己想起来申请。"
                 "但主动裁定仅限被动/本能类（感知/抗性/灵光/SAN）；心理学、话术、图书馆使用等"
                 "**主动运用型技能**只能因应玩家自己的宣言裁定，玩家没说要用就不发——那是替玩家行动。\n"
+                "【检定裁定准则——决定难度 / 奖惩骰 / 是否免检的核心，按顺序问自己】\n"
+                "(1) 结果是否**既不确定、两种走向又都有戏**？若在当前虚构态势下某个结果已成定局，就别掷骰：\n"
+                "  · 玩家的处置让成功没有悬念（极贴切的现实话术 / 恰当的道具或环境优势达成目的）→ "
+                "requires_check=false、auto_outcome=success，auto_outcome_reason 一句话说清凭什么免检；\n"
+                "  · 当前态势让这次尝试注定落空（刚弄出巨响、已被锁定却仍想潜行）→ "
+                "requires_check=false、auto_outcome=failure，auto_outcome_reason 说清为何必败。\n"
+                "(2) 若确需掷骰，用**虚构态势**调节难度与奖惩骰（映射到有界档位，别自由捏目标值）：\n"
+                "  · 明显有利（充分准备 / 工具到位 / 对方已松动 / 角度极佳）→ check.bonus=1，或 difficulty 降档；\n"
+                "  · 明显不利（负伤 / 黑暗 / 嘈杂 / 目标已警觉 / 时间紧迫 / 行踪刚暴露）→ check.penalty=1，"
+                "或 difficulty 升到 hard / extreme；check.reason 一句话写清依据（供 KP 入戏解释，不照念）。\n"
+                "两条原型：①玩家用手机弄出巨响、把『循声辨位』的怪引来后还想潜行——声音已暴露位置，"
+                "应 penalty 或 difficulty=extreme，甚至 auto_outcome=failure；②玩家用切中 NPC 动机、"
+                "有理有据的现实话术说服对方——应 bonus / 降档，足够精彩则 auto_outcome=success 免检。\n"
+                "auto_outcome 只用于结果**真的没有悬念**时；只要还有翻盘余地就掷骰——好 RP 给奖励骰 / 降档，"
+                "而非直接判成功，尤其高风险场景别让口才碾平一切。\n"
                 "combat.should_start 只在玩家或 NPC 已明确发起会造成伤害的攻击、双方即刻进入敌对交锋时为 true；"
                 "威胁、戒备、瞄准、谈判或尚未接敌时保持 false。开战时 enemies 必须列出本轮实际参战敌方的名字，"
                 "优先使用 visible_npcs 中的原名，trigger 用一句话说明开战原因。结构化战斗会自行结算攻击，"
@@ -537,6 +568,8 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
         "turn_kind": plan.turn_kind,
         "player_intent": plan.player_intent,
         "requires_check": plan.requires_check,
+        "auto_outcome": plan.auto_outcome,
+        "auto_outcome_reason": plan.auto_outcome_reason,
         "check": plan.check.model_dump(),
         "clue_policy": plan.clue_policy.model_dump(),
         "npc_policy": plan.npc_policy.model_dump(),
@@ -592,6 +625,26 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
             "再强调一次：本次回复务必以这一行结束，且这必须是回复真正的最后一行 —— " + directive + "\n"
         )
 
+    # 自动结局：虚构态势已让结果确定（免检），KP 必须据裁定确定性地把结果演出来——
+    # 尤其 failure：绝不能因玩家申请了动作就叙述成宽松的成功（这正是「弄出巨响仍潜行成功」的病根）。
+    auto_block = ""
+    if plan.auto_outcome in ("success", "failure"):
+        verdict = "直接成功" if plan.auto_outcome == "success" else "直接失败"
+        reason = plan.auto_outcome_reason.strip() or (
+            "当前情境已让结果没有悬念" if plan.auto_outcome == "success" else "当前情境已注定这次尝试落空"
+        )
+        auto_block = (
+            "\n\n【自动结局——最高优先级裁定，凌驾叙事惯性】\n"
+            f"本轮无需检定：玩家这次尝试**{verdict}**。入戏缘由：{reason}\n"
+            "请据此**确定性地**叙述其结果，不要发起任何检定、不要含糊带过、不要给出与该裁定相反的走向：\n"
+            + (
+                "- 直接成功：让这次尝试顺遂达成，把玩家出色的临场处置在叙事里兑现成实打实的进展。\n"
+                if plan.auto_outcome == "success" else
+                "- 直接失败：让这次尝试当场落空并承担相应后果（被发现、被识破、错失时机等），"
+                "**绝不能**因为玩家申请了这个动作就把它写成侥幸成功或悬而未决。\n"
+            )
+        )
+
     combat_block = ""
     if plan.combat.should_start:
         enemies = "、".join(plan.combat.enemies) or "（必须填写实际敌方名字）"
@@ -624,6 +677,7 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
             "绝不能替玩家决定或直接宣布检定成功；foreshadow 是可择机埋设/回收的悬念。\n"
             + json.dumps(content, ensure_ascii=False, indent=2)
             + check_block
+            + auto_block
             + combat_block
         ),
     }

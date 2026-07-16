@@ -319,6 +319,61 @@ def test_turn_plan_开战时取消普通检定():
     assert plan.requires_check is False
 
 
+def test_auto_outcome_与检定互斥且非法值归一():
+    """自动结局（success/failure）与掷骰互斥：置了自动结局就强制 requires_check=false；
+    非法值归一为 none；开战优先，取消自动结局。"""
+    from app.ai.turn_planner import CombatPlan, TurnPlan
+
+    p = TurnPlan(requires_check=True, auto_outcome="failure")
+    assert p.auto_outcome == "failure" and p.requires_check is False
+    assert TurnPlan(auto_outcome="乱写").auto_outcome == "none"          # 非法→none
+    # 模型常写 auto_outcome: null —— 必须容错为 none，绝不能让整份计划校验失败回退旧流程
+    assert TurnPlan.model_validate({"auto_outcome": None}).auto_outcome == "none"
+    assert TurnPlan.model_validate({"auto_outcome_reason": None}).auto_outcome_reason == ""
+    p3 = TurnPlan(auto_outcome="success", combat=CombatPlan(should_start=True, enemies=["怪"]))
+    assert p3.auto_outcome == "none"                                     # 开战取消自动结局
+
+
+def test_build_turn_plan_message_注入自动结局硬约束():
+    """auto_outcome=failure 时注入「直接失败、据此确定性叙述、绝不写成侥幸成功」的硬约束（含入戏缘由）。"""
+    from app.ai.turn_planner import TurnPlan
+
+    plan = TurnPlan(auto_outcome="failure",
+                    auto_outcome_reason="手机巨响已把循声者引到玩家位置，行踪彻底暴露")
+    content = turn_planner.build_turn_plan_message(plan)["content"]
+    assert "自动结局" in content and "直接失败" in content
+    assert "循声者" in content                                            # 入戏缘由被带上
+    assert "绝不能" in content                                            # 明确禁止写成侥幸成功
+    # success 走另一支：兑现为实打实进展
+    ok = turn_planner.build_turn_plan_message(
+        TurnPlan(auto_outcome="success", auto_outcome_reason="话术切中动机且承诺保密"))["content"]
+    assert "直接成功" in ok
+    # none（默认）不注入
+    assert "自动结局" not in turn_planner.build_turn_plan_message(TurnPlan())["content"]
+
+
+def test_turn_plan_prompt_含裁定准则与原型例():
+    """规划器提示必须给出「虚构态势→难度/奖惩骰/免检」的裁定准则与两条原型例，
+    否则 auto_outcome / bonus / penalty 只是无人会用的死字段。"""
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    module = Module(title="M", rule_system="coc", npcs=[], scenes=[])
+    pc = Character(name="亨利", rule_system="coc", is_player=True, system_data={})
+    db.add_all([module, pc]); db.flush()
+    s = GameSession(module_id=module.id, player_character_id=pc.id, status="active",
+                    world_state={}, current_scene_id=None)
+    db.add(s); db.commit()
+    ev = EventLog(session_id=s.id, sequence_num=1, event_type="action",
+                  actor_id=pc.id, actor_name="亨利", content="我想潜行")
+    db.add(ev); db.commit()
+    msgs = turn_planner.build_turn_plan_messages(s, module, pc, [ev])
+    text = "".join(m["content"] for m in msgs)
+    assert "裁定准则" in text and "auto_outcome" in text
+    assert "循声" in text and "话术" in text          # 两条原型例都在
+    assert "别让口才碾平一切" in text                  # 高风险防滥用护栏
+
+
 class _RawLLM:
     """按预设原始字符串/对象作 complete 返回值的桩 LLM。"""
     def __init__(self, raw):

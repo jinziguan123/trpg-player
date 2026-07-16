@@ -66,6 +66,10 @@ class ReplayCase:
     # 值即回灌给 KP 的检定结果串（形如「伊芙琳·哈特 智力（regular），达成 困难成功：…」，
     # 每行角色名打头）。用于评测续写阶段的行为（如叙述主语必须是检定执行者）。
     continuation: str | None = None
+    # planner 裁定期望：对现跑出的 plan 做确定性断言（如「潜行应吃惩罚骰或直接失败」）。
+    # 形如 {"note": "...", "any_of": [{"path": "check.penalty", "op": ">=", "value": 1}, ...]}；
+    # any_of 里任一条满足即通过。用于量化「虚构态势→难度调节」的裁定准则是否奏效。
+    plan_expect: dict | None = None
 
     @property
     def player_names(self) -> list[str]:
@@ -97,6 +101,7 @@ def load_fixture(path: Path) -> ReplayCase:
         tags=list(meta.get("tags") or []),
         note=meta.get("note") or "",
         continuation=payload.get("continuation") or None,
+        plan_expect=payload.get("plan_expect") or None,
     )
 
 
