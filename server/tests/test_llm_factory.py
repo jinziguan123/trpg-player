@@ -226,9 +226,12 @@ def test_anthropic_set_usage_accumulates():
     from app.ai.providers.anthropic import AnthropicProvider
 
     prov = AnthropicProvider(model="claude-x", api_key="k")
-    usage_tracker._acc.set(usage_tracker._zero())
-    prov._set_usage({"input_tokens": 10, "output_tokens": 2})
-    snap = usage_tracker.snapshot()
+    token = usage_tracker._acc.set(usage_tracker._zero())   # 用 token 复位，避免污染后续测试的 contextvar
+    try:
+        prov._set_usage({"input_tokens": 10, "output_tokens": 2})
+        snap = usage_tracker.snapshot()
+    finally:
+        usage_tracker._acc.reset(token)
     assert snap["total_tokens"] == 12 and snap["prompt_tokens"] == 10 and snap["calls"] == 1
     assert prov.last_usage["total_tokens"] == 12   # last_usage 仍照常写
 

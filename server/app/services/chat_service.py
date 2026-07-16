@@ -3985,170 +3985,194 @@ def _build_kp_tool_executor(
     """
     lookup_used = 0
 
-    async def execute(call: ToolCall) -> kp_tools.ToolOutcome:
+    # 每个工具一个 handler(name, kv)；分发表取代旧的长 if/elif 链。ToolSpec（tools.py）仍是
+    # 参数 schema 的单一事实源；此处是「工具名 → 执行」的单一事实源（放 chat_service 避免与
+    # tools.py 循环依赖，handler 需闭包访问 db/session/module 等运行期上下文）。
+    async def _h_dice_check(name, kv):
+        if not kv.get("skill"):
+            return kp_tools.ToolOutcome("参数缺失：skill 为必填。请带上技能名重试，或直接继续叙述。")
+        chunks, descs, pending = await _exec_dice_check(
+            db, session_id, game_session, module, kv, player_char, teammates,
+        )
+        if pending:
+            return kp_tools.ToolOutcome(
+                "已向该玩家发出检定请求，等待其亲自掷骰。本轮叙述就此收束，绝不预测结果。",
+                chunks=chunks, suspend=True,
+            )
+        return kp_tools.ToolOutcome(
+            KP_DICE_CONTINUATION_PROMPT.format(dice_results="\n".join(descs)), chunks=chunks,
+        )
+
+    async def _h_opposed_check(name, kv):
+        descs: list[str] = []
+        chunks = [
+            c async for c in _resolve_opposed(
+                db, session_id, kv, get_engine(module.rule_system),
+                module, player_char, teammates, descs,
+            )
+        ]
+        if not descs:
+            return kp_tools.ToolOutcome("参数缺失：skill（或 a_skill/b_skill）为必填。", chunks=chunks)
+        return kp_tools.ToolOutcome(
+            KP_DICE_CONTINUATION_PROMPT.format(dice_results="\n".join(descs)), chunks=chunks,
+        )
+
+    async def _h_san_check(name, kv):
+        chunks, descs = await _exec_san_check(
+            db, session_id, game_session, kv, player_char, teammates,
+        )
+        if not descs:
+            return kp_tools.ToolOutcome(
+                "本次理智检定无需结算（目睹者均已对该恐怖源检定过）。", chunks=chunks,
+            )
+        return kp_tools.ToolOutcome(
+            KP_DICE_CONTINUATION_PROMPT.format(dice_results="\n".join(descs)), chunks=chunks,
+        )
+
+    async def _h_lookup(name, kv):
         nonlocal lookup_used
+        if lookup_used >= MAX_RULE_LOOKUPS:
+            return kp_tools.ToolOutcome(
+                f"本轮查阅配额已用完（规则书与模组原文合计最多 {MAX_RULE_LOOKUPS} 次），"
+                "请依据既有资料直接续写，不要再查阅。"
+            )
+        query = kv.get("query", "").strip()
+        if not query:
+            return kp_tools.ToolOutcome("参数缺失：query 为必填。")
+        lookup_used += 1
+        if name == "rule_lookup":
+            passages = _rule_lookup_passages(db, query, module.rule_system, game_session)
+            return kp_tools.ToolOutcome(
+                KP_RULE_CONTINUATION_PROMPT.format(query=query, passages=passages),
+                chunks=[_make_chunk("system", "守秘人翻阅规则书……")],
+            )
+        passages = _module_lookup_passages(db, module, game_session, query)
+        return kp_tools.ToolOutcome(
+            KP_MODULE_CONTINUATION_PROMPT.format(query=query, passages=passages),
+            chunks=[_make_chunk("system", "守秘人翻阅模组手稿……")],
+        )
+
+    async def _h_say(name, kv):
+        who = kv.get("who", "").strip()
+        text = kv.get("text", "").strip().strip("“”\"「」『』")
+        if not who or not text:
+            return kp_tools.ToolOutcome("参数缺失：who 与 text 均为必填。")
+        # 守卫：绝不用 say() 替玩家/队友说话或行动（他们的台词由本人给出）。
+        party = {player_char.name} | {t.name for t in (teammates or [])}
+        if _is_party_speaker(who, party):
+            return kp_tools.ToolOutcome(
+                f"拒绝：{who} 是玩家或队友角色，你不能替他们说话或行动。"
+                "玩家与队友的言行只能由他们本人给出；你只叙述 NPC 与环境，把选择权留给他们。"
+            )
+        chunks = _exec_say(result, module, who, text)
+        return kp_tools.ToolOutcome(
+            "台词已作为气泡展示给玩家（续写时不要复述这句话）。", chunks=chunks,
+        )
+
+    async def _h_start_combat(name, kv):
+        chunks = await _exec_start_combat(
+            db, session_id, game_session, module, player_char, teammates, llm,
+            kv.get("enemies", ""), kv.get("trigger", ""),
+        )
+        return kp_tools.ToolOutcome(
+            "已切入结构化战斗轮，交由系统按先攻推进；本轮就此收束，战斗结束后系统会回灌结果摘要。",
+            chunks=chunks, suspend=True,
+        )
+
+    async def _h_start_chase(name, kv):
+        chunks = _exec_start_chase(
+            db, session_id, module, player_char, kv.get("pursuer", ""), kv.get("trigger", ""),
+        )
+        return kp_tools.ToolOutcome(
+            "已切入追逐（抽象距离轨），交由系统逐轮推进；本轮就此收束，追逐结束后系统会回灌结果。",
+            chunks=chunks, suspend=True,
+        )
+
+    async def _h_npc_act(name, kv):
+        npc_id = kv.get("npc_id", "").strip()
+        trigger = kv.get("trigger", "").strip()
+        if not npc_id or not trigger:
+            return kp_tools.ToolOutcome("参数缺失：npc_id 与 trigger 均为必填。")
+        chunks, response = await _exec_npc_act(
+            db, session_id, game_session, module, llm, player_char, npc_id, trigger,
+        )
+        return kp_tools.ToolOutcome(
+            f"该 NPC 已行动/开口（台词已直接展示给玩家，续写时不要复述）：{response}", chunks=chunks,
+        )
+
+    async def _h_scene_change(name, kv):
+        chunks, sid = await _exec_scene_change(
+            db, session_id, game_session, module,
+            kv.get("scene_id", "").strip(), player_char, teammates,
+        )
+        if sid:
+            return kp_tools.ToolOutcome(f"ok：场景已切换至 {_scene_name(module, sid)}", chunks=chunks)
+        return kp_tools.ToolOutcome("场景引用无法解析或未变化（保持当前场景）。", chunks=chunks)
+
+    async def _h_flag(name, kv):
+        flag = kv.get("flag", "").strip()
+        if not flag:
+            return kp_tools.ToolOutcome("参数缺失：flag 为必填。")
+        chunks = _exec_flag(db, session_id, game_session, flag, name == "set_flag")
+        return kp_tools.ToolOutcome("ok", chunks=chunks)
+
+    async def _h_hp_change(name, kv):
+        chunks = await _exec_hp_change(
+            db, session_id, player_char,
+            kv.get("target", ""), kv.get("delta", ""), kv.get("reason", ""),
+            module=module, teammates=teammates,
+        )
+        if chunks:
+            return kp_tools.ToolOutcome("ok", chunks=chunks)
+        return kp_tools.ToolOutcome("未结算（target 当前仅支持 player，且 delta 须为整数）。")
+
+    async def _h_handout(name, kv):
+        hid = kv.get("id", "").strip()
+        if not hid:
+            return kp_tools.ToolOutcome("参数缺失：id 为必填。")
+        chunks, note = await _exec_handout(
+            db, session_id, game_session, module, hid, player_char, teammates,
+        )
+        return kp_tools.ToolOutcome(note, chunks=chunks)
+
+    handlers = {
+        "dice_check": _h_dice_check,
+        "opposed_check": _h_opposed_check,
+        "san_check": _h_san_check,
+        "rule_lookup": _h_lookup,
+        "module_lookup": _h_lookup,
+        "say": _h_say,
+        "start_combat": _h_start_combat,
+        "start_chase": _h_start_chase,
+        "npc_act": _h_npc_act,
+        "scene_change": _h_scene_change,
+        "set_flag": _h_flag,
+        "clear_flag": _h_flag,
+        "hp_change": _h_hp_change,
+        "handout": _h_handout,
+    }
+
+    async def execute(call: ToolCall) -> kp_tools.ToolOutcome:
         name = call.name
         kv = {k: str(v).strip() for k, v in (call.arguments or {}).items() if v is not None}
-        spec = kp_tools.TOOLS_BY_NAME.get(name)
-        if spec is None:
+        if kp_tools.TOOLS_BY_NAME.get(name) is None:
             return kp_tools.ToolOutcome(
                 f"无此工具：{name}。只可调用系统提供的工具；若无需工具，直接继续叙述。"
             )
+        handler = handlers.get(name)
+        if handler is None:
+            return kp_tools.ToolOutcome(
+                f"工具 {name} 暂无 loop 行为（内部错误），请直接继续叙述。"
+            )
         try:
-            if name == "dice_check":
-                if not kv.get("skill"):
-                    return kp_tools.ToolOutcome(
-                        "参数缺失：skill 为必填。请带上技能名重试，或直接继续叙述。"
-                    )
-                chunks, descs, pending = await _exec_dice_check(
-                    db, session_id, game_session, module, kv, player_char, teammates,
-                )
-                if pending:
-                    return kp_tools.ToolOutcome(
-                        "已向该玩家发出检定请求，等待其亲自掷骰。本轮叙述就此收束，绝不预测结果。",
-                        chunks=chunks, suspend=True,
-                    )
-                return kp_tools.ToolOutcome(
-                    KP_DICE_CONTINUATION_PROMPT.format(dice_results="\n".join(descs)),
-                    chunks=chunks,
-                )
-            if name == "opposed_check":
-                descs: list[str] = []
-                chunks = [
-                    c async for c in _resolve_opposed(
-                        db, session_id, kv, get_engine(module.rule_system),
-                        module, player_char, teammates, descs,
-                    )
-                ]
-                if not descs:
-                    return kp_tools.ToolOutcome(
-                        "参数缺失：skill（或 a_skill/b_skill）为必填。", chunks=chunks,
-                    )
-                return kp_tools.ToolOutcome(
-                    KP_DICE_CONTINUATION_PROMPT.format(dice_results="\n".join(descs)),
-                    chunks=chunks,
-                )
-            if name == "san_check":
-                chunks, descs = await _exec_san_check(
-                    db, session_id, game_session, kv, player_char, teammates,
-                )
-                if not descs:
-                    return kp_tools.ToolOutcome(
-                        "本次理智检定无需结算（目睹者均已对该恐怖源检定过）。", chunks=chunks,
-                    )
-                return kp_tools.ToolOutcome(
-                    KP_DICE_CONTINUATION_PROMPT.format(dice_results="\n".join(descs)),
-                    chunks=chunks,
-                )
-            if name in ("rule_lookup", "module_lookup"):
-                if lookup_used >= MAX_RULE_LOOKUPS:
-                    return kp_tools.ToolOutcome(
-                        f"本轮查阅配额已用完（规则书与模组原文合计最多 {MAX_RULE_LOOKUPS} 次），"
-                        "请依据既有资料直接续写，不要再查阅。"
-                    )
-                query = kv.get("query", "").strip()
-                if not query:
-                    return kp_tools.ToolOutcome("参数缺失：query 为必填。")
-                lookup_used += 1
-                if name == "rule_lookup":
-                    passages = _rule_lookup_passages(db, query, module.rule_system, game_session)
-                    return kp_tools.ToolOutcome(
-                        KP_RULE_CONTINUATION_PROMPT.format(query=query, passages=passages),
-                        chunks=[_make_chunk("system", "守秘人翻阅规则书……")],
-                    )
-                passages = _module_lookup_passages(db, module, game_session, query)
-                return kp_tools.ToolOutcome(
-                    KP_MODULE_CONTINUATION_PROMPT.format(query=query, passages=passages),
-                    chunks=[_make_chunk("system", "守秘人翻阅模组手稿……")],
-                )
-            if name == "say":
-                who = kv.get("who", "").strip()
-                text = kv.get("text", "").strip().strip("“”\"「」『』")
-                if not who or not text:
-                    return kp_tools.ToolOutcome("参数缺失：who 与 text 均为必填。")
-                # 守卫：绝不用 say() 替玩家/队友说话或行动（他们的台词由本人给出）。
-                party = {player_char.name} | {t.name for t in (teammates or [])}
-                if _is_party_speaker(who, party):
-                    return kp_tools.ToolOutcome(
-                        f"拒绝：{who} 是玩家或队友角色，你不能替他们说话或行动。"
-                        "玩家与队友的言行只能由他们本人给出；你只叙述 NPC 与环境，"
-                        "把选择权留给他们。"
-                    )
-                chunks = _exec_say(result, module, who, text)
-                return kp_tools.ToolOutcome(
-                    "台词已作为气泡展示给玩家（续写时不要复述这句话）。", chunks=chunks,
-                )
-            if name == "start_combat":
-                chunks = await _exec_start_combat(
-                    db, session_id, game_session, module, player_char, teammates, llm,
-                    kv.get("enemies", ""), kv.get("trigger", ""),
-                )
-                return kp_tools.ToolOutcome(
-                    "已切入结构化战斗轮，交由系统按先攻推进；本轮就此收束，战斗结束后系统会回灌结果摘要。",
-                    chunks=chunks, suspend=True,
-                )
-            if name == "start_chase":
-                chunks = _exec_start_chase(
-                    db, session_id, module, player_char, kv.get("pursuer", ""), kv.get("trigger", ""),
-                )
-                return kp_tools.ToolOutcome(
-                    "已切入追逐（抽象距离轨），交由系统逐轮推进；本轮就此收束，追逐结束后系统会回灌结果。",
-                    chunks=chunks, suspend=True,
-                )
-            if name == "npc_act":
-                npc_id = kv.get("npc_id", "").strip()
-                trigger = kv.get("trigger", "").strip()
-                if not npc_id or not trigger:
-                    return kp_tools.ToolOutcome("参数缺失：npc_id 与 trigger 均为必填。")
-                chunks, response = await _exec_npc_act(
-                    db, session_id, game_session, module, llm, player_char, npc_id, trigger,
-                )
-                return kp_tools.ToolOutcome(
-                    f"该 NPC 已行动/开口（台词已直接展示给玩家，续写时不要复述）：{response}",
-                    chunks=chunks,
-                )
-            if name == "scene_change":
-                chunks, sid = await _exec_scene_change(
-                    db, session_id, game_session, module,
-                    kv.get("scene_id", "").strip(), player_char, teammates,
-                )
-                if sid:
-                    return kp_tools.ToolOutcome(
-                        f"ok：场景已切换至 {_scene_name(module, sid)}", chunks=chunks,
-                    )
-                return kp_tools.ToolOutcome("场景引用无法解析或未变化（保持当前场景）。", chunks=chunks)
-            if name in ("set_flag", "clear_flag"):
-                flag = kv.get("flag", "").strip()
-                if not flag:
-                    return kp_tools.ToolOutcome("参数缺失：flag 为必填。")
-                chunks = _exec_flag(db, session_id, game_session, flag, name == "set_flag")
-                return kp_tools.ToolOutcome("ok", chunks=chunks)
-            if name == "hp_change":
-                chunks = await _exec_hp_change(
-                    db, session_id, player_char,
-                    kv.get("target", ""), kv.get("delta", ""), kv.get("reason", ""),
-                    module=module, teammates=teammates,
-                )
-                if chunks:
-                    return kp_tools.ToolOutcome("ok", chunks=chunks)
-                return kp_tools.ToolOutcome("未结算（target 当前仅支持 player，且 delta 须为整数）。")
-            if name == "handout":
-                hid = kv.get("id", "").strip()
-                if not hid:
-                    return kp_tools.ToolOutcome("参数缺失：id 为必填。")
-                chunks, note = await _exec_handout(
-                    db, session_id, game_session, module, hid, player_char, teammates,
-                )
-                return kp_tools.ToolOutcome(note, chunks=chunks)
+            return await handler(name, kv)
         except Exception:
             logger.exception("工具执行失败: %s session=%s", name, session_id)
             return kp_tools.ToolOutcome(
                 f"工具 {name} 执行出错，请不要重试该工具，直接继续叙述。"
             )
-        return kp_tools.ToolOutcome(
-            f"工具 {name} 暂无 loop 行为（内部错误），请直接继续叙述。"
-        )
 
+    execute._handled_tools = frozenset(handlers)   # 供测试校验：分发表须覆盖注册表全部工具
     return execute
 
 

@@ -566,3 +566,10 @@ def test_registry_covers_all_regex_commands():
     names = [s["function"]["name"] for s in schemas]
     assert "rule_lookup" not in names and "dice_check" in names
     assert all(s["type"] == "function" for s in schemas)
+
+
+def test_executor_dispatch_covers_registry():
+    """loop 工具执行器的分发表须与注册表严格同步：加了工具却没接 handler → 此测试失败提醒。"""
+    from app.services.chat_service import _build_kp_tool_executor
+    ex = _build_kp_tool_executor(None, "s", None, None, None, None, None, ["", "", [], [], []])
+    assert ex._handled_tools == set(kp_tools.TOOLS_BY_NAME)
