@@ -19,6 +19,8 @@
 .venv/bin/python -m evals.run --smoke        # 免费：只验证 fixture 可重建
 .venv/bin/python -m evals.run --no-judge     # 便宜：生成 + 确定性检查
 .venv/bin/python -m evals.run --suite kp_core  # 完整：+ 裁判模型逐项打分
+.venv/bin/python -m evals.run --suite adjudication --no-judge --repeat 5
+                                             # 每个 fixture 采样 5 次、报通过率（见「多次采样」）
 .venv/bin/python -m evals.run --tool-loop    # 走 agent loop（工具调用）路径重放生成
                                              # （需 Provider 支持工具；工具调用会序列化回
                                              #   方括号指令形态参与打分，口径与旧路径一致）
@@ -43,11 +45,43 @@
 ## 打分口径
 
 - **确定性检查**（evals/checks.py，免费）：内部标识泄漏、汇报体、指令语法、
-  替玩家开口启发式。`error` 计入不通过，`warn` 仅提示。
+  替玩家开口启发式、以及 **planner 裁定断言**（`plan_adjudication`，见下）。
+  `error` 计入不通过，`warn` 仅提示。
 - **裁判模型**（evals/judge.py）：no_leak / plan_adherence / no_player_control /
   in_character / coherence 逐项 0/1。裁判调用失败记 `judge_error`，该 fixture
   按不通过处理（宁可假阴性，不给假分）。
-- LLM 生成有随机性：单项翻转看两次运行是否复现，再下结论。
+- LLM 生成有随机性：单项翻转看两次运行是否复现，再下结论——或直接用 `--repeat` 取通过率。
+
+## 裁定断言（plan_expect，评 planner 的裁定质量）
+
+评「planner 是否据虚构态势正确调节难度 / 奖惩骰 / 免检」这类**裁定质量**时，在 fixture
+顶层加 `plan_expect`：对现跑出的 `plan` 做 `any_of` 断言（任一子句满足即通过），免费、不调 LLM。
+
+```jsonc
+"plan_expect": {
+  "note": "噪音已把循声怪引来，潜行应变难或直接失败",
+  "any_of": [
+    { "path": "check.penalty",    "op": ">=", "value": 1 },
+    { "path": "check.difficulty", "op": "in", "value": ["hard", "extreme"] },
+    { "path": "auto_outcome",     "op": "==", "value": "failure" }
+  ]
+}
+```
+
+`path` 点分进 `plan`（`check.penalty`…）；`op` ∈ `== != >= <= > < in`。这类 fixture 要
+**不预存 plan**（现跑 planner）并打 `adjudication` tag。参考 `fixtures/synthetic_*_after_noise`、
+`fixtures/synthetic_persuade_strong_rp`。
+
+## 多次采样（--repeat N，抵消 LLM 波动）
+
+`--repeat N` 让每个 fixture 采样 N 次，报**通过率**与**稳过判定**（全 N 次都过才算「稳过」），
+明细汇总各次失败原因的命中次数（如 `plan_adjudication×3`）。
+
+单次采样会骗人：曾见「噪音后潜行」单跑 `penalty=1` 像稳，`--repeat 5` 一测只 2/5——多采样
+既稳定了 scorecard，也把偶发的**计划回退 bug**（模型把某字段写成 int/null 撞 schema，令整份
+TurnPlan 校验失败退回旧流程）压了出来。改 planner/裁定相关 prompt 时优先用 `--repeat` 出结论。
+
+`compare.py` 已按通过率逐项 diff，直接对比两次 `--repeat` 的 scorecard 即可。
 
 ## 评测集建设目标（tags 约定）
 
@@ -57,6 +91,7 @@
 |---|---|
 | `opening` | 开场（无历史事件） |
 | `check` | 检定裁定轮 |
+| `adjudication` | 裁定质量轮（据虚构态势调难度/奖惩骰/免检，配 `plan_expect`） |
 | `npc` | NPC 对话轮 |
 | `split` | 分头行动 |
 | `blind` | 暗投（心理学等）后的叙事轮 |
