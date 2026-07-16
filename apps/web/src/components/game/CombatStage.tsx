@@ -73,6 +73,38 @@ export interface CombatLogEntry {
   content: string
 }
 
+// 本场最近一次结算的结构化视图：普通命中给 content+hit；对抗给双方数值/结果。
+export interface CombatResultView {
+  content: string
+  metadata: Record<string, unknown>
+}
+interface OppSide { name: string; roll: number; target: number; skill: string; outcome: string }
+interface OppData {
+  attacker: OppSide
+  defender: OppSide | null
+  winner: 'attacker' | 'defender' | null
+  result: string
+}
+
+// 检定成败取色（战斗面板本地版，避免跨文件耦合 GameSessionPage 的 diceAccent）。
+function outcomeAccent(outcome: string): string {
+  const s = (outcome || '').toLowerCase()
+  if (s.includes('critical') || s.includes('大成功')) return 'var(--color-dice-gold)'
+  if (s.includes('fumble') || s.includes('大失败')) return 'var(--color-dice-fumble)'
+  if (s.includes('hard_success') || s.includes('success') || s.includes('成功')) return 'var(--color-success)'
+  if (s.includes('fail') || s.includes('失败')) return 'var(--color-danger)'
+  return 'var(--color-text-secondary)'
+}
+function outcomeLabel(outcome: string): string {
+  const s = (outcome || '').toLowerCase()
+  if (s.includes('critical') || s === '大成功') return '大成功'
+  if (s.includes('fumble') || s === '大失败') return '大失败'
+  if (s.includes('hard_success')) return '困难成功'
+  if (s.includes('success') || s === '成功') return '成功'
+  if (s.includes('fail') || s.includes('失败')) return '失败'
+  return outcome || ''
+}
+
 // 反应按钮：图标全走 react-icons/gi（game-icons 风格），禁 emoji。
 const REACTION_META: Record<string, { label: string; Icon: typeof GiCrossedSwords }> = {
   fight_back: { label: '反击', Icon: GiCrossedSwords },
@@ -248,12 +280,81 @@ function CombatantCard({ c, mine, active, diff }: {
   )
 }
 
-export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log, myWeapons = [] }: {
+/** 结算回显：掷骰落定后钉在战斗面板顶部——对抗时「敌方 | 我方」左右并排（数值/技能/成败 + 高亮胜方），
+ *  普通命中/单侧检定则一条带成败色的横幅。让玩家无需收起战斗面板即可看到本次结果。 */
+function CombatResultReveal({ result, order }: { result: CombatResultView; order: Combatant[] }) {
+  const meta = result.metadata
+  const opp = meta.opposed as OppData | undefined
+  const sideOf = (name: string): 'enemy' | 'mine' =>
+    (order.find((o) => o.name === name)?.side === 'enemy' ? 'enemy' : 'mine')
+
+  if (opp?.defender) {
+    const sides = [
+      { s: opp.attacker, who: 'attacker' as const },
+      { s: opp.defender, who: 'defender' as const },
+    ]
+    const enemyEntry = sides.find((e) => sideOf(e.s.name) === 'enemy') ?? sides[0]
+    const myEntry = enemyEntry === sides[0] ? sides[1] : sides[0]
+    const resultAccent = opp.result === '命中' || opp.result === '反击得手'
+      ? 'var(--color-danger)'
+      : opp.result === '被闪开/防住' ? 'var(--color-success)' : 'var(--color-text-secondary)'
+
+    const Cell = ({ label, s, won }: { label: string; s: OppSide; won: boolean }) => {
+      const accent = outcomeAccent(s.outcome)
+      return (
+        <div
+          className="flex-1 flex flex-col items-center px-2 py-1 rounded-md min-w-0"
+          style={{
+            background: won ? 'color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent)' : 'transparent',
+            border: won ? `1px solid ${accent}` : '1px solid transparent',
+            opacity: won || opp.winner === null ? 1 : 0.6,
+          }}
+        >
+          <span className="text-[10px]" style={{ color: 'var(--color-text-secondary)' }}>{label}</span>
+          <span className="text-xs font-semibold truncate max-w-full" style={{ color: 'var(--color-text-primary)' }}>{s.name}</span>
+          <span className="font-bold leading-none my-0.5" style={{ fontSize: '1.4rem', color: accent }}>{s.roll}</span>
+          <span style={{ fontSize: '0.6rem', color: 'var(--color-text-secondary)' }}>{s.skill} / {s.target}</span>
+          <span style={{ fontSize: '0.65rem', color: accent }}>{outcomeLabel(s.outcome)}</span>
+        </div>
+      )
+    }
+    return (
+      <div className="mb-2 rounded-md px-2 py-1.5" style={{ borderLeft: `3px solid ${resultAccent}`, background: 'var(--color-bg-secondary)' }}>
+        <div className="flex items-center gap-1.5 mb-1" style={{ color: 'var(--color-text-secondary)', fontSize: '0.62rem' }}>
+          <GiCrossedSwords style={{ fontSize: '0.75rem' }} /> <span>本轮对抗结算</span>
+          <span className="ml-auto font-semibold" style={{ color: resultAccent }}>{opp.result}</span>
+        </div>
+        <div className="flex items-stretch gap-1">
+          <Cell label="敌方" s={enemyEntry.s} won={opp.winner === enemyEntry.who} />
+          <div className="flex items-center px-0.5">
+            <span className="text-[0.7rem] font-bold italic" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>VS</span>
+          </div>
+          <Cell label="我方" s={myEntry.s} won={opp.winner === myEntry.who} />
+        </div>
+      </div>
+    )
+  }
+
+  // 普通结算（命中/未命中 或 单侧检定）：带成败色的一条横幅
+  const hit = meta.hit
+  const accent = typeof hit === 'boolean'
+    ? (hit ? 'var(--color-danger)' : 'var(--color-text-secondary)')
+    : outcomeAccent(String(meta.outcome ?? ''))
+  return (
+    <div className="mb-2 rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs" style={{ borderLeft: `3px solid ${accent}`, background: 'var(--color-bg-secondary)' }}>
+      <GiRollingDices style={{ color: accent, fontSize: '1rem', flexShrink: 0 }} />
+      <span className="whitespace-pre-wrap" style={{ color: 'var(--color-text-primary)' }}>{result.content.replace(/^🎲\s*/, '')}</span>
+    </div>
+  )
+}
+
+export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log, result, myWeapons = [] }: {
   combat: CombatState
   myCharId: string | null
   sessionId: string
   pendingReaction?: PendingReaction | null
   log: CombatLogEntry[]
+  result?: CombatResultView | null   // 本场最近一次结算（掷骰落定后钉在面板顶，不必收起面板去看）
   myWeapons?: { name: string; dam?: string }[]
 }) {
   const order = combat.order
@@ -455,6 +556,8 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
           {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
         </button>
       </div>
+      {/* 结算回显：掷骰落定后钉在面板顶（含收起态），无需收面板即可看到本次成败 / 对抗双方数值 */}
+      {result && <CombatResultReveal result={result} order={order} />}
       {!collapsed && (<>
       {/* B1 先攻轨：横排，高亮当前、标下一个、走过者淡化 */}
       <InitiativeTrack order={order} turn={combat.turn} myCharId={myCharId} />

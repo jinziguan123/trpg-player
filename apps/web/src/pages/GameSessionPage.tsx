@@ -15,7 +15,7 @@ import { RecapModal } from '../components/game/RecapModal'
 import { GrowthModal } from '../components/game/GrowthModal'
 import { InvestigationBoard } from '../components/game/InvestigationBoard'
 import { ImprovisedNpcModal } from '../components/game/ImprovisedNpcModal'
-import { CombatStage, type CombatState, type PendingReaction, type CombatLogEntry } from '../components/game/CombatStage'
+import { CombatStage, type CombatState, type PendingReaction, type CombatLogEntry, type CombatResultView } from '../components/game/CombatStage'
 import { ChasePanel, type ChaseState } from '../components/game/ChasePanel'
 import { Modal } from '../components/ui/modal'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter, GiCrossedSwords, GiLaurelCrown } from 'react-icons/gi'
@@ -491,6 +491,21 @@ export function GameSessionPage() {
     }
     return out
   }, [messages, combatLogSince])
+
+  // 战斗态下「本场最近一次掷骰结算」：钉在战斗面板顶，玩家无需收起面板即可看到本次成败/对抗双方数值。
+  // 从后往前找最近一条已揭示的 dice（对抗有 metadata.opposed；命中有 combat_log/hit；也含战斗中的普通检定）；
+  // 3D 投掷未落定的先跳过（避免结果先于动画蹦出）；越过本场起点（seq≤combatLogSince）即停，不显示上一场/开战前的旧结果。
+  const combatResult = useMemo<CombatResultView | null>(() => {
+    if (!combat) return null
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (combatLogSince != null && m.sequence_num != null && m.sequence_num <= combatLogSince) break
+      if (m.type !== 'dice' || !m.metadata) continue
+      if (m.id && diceAnimating.has(m.id) && !revealedDice.has(m.id)) continue   // 动画未落定，先看更早的
+      return { content: m.content, metadata: m.metadata as Record<string, unknown> }
+    }
+    return null
+  }, [combat, messages, combatLogSince, diceAnimating, revealedDice])
 
   const seenIds = useRef<Set<string>>(new Set())
   const liveTypeRef = useRef<string>('')
@@ -1618,7 +1633,7 @@ export function GameSessionPage() {
         </div>
 
         {combat && (
-          <CombatStage combat={combat} myCharId={myCharId} sessionId={currentSession.id} pendingReaction={pendingReaction} log={combatLog} myWeapons={myWeapons} />
+          <CombatStage combat={combat} myCharId={myCharId} sessionId={currentSession.id} pendingReaction={pendingReaction} log={combatLog} result={combatResult} myWeapons={myWeapons} />
         )}
         {chase && (
           <ChasePanel chase={chase} sessionId={currentSession.id} />
