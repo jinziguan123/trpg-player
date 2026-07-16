@@ -208,6 +208,32 @@ def check_plan_adjudication(plan: dict | None, expect: dict | None) -> list[Find
     )]
 
 
+_LEAD_NAME_THRESHOLD = 3  # 同一角色名领起达此数量的段落即算「姓名流水账」
+
+
+def check_name_led_cadence(narration: str, player_names: list[str]) -> list[Finding]:
+    """同一角色名反复领起段落（「<名字>如何…、<名字>又如何…」）像点名报数，很出戏——
+    尤其掷骰续写里，旧提示曾要求「每行以执行者姓名打头」导致全名刷屏。
+
+    severity=warn：文风信号、不判失败，用于在 scorecard 里量化「姓名领起段落」的密度，
+    据此验证 prompt 改动是否真把这条流水账压下来（而非凭感觉）。"""
+    text = _strip_commands(narration)
+    paras = [p.strip() for p in re.split(r"\n+", text) if p.strip()]
+    counts: dict[str, int] = {}
+    for p in paras:
+        for name in player_names:
+            if name and p.startswith(name):
+                counts[name] = counts.get(name, 0) + 1
+                break
+    name, n = max(counts.items(), key=lambda kv: kv[1], default=("", 0))
+    if n >= _LEAD_NAME_THRESHOLD:
+        return [Finding(
+            check="name_led_cadence", severity="warn",
+            detail=f"「{name}」领起了 {n} 个段落，姓名流水账、出戏",
+        )]
+    return []
+
+
 def run_all_checks(narration: str, player_names: list[str]) -> list[Finding]:
     findings: list[Finding] = []
     findings += check_internal_ids(narration)
@@ -216,4 +242,5 @@ def run_all_checks(narration: str, player_names: list[str]) -> list[Finding]:
     findings += check_event_echo(narration)
     findings += check_player_control(narration, player_names)
     findings += check_antithesis_tic(narration)
+    findings += check_name_led_cadence(narration, player_names)
     return findings

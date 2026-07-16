@@ -177,6 +177,26 @@ class TestAntithesisTic:
         assert not checks.check_antithesis_tic(text)
 
 
+class TestNameLedCadence:
+    """姓名流水账探针：同一角色名领起多段旁白 → warn（掷骰续写「每段以执行者姓名打头」的病灶）。"""
+
+    def test_同名领起多段给警告(self):
+        text = ("江户川龙牙的双臂牢牢锁住底座。\n\n"
+                "江户川龙牙随着驾驶室侧翻。\n\n"
+                "江户川龙牙在连续翻滚中找到夹角。\n\n"
+                "江户川龙牙避开了直接伤害。")
+        findings = checks.check_name_led_cadence(text, ["江户川龙牙", "山田健太"])
+        assert findings and findings[0].severity == "warn"
+        assert "4" in findings[0].detail          # detail 带段数，供 scorecard 量化
+
+    def test_代词与变化主语不报(self):
+        text = ("江户川龙牙的双臂锁住底座。\n\n"
+                "他随着驾驶室侧翻，肩背伤口重新裂开。\n\n"
+                "金属外壳刮擦着轨旁结构，列车终于停下。\n\n"
+                "远处，一阵潮湿的碾压声仍在延续。")
+        assert not checks.check_name_led_cadence(text, ["江户川龙牙", "山田健太"])
+
+
 class TestNarrationStyleVariety:
     def test_kp提示词含文风忌单一约束(self):
         from app.ai.prompts.kp_system import KP_SYSTEM_PROMPT
@@ -243,11 +263,13 @@ class TestFixtureRoundtrip:
 
 
 class TestContinuationSubjectFidelity:
-    def test_续写提示词钉死主语为检定执行者(self):
-        # 修复的核心：续写提示词必须把「叙述主语=检定执行者」写成硬约束（防措辞被静默删除）。
+    def test_续写提示词钉死结果归属且禁姓名流水账(self):
+        # 核心不变：结果归属检定执行者是硬约束（防措辞被静默删除、张冠李戴）；
+        # 同时新增文风约束：别每段以角色全名开头（点名报数很出戏）。
         p = KP_DICE_CONTINUATION_PROMPT
-        assert "叙述主语" in p and "执行者" in p
-        assert "安到别的角色" in p  # 明确禁止张冠李戴
+        assert "执行者" in p
+        assert "安到别的角色" in p                       # 归属保真：禁止张冠李戴
+        assert "代词" in p and ("流水账" in p or "全名开头" in p)  # 禁姓名流水账点名
 
     def test_judge_含主语归属评分项(self):
         assert "subject_fidelity" in RUBRIC
