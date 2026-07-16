@@ -53,6 +53,34 @@ def _coerce_str_list(v: Any) -> list[str]:
 StrList = Annotated[list[str], BeforeValidator(_coerce_str_list)]
 
 
+def _coerce_scalar_text(v: Any) -> str:
+    """把 LLM 误写成 dict/list/标量/None 的**自由文本字段**就地转成字符串，尽量保住内容
+    （dict 取各值拼句、list 拼接），而不是丢成空串或让整份计划校验失败回退旧流程。
+
+    典型：把一句话意图写成 {"actor": "江户川龙牙", "intent": "…驾驶车体"} → 「江户川龙牙；…驾驶车体」。"""
+    if isinstance(v, str):
+        return v
+    if v is None:
+        return ""
+    if isinstance(v, dict):
+        return "；".join(s for s in (str(x).strip() for x in v.values()) if s)
+    if isinstance(v, (list, tuple)):
+        return "；".join(s for s in (str(x).strip() for x in v) if s)
+    return str(v)
+
+
+def _coerce_str_fields(model_cls: type[BaseModel], data: dict) -> dict:
+    """把 data 里所有「目标类型是纯 str」的字段的非字符串值就地转成字符串（通用容错）。
+
+    模型反复把标量 str 字段（player_intent / auto_outcome_reason / 子模型的 reason/skill/…）写成
+    dict/list/数字 → 撞 str 类型令**整份计划**被丢弃回退旧流程。用模型自身字段类型驱动，逐字段判定，
+    枚举/列表/布尔字段（annotation 非纯 str）一律跳过，不误伤。"""
+    for name, field in model_cls.model_fields.items():
+        if field.annotation is str and name in data and not isinstance(data[name], str):
+            data[name] = _coerce_scalar_text(data[name])
+    return data
+
+
 class CheckPlan(BaseModel):
     skill: str = ""
     difficulty: str = "normal"
@@ -241,18 +269,25 @@ class TurnPlan(BaseModel):
             return data
         data = dict(data)
         for name in _SUBMODEL_FIELDS:
+            val = data.get(name)
             # 放行 dict（来自 JSON）与子模型实例（来自直接构造）；只拦截标量/字符串/列表等错误形状
-            if name in data and not isinstance(data[name], (dict, BaseModel)):
+            if name in data and not isinstance(val, (dict, BaseModel)):
                 data[name] = {}
+            elif isinstance(val, dict):
+                # 子模型形状对，但内部标量 str 字段可能被写成 dict/list → 就地容错（否则子模型
+                # 校验失败照样连累整份计划被丢弃）。
+                sub_cls = cls.model_fields[name].annotation
+                if isinstance(sub_cls, type) and issubclass(sub_cls, BaseModel):
+                    data[name] = _coerce_str_fields(sub_cls, dict(val))
         if data.get("turn_kind") not in _TURN_KINDS:
             data.pop("turn_kind", None)  # 交回默认 "mixed"
-        # 字符串软字段容错：模型常把 auto_outcome / 其理由写成 null（显式 null 会撞 str 类型、
-        # 令整份计划校验失败回退旧流程，反而丢掉全部裁定信号）。非字符串一律退回默认。
+        # auto_outcome 是枚举式 str（none/success/failure）：非字符串内容无意义，直接退默认，
+        # 别拼成非法枚举值（mode=after 的 _combat_owns_resolution 也会兜非法值→none）。
         if "auto_outcome" in data and not isinstance(data["auto_outcome"], str):
             data["auto_outcome"] = "none"
-        if "auto_outcome_reason" in data and not isinstance(data["auto_outcome_reason"], str):
-            data.pop("auto_outcome_reason", None)
-        return data
+        # 通用容错：顶层所有「纯 str」自由文本字段（player_intent / auto_outcome_reason 等）被写成
+        # dict/list/标量 → 就地转字符串，保住整份计划不因某字段形状错误被整体丢弃回退旧流程。
+        return _coerce_str_fields(cls, data)
 
     @model_validator(mode="after")
     def _combat_owns_resolution(self):

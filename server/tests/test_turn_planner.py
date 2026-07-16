@@ -334,6 +334,30 @@ def test_auto_outcome_与检定互斥且非法值归一():
     assert p3.auto_outcome == "none"                                     # 开战取消自动结局
 
 
+def test_标量str字段容忍dict_list_保住整份计划():
+    """模型把自由文本标量字段写成 dict/list（如 player_intent={'actor':…,'intent':…}）时，
+    必须就地转字符串、保住整份 TurnPlan，绝不能因一个字段撞 str 类型被整体丢弃回退旧流程。
+    这是线上真实报错（player_intent 收到 dict）的回归。"""
+    from app.ai.turn_planner import TurnPlan
+
+    # 顶层 player_intent 写成 dict → 拼各值成句，内容不丢
+    p = TurnPlan.model_validate({
+        "player_intent": {"actor": "江户川龙牙", "intent": "驾驶或控制车体"},
+        "requires_check": True,
+    })
+    assert isinstance(p.player_intent, str)
+    assert "江户川龙牙" in p.player_intent and "驾驶或控制车体" in p.player_intent
+    assert p.requires_check is True                    # 整份计划保住，其它字段照常
+
+    # 顶层 auto_outcome_reason 写成 list → 拼接
+    p2 = TurnPlan.model_validate({"auto_outcome_reason": ["已暴露", "仍想潜行"]})
+    assert p2.auto_outcome_reason == "已暴露；仍想潜行"
+
+    # 子模型内部标量 str（check.reason）写成 dict → 就地容错，不连累整份计划
+    p3 = TurnPlan.model_validate({"check": {"skill": "聆听", "reason": {"why": "隔墙有声"}}})
+    assert p3.check.skill == "聆听" and "隔墙有声" in p3.check.reason
+
+
 def test_sanity_loss_容忍整数与null():
     """SAN 损失字段是「骰式/数字」，模型常写成 int 0/1 或 null —— 必须 str 化容错，
     否则整份计划因 str 类型校验失败回退旧流程（丢掉全部裁定信号，评测里已复现）。"""
