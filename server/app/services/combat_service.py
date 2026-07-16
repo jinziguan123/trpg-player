@@ -20,7 +20,7 @@ from app.models.session import GameSession
 from app.rules.coc import combat as engine
 from app.rules.coc import positioning
 from app.rules.coc.weapons import WEAPON_CATEGORY_ORDER
-from app.services import session_service
+from app.services import session_service, world_state
 from app.services.room_hub import room_hub
 
 # 火器大类（决定先攻火器优先与「远程」判定）
@@ -163,13 +163,7 @@ def get_combat(session: GameSession) -> dict | None:
 
 def _save_combat(db: Session, session_id: str, state: dict | None) -> None:
     session = db.get(GameSession, session_id)
-    ws = dict(session.world_state or {})
-    if state is None:
-        ws.pop("combat", None)
-    else:
-        ws["combat"] = state
-    session.world_state = ws
-    db.commit()
+    world_state.set_key(db, session, "combat", state)   # state=None → 删除 combat 键（结束战斗）
 
 
 def start_combat(db: Session, session_id: str, player_side: list[dict], enemies: list[dict],
