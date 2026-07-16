@@ -2291,6 +2291,39 @@ async def _ensure_planned_combat_damage(
         yield chunk
 
 
+async def _ensure_planned_scene(
+    db: Session,
+    session_id: str,
+    game_session: GameSession,
+    module: Module,
+    player_char: Character,
+    teammates: list[Character] | None,
+    plan: turn_planner.TurnPlan | None,
+) -> AsyncIterator[str]:
+    """确保规划器裁定的『玩家本轮真实移动到某场景』一定落成位置/地图切换，补偿 KP 漏调 scene_change。
+
+    这修复的是「KP 叙述了到达新场景，但大地图仍停在旧场景」——过去场景切换**只**靠 KP 记得发
+    `[SCENE_CHANGE]`/`scene_change` 工具，漏发就地图与叙事脱节。现在与 SAN/战斗/库存一致：规划器
+    给出明确目标场景，后端确定性把角色搬过去。
+
+    幂等且保守：
+    - KP 已自行切到目标场景 → `_exec_scene_change` 见位置已到位、原地返回，不重复切；
+    - 目标解析不到真实场景 id/名 → 安全跳过（不写脏值、不回退到首个场景）；
+    - 规划器仅在玩家**确实前往并到达**别处时才置此字段（『讨论/打算去』不置），语义与 KP 工具一致。
+    """
+    if plan is None:
+        return
+    ref = (plan.scene_policy.scene_change or "").strip()
+    if not ref:
+        return
+    db.refresh(game_session)
+    chunks, _sid = await _exec_scene_change(
+        db, session_id, game_session, module, ref, player_char, teammates,
+    )
+    for chunk in chunks:
+        yield chunk
+
+
 async def _run_generation(
     db: Session,
     session_id: str,
@@ -2465,6 +2498,12 @@ async def _run_generation(
     async for chunk in _ensure_planned_combat_damage(db, session_id, player_char, plan):
         room_hub.broadcast(session_id, chunk)
 
+    # 确定性场景守卫：计划裁定玩家本轮真实移动 → 后端把角色位置/大地图切过去（幂等），补 KP 漏切。
+    async for chunk in _ensure_planned_scene(
+        db, session_id, game_session, module, player_char, teammates, plan,
+    ):
+        room_hub.broadcast(session_id, chunk)
+
     await _finish_generation(db, session_id, llm)
 
 
@@ -2607,6 +2646,12 @@ async def _run_split_generation(
 
     # 确定性战斗伤害守卫：战斗中非常规/范围攻击 → 挂成玩家 pending_roll 亲手掷、扣敌人 HP。
     async for chunk in _ensure_planned_combat_damage(db, session_id, player_char, plan):
+        room_hub.broadcast(session_id, chunk)
+
+    # 确定性场景守卫：计划裁定玩家本轮真实移动 → 后端把角色位置/大地图切过去（幂等），补 KP 漏切。
+    async for chunk in _ensure_planned_scene(
+        db, session_id, game_session, module, player_char, teammates, plan,
+    ):
         room_hub.broadcast(session_id, chunk)
 
     await _finish_generation(db, session_id, llm)
