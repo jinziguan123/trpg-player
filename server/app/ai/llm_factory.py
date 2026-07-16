@@ -37,4 +37,5 @@ def get_llm() -> LLMProvider:
         base_url=profile.base_url,
         api_key=profile.api_key,
         vision=getattr(profile, "vision", False),
+        reasoning_effort=getattr(profile, "reasoning_effort", ""),
     )

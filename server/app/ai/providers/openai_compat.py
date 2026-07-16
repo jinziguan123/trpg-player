@@ -68,10 +68,15 @@ class ToolCallAggregator:
 class OpenAICompatProvider(LLMProvider):
     """OpenAI 兼容协议的通用 Provider（DeepSeek / OpenAI / 任意 OpenAI 兼容端点）。"""
 
-    def __init__(self, model: str = "deepseek-chat", base_url: str = "", api_key: str = "", vision: bool = False):
+    def __init__(
+        self, model: str = "deepseek-chat", base_url: str = "", api_key: str = "",
+        vision: bool = False, reasoning_effort: str = "",
+    ):
         self.model = model
         self._api_key = api_key
         self._vision = vision  # 配置里的显式「支持视觉」开关
+        # 推理档位（reasoning_effort：minimal/low/medium/high/xhigh…）。空=不带该参数，用模型默认档。
+        self._reasoning_effort = (reasoning_effort or "").strip()
         self._client = httpx.AsyncClient(timeout=120.0)
         base = base_url.rstrip("/") if base_url else "https://api.deepseek.com"
         self._api_url = f"{base}/chat/completions"
@@ -84,6 +89,13 @@ class OpenAICompatProvider(LLMProvider):
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
+
+    def _apply_reasoning(self, payload: dict) -> dict:
+        """按配置带上 reasoning_effort；推理模型多拒绝/忽略 temperature，设了推理档就去掉它。"""
+        if self._reasoning_effort:
+            payload["reasoning_effort"] = self._reasoning_effort
+            payload.pop("temperature", None)
+        return payload
 
     async def complete(
         self,
@@ -106,6 +118,7 @@ class OpenAICompatProvider(LLMProvider):
             payload["max_tokens"] = max_tokens
         if response_format:
             payload["response_format"] = response_format
+        self._apply_reasoning(payload)
 
         # 瞬时传输错误（连接被中途掐断/抖动/超时）与 5xx 重试最多 3 次；4xx 立即抛。
         last_exc: Exception | None = None
@@ -167,6 +180,7 @@ class OpenAICompatProvider(LLMProvider):
         payload: dict = {"model": self.model, "messages": [{"role": "user", "content": content}], "temperature": 0.4}
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        self._apply_reasoning(payload)
         resp = await self._client.post(self._api_url, headers=self._headers(), json=payload)
         if resp.status_code >= 400:
             # 把服务端返回体带上，便于定位（如图片格式/数量/尺寸被拒），并给出可读错误
@@ -242,6 +256,7 @@ class OpenAICompatProvider(LLMProvider):
             payload["tools"] = tools
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        self._apply_reasoning(payload)
 
         aggregator = ToolCallAggregator()
         produced = [False]
@@ -287,6 +302,7 @@ class OpenAICompatProvider(LLMProvider):
         }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        self._apply_reasoning(payload)
 
         produced = [False]
         async for chunk in self._iter_stream_chunks(payload, produced):

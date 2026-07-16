@@ -236,6 +236,38 @@ def test_anthropic_set_usage_accumulates():
     assert prov.last_usage["total_tokens"] == 12   # last_usage 仍照常写
 
 
+def test_reasoning_effort_in_payload_omits_temperature(monkeypatch):
+    """设了 reasoning_effort：payload 带上它、且去掉 temperature（推理模型多拒绝/忽略 temperature）。"""
+    prov = OpenAICompatProvider(model="gpt-5.5", api_key="k", reasoning_effort="xhigh")
+    captured = {}
+    good = ["data: " + json.dumps({"choices": [{"delta": {"content": "ok"}}]}), "data: [DONE]"]
+
+    def cap(method, url, headers=None, json=None):
+        captured["payload"] = json
+        return _StreamCtx(_LinesResp(good))
+
+    monkeypatch.setattr(prov._client, "stream", cap)
+    asyncio.run(prov.complete([{"role": "user", "content": "hi"}]))
+    assert captured["payload"]["reasoning_effort"] == "xhigh"
+    assert "temperature" not in captured["payload"]
+
+
+def test_no_reasoning_effort_keeps_temperature(monkeypatch):
+    """未设 reasoning_effort：payload 不带该参数、照常发 temperature（非推理模型不受影响）。"""
+    prov = OpenAICompatProvider(model="deepseek-chat", api_key="k")
+    captured = {}
+    good = ["data: " + json.dumps({"choices": [{"delta": {"content": "ok"}}]}), "data: [DONE]"]
+
+    def cap(method, url, headers=None, json=None):
+        captured["payload"] = json
+        return _StreamCtx(_LinesResp(good))
+
+    monkeypatch.setattr(prov._client, "stream", cap)
+    asyncio.run(prov.complete([{"role": "user", "content": "hi"}]))
+    assert "reasoning_effort" not in captured["payload"]
+    assert captured["payload"]["temperature"] == 0.7
+
+
 def test_stream_skips_empty_choices(monkeypatch):
     prov = OpenAICompatProvider(model="x", api_key="k")
     lines = [

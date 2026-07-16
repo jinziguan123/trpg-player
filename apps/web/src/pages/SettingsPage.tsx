@@ -24,6 +24,7 @@ interface AIProfile {
   is_active: boolean
   vision?: boolean
   context_window?: number
+  reasoning_effort?: string
 }
 
 interface TestResult {
@@ -40,6 +41,7 @@ type FormData = {
   api_key: string
   vision: boolean
   context_window: number
+  reasoning_effort: string
 }
 
 const EMPTY_FORM: FormData = {
@@ -50,6 +52,7 @@ const EMPTY_FORM: FormData = {
   api_key: '',
   vision: false,
   context_window: 0,
+  reasoning_effort: '',
 }
 
 const PROTOCOL_INFO: Record<
@@ -498,6 +501,7 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
       api_key: p.api_key,
       vision: !!p.vision,
       context_window: p.context_window || 0,
+      reasoning_effort: p.reasoning_effort || '',
     })
   }
 
@@ -828,34 +832,71 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
               />
             </div>
 
-            {/* 多模态（视觉） */}
-            <div>
-              <label className="flex items-center gap-2 text-sm font-semibold cursor-pointer" style={{ fontSize: '0.85rem' }}>
-                <input type="checkbox" checked={form.vision} onChange={(e) => setForm({ ...form, vision: e.target.checked })} />
-                支持视觉（多模态）
-              </label>
-              <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
-                勾选后才能用「据图片生成地图 / 图片模组解析」等看图功能。请确保所选模型确实支持视觉（如 GPT-4o / Claude / Gemini / Qwen-VL）。
-              </p>
-            </div>
+            {/* 高级配置（可选，默认收起）：推理档位 / 上下文窗口 / 视觉 */}
+            <details
+              className="rounded border"
+              style={{ borderColor: 'var(--color-border)' }}
+            >
+              <summary
+                className="cursor-pointer select-none text-sm font-semibold px-3 py-2"
+                style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)' }}
+              >
+                高级配置（可选）
+              </summary>
+              <div className="px-3 pb-3 flex flex-col gap-4">
+                {/* 推理档位 */}
+                <div>
+                  <label className="block text-sm font-semibold mb-1" style={{ fontSize: '0.85rem' }}>
+                    推理档位（reasoning effort）
+                  </label>
+                  <select
+                    className="input w-full"
+                    value={form.reasoning_effort}
+                    onChange={(e) => setForm({ ...form, reasoning_effort: e.target.value })}
+                  >
+                    <option value="">默认（不下发，用模型默认档）</option>
+                    <option value="minimal">minimal</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                    <option value="xhigh">xhigh</option>
+                  </select>
+                  <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+                    仅对支持推理的 OpenAI 兼容模型生效（如 gpt-5 系）。设定后会一并省略 temperature；
+                    非推理模型请留「默认」，否则个别端点会因未知参数报错。
+                  </p>
+                </div>
 
-            {/* 上下文窗口 */}
-            <div>
-              <label className="block text-sm font-semibold mb-1" style={{ fontSize: '0.85rem' }}>
-                上下文窗口（token）
-              </label>
-              <input
-                type="number"
-                min={0}
-                className="input w-full"
-                placeholder="留空/0：按模型名自动判断（如 deepseek≈64k、claude≈200k）"
-                value={form.context_window || ''}
-                onChange={(e) => setForm({ ...form, context_window: Number(e.target.value) || 0 })}
-              />
-              <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
-                用于游戏页「上下文占用」预估，判断模型还撑不撑得住继续跑团。填 0 则自动按模型名推断。
-              </p>
-            </div>
+                {/* 多模态（视觉） */}
+                <div>
+                  <label className="flex items-center gap-2 text-sm font-semibold cursor-pointer" style={{ fontSize: '0.85rem' }}>
+                    <input type="checkbox" checked={form.vision} onChange={(e) => setForm({ ...form, vision: e.target.checked })} />
+                    支持视觉（多模态）
+                  </label>
+                  <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+                    勾选后才能用「据图片生成地图 / 图片模组解析」等看图功能。请确保所选模型确实支持视觉（如 GPT-4o / Claude / Gemini / Qwen-VL）。
+                  </p>
+                </div>
+
+                {/* 上下文窗口 */}
+                <div>
+                  <label className="block text-sm font-semibold mb-1" style={{ fontSize: '0.85rem' }}>
+                    上下文窗口（token）
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    className="input w-full"
+                    placeholder="留空/0：按模型名自动判断（如 deepseek≈64k、claude≈200k）"
+                    value={form.context_window || ''}
+                    onChange={(e) => setForm({ ...form, context_window: Number(e.target.value) || 0 })}
+                  />
+                  <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+                    用于游戏页「上下文占用」预估，判断模型还撑不撑得住继续跑团。填 0 则自动按模型名推断。
+                  </p>
+                </div>
+              </div>
+            </details>
 
             {/* API Key */}
             <div>

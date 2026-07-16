@@ -38,6 +38,9 @@ class AIProfile(BaseModel):
     # 模型上下文窗口（token）。0 = 未知，由 resolve_context_window 按模型名启发式回落。
     # 用于「上下文占用预估」判断模型是否还撑得住继续跑团。
     context_window: int = 0
+    # 推理档位（reasoning_effort）：minimal/low/medium/high/xhigh 等。空=不下发该参数、用模型默认档。
+    # 仅 OpenAI 兼容协议、且模型支持推理时生效；设了会一并省略 temperature（推理模型多拒绝/忽略它）。
+    reasoning_effort: str = ""
 
 
 class AIProfileCreate(BaseModel):
@@ -49,6 +52,7 @@ class AIProfileCreate(BaseModel):
     vision: bool = False
     use_tool_calls: bool = True
     context_window: int = 0
+    reasoning_effort: str = ""
 
 
 class AIProfileUpdate(BaseModel):
@@ -60,6 +64,7 @@ class AIProfileUpdate(BaseModel):
     vision: bool | None = None
     use_tool_calls: bool | None = None
     context_window: int | None = None
+    reasoning_effort: str | None = None
 
 
 # 常见模型的上下文窗口（token）——用于用户没显式配 context_window 时的启发式回落。
@@ -204,6 +209,7 @@ def create_profile(body: AIProfileCreate):
         vision=body.vision,
         use_tool_calls=body.use_tool_calls,
         context_window=body.context_window,
+        reasoning_effort=body.reasoning_effort,
         is_active=len(profiles) == 0,  # 第一个配置自动激活
     )
     profiles.append(new_profile)
@@ -238,6 +244,8 @@ def update_profile(profile_id: str, body: AIProfileUpdate):
         target.use_tool_calls = body.use_tool_calls
     if body.context_window is not None:
         target.context_window = body.context_window
+    if body.reasoning_effort is not None:
+        target.reasoning_effort = body.reasoning_effort
     if body.api_key is not None:
         # 如果包含掩码字符，说明前端没有修改 key，保留旧值
         if "****" not in body.api_key:
@@ -335,6 +343,10 @@ async def _test_openai(client: httpx.AsyncClient, profile: AIProfile) -> str:
         "max_tokens": 16,
         "temperature": 0,
     }
+    # 设了推理档就按真实调用口径带上（并省略 temperature），让连接测试如实反映能否用
+    if getattr(profile, "reasoning_effort", "").strip():
+        payload["reasoning_effort"] = profile.reasoning_effort.strip()
+        payload.pop("temperature", None)
     resp = await client.post(url, headers=headers, json=payload)
     resp.raise_for_status()
     data = resp.json()
