@@ -9,6 +9,7 @@ import { CharacterPanel } from '../components/character/CharacterPanel'
 import { PartyRoster } from '../components/game/PartyRoster'
 import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { DiceRoller, type DiceRollerHandle, type DiceSpec } from '../components/game/DiceRoller'
+import { buildCheckCaption } from '../components/game/diceNotation'
 import { ContextUsageBadge } from '../components/game/ContextUsageBadge'
 import { RecapModal } from '../components/game/RecapModal'
 import { GrowthModal } from '../components/game/GrowthModal'
@@ -1329,6 +1330,9 @@ export function GameSessionPage() {
               const diceText = msg.content.replace(/^🎲\s*/, '')
               // 伤害骰注记（贯穿/燃烧/晕）：贯穿走金色高亮，其余血色
               const diceFlags = ((msg.metadata?.dice as { flags?: string[] } | undefined)?.flags) || []
+              // 奖励/惩罚骰标注：本次 check 含额外十位骰时标出（暗投不揭示，避免泄露隐藏结果）。
+              const checkCap = (!blind && msg.metadata?.dice)
+                ? buildCheckCaption(msg.metadata.dice as DiceSpec) : null
               // 入场动效（仅新到达的骰子卡）：大成功金光脉冲、大失败血红震颤，其余普通弹入；一次不循环。
               const oc = String(msg.metadata?.outcome ?? '')
               let diceAnim = ''
@@ -1343,6 +1347,16 @@ export function GameSessionPage() {
                     style={{ borderLeft: `3px solid ${accent}`, width: 'fit-content', maxWidth: '100%' }}>
                     <GiRollingDices style={{ color: accent, fontSize: '1.1rem', flexShrink: 0, marginTop: '0.1rem' }} />
                     <span className="whitespace-pre-wrap">{diceText}</span>
+                    {checkCap && (
+                      <span className="text-[10px] px-1 rounded flex-shrink-0 self-center font-semibold"
+                        title={`${checkCap.rule}；${checkCap.breakdown} → 结果 ${checkCap.result}`}
+                        style={{
+                          color: checkCap.kind === 'bonus' ? 'var(--color-dice-gold)' : 'var(--color-dice-fumble)',
+                          border: `1px solid ${checkCap.kind === 'bonus' ? 'var(--color-dice-gold)' : 'var(--color-dice-fumble)'}`,
+                        }}>
+                        {checkCap.title}
+                      </span>
+                    )}
                     {diceFlags.map((f) => {
                       const gold = f === '贯穿'
                       const col = gold ? 'var(--color-dice-gold)' : 'var(--color-danger)'

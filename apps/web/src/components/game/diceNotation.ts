@@ -21,6 +21,39 @@ export interface DicePool {
 }
 export type DiceSpec = DiceCheck | DicePool
 
+// 奖励/惩罚骰的呈现说明：本次 d100 检定是否掷了额外的十位骰，取更有利/更不利者。
+// 供 3D 投掷覆盖层与结果卡「单独标出奖励/惩罚骰、并展示采用的十位与最终结果」。
+export interface CheckCaption {
+  kind: 'bonus' | 'penalty'
+  title: string       // 「奖励骰 ×1」「惩罚骰 ×2」
+  rule: string        // 「多掷的十位取更有利者」/「…更不利者」
+  breakdown: string   // 「十位 00/30 → 采用 00 · 个位 5」
+  result: number      // 最终 d100 点数
+}
+
+// d100 十位面文本：值 0 即“00”面（按个位可为 100 或 0X），原样显示 "00"。
+function tensFace(tens: number): string {
+  return tens === 0 ? '00' : String(tens)
+}
+
+/** 若本次 check 含奖励/惩罚骰则给出呈现说明，否则 null（普通检定/骰池不标注）。纯函数，便于单测。 */
+export function buildCheckCaption(spec: DiceSpec): CheckCaption | null {
+  if (spec.kind !== 'check') return null
+  const bonus = spec.bonus || 0
+  const penalty = spec.penalty || 0
+  if (bonus <= 0 && penalty <= 0) return null
+  const isBonus = bonus > 0
+  const count = isBonus ? bonus : penalty
+  const tensList = spec.tens && spec.tens.length > 0 ? spec.tens : [spec.tens_kept]
+  return {
+    kind: isBonus ? 'bonus' : 'penalty',
+    title: `${isBonus ? '奖励骰' : '惩罚骰'} ×${count}`,
+    rule: isBonus ? '多掷的十位取更有利者' : '多掷的十位取更不利者',
+    breakdown: `十位 ${tensList.map(tensFace).join('/')} → 采用 ${tensFace(spec.tens_kept)} · 个位 ${spec.units}`,
+    result: spec.result,
+  }
+}
+
 // CoC 十位 d100：面为 10..90,00。tens 值 0（即“00”面）对应预定结果 100。
 function tensToNotationValue(tens: number): number {
   return tens === 0 ? 100 : tens

@@ -1,6 +1,7 @@
 import { useEffect, useImperativeHandle, useRef, useState, forwardRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { specToNotation, type DiceSpec } from './diceNotation'
+import { GiRollingDices } from 'react-icons/gi'
+import { buildCheckCaption, specToNotation, type CheckCaption, type DiceSpec } from './diceNotation'
 
 export type { DiceSpec } from './diceNotation'
 
@@ -62,6 +63,9 @@ export const DiceRoller = forwardRef<DiceRollerHandle, Record<never, never>>(fun
   // box 的落定回调不稳，改用「当次 roll 的 resolve」由回调或超时任一先到者触发。
   const rollResolveRef = useRef<(() => void) | null>(null)
   const [active, setActive] = useState(false)   // 覆盖层是否显示（投掷进行中）
+  // 奖励/惩罚骰标注：含额外十位骰时在覆盖层标出「奖励/惩罚骰」，落定后揭示采用的十位与最终结果。
+  const [caption, setCaption] = useState<CheckCaption | null>(null)
+  const [captionRevealed, setCaptionRevealed] = useState(false)
 
   // 惰性但幂等地初始化 dice-box：首个投掷时创建一次，Promise 缓存复用。
   // 容器始终布局占位（visibility:hidden 仍有尺寸），此时 clientWidth/Height 非零，能安全建场景。
@@ -113,12 +117,14 @@ export const DiceRoller = forwardRef<DiceRollerHandle, Record<never, never>>(fun
     const notation = specToNotation(spec)
     if (!notation) return
     // 先显形覆盖层，容器完成布局后再初始化/投掷。
+    const cap = buildCheckCaption(spec)   // 含奖励/惩罚骰才标注（普通检定/骰池为 null）
+    setCaption(cap); setCaptionRevealed(false)
     setActive(true)
     // 用 setTimeout 而非 requestAnimationFrame 让出一拍：rAF 在标签页不可见时会被节流/挂起，
     // 会导致投掷流程卡死；setTimeout 在后台仍会触发。
     await new Promise((r) => setTimeout(r, 32))
     const box = await ensureBox()
-    if (!box) { setActive(false); return }   // WebGL 不可用 / 加载失败 → 静默降级
+    if (!box) { setActive(false); setCaption(null); return }   // WebGL 不可用 / 加载失败 → 静默降级
     try { box.clearDice?.() } catch { /* ignore */ }   // 清掉上次残留骰子，避免叠加
     // 落定 = onRollComplete 与 硬超时 任一先到；两者都不会让流程悬挂（物理没停也强制落定）。
     await new Promise<void>((resolve) => {
@@ -132,8 +138,10 @@ export const DiceRoller = forwardRef<DiceRollerHandle, Record<never, never>>(fun
       } catch { finish() }
     })
     rollResolveRef.current = null
+    if (cap) setCaptionRevealed(true)   // 落定：揭示采用的十位与最终结果
     await new Promise((res) => setTimeout(res, SETTLE_HOLD_MS))   // 停留让玩家看清点数
     setActive(false)
+    setCaption(null); setCaptionRevealed(false)
   }, [ensureBox])
 
   // 对外的 roll：串行排队（同一覆盖层同一时刻只播一个；避免并发投掷互相清骰/抢状态）。
@@ -180,6 +188,37 @@ export const DiceRoller = forwardRef<DiceRollerHandle, Record<never, never>>(fun
       }}
     >
       <div id={containerIdRef.current} ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
+      {caption && (
+        <div
+          style={{
+            position: 'absolute', left: 0, right: 0, bottom: '14%',
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.35rem',
+            padding: '0 1rem', textAlign: 'center', pointerEvents: 'none',
+          }}
+        >
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full font-semibold"
+            style={{
+              fontSize: '0.9rem', padding: '0.2rem 0.8rem',
+              color: caption.kind === 'bonus' ? 'var(--color-dice-gold)' : 'var(--color-dice-fumble)',
+              background: 'rgba(0,0,0,0.55)',
+              border: `1px solid ${caption.kind === 'bonus' ? 'var(--color-dice-gold)' : 'var(--color-dice-fumble)'}`,
+            }}
+          >
+            <GiRollingDices /> {caption.title}
+            <span style={{ opacity: 0.75, fontWeight: 400, fontSize: '0.75rem' }}>· {caption.rule}</span>
+          </span>
+          <span
+            style={{
+              fontSize: '0.8rem', color: '#f0e6d0', background: 'rgba(0,0,0,0.5)',
+              borderRadius: '0.4rem', padding: '0.15rem 0.7rem',
+              transition: 'opacity 200ms ease', opacity: captionRevealed ? 1 : 0,
+            }}
+          >
+            {caption.breakdown} → 结果 <b>{caption.result}</b>
+          </span>
+        </div>
+      )}
     </div>,
     document.body,
   )
