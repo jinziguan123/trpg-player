@@ -145,6 +145,16 @@ class SanityPolicy(BaseModel):
     failure_loss: str = "1d6"     # 失败损失：尸体 1d3、血腥/怪物 1d6、强大神话生物 1d20
     witnesses: StrList = Field(default_factory=list)  # 目睹者名单（缺省=在场全体）
 
+    @field_validator("success_loss", "failure_loss", mode="before")
+    @classmethod
+    def _coerce_loss(cls, v, info):
+        """损失字段是「骰式/数字」，模型常直接写整数 0/1（int）——显式非字符串会撞 str 类型、
+        令整份计划校验失败回退旧流程（丢掉全部裁定信号）。统一 str 化；None/空退回字段默认。"""
+        default = "0" if info.field_name == "success_loss" else "1d6"
+        if v is None:
+            return default
+        return str(v).strip() or default
+
 
 class DirectionPolicy(BaseModel):
     """导演层：本轮的节奏经营意图。只影响「怎么讲」，不改变世界状态。

@@ -55,6 +55,31 @@ class TestPlanAdjudication:
         assert _errors(checks.check_plan_adjudication(None, {"any_of": []}))  # 无计划→判错
 
 
+class TestSampleAggregation:
+    """多次采样聚合：通过率 + 稳过判定 + 失败原因计数（纯函数，不调 LLM）。"""
+
+    def test_聚合通过率与失败原因(self):
+        from evals.run import aggregate_samples
+        samples = [
+            {"passed": True, "findings": [], "judge": None},
+            {"passed": False, "judge": None,
+             "findings": [{"check": "plan_adjudication", "severity": "error", "detail": "x"}]},
+            {"passed": False, "judge": None,
+             "findings": [{"check": "plan_adjudication", "severity": "error", "detail": "y"}]},
+        ]
+        agg = aggregate_samples("f", ["t"], samples)
+        assert agg["runs"] == 3 and agg["pass_count"] == 1
+        assert abs(agg["pass_rate"] - 1 / 3) < 1e-9
+        assert agg["passed"] is False                 # 非全过 → 不算稳过
+        assert "plan_adjudication×2" in agg["detail"]
+
+    def test_全过才算稳过(self):
+        from evals.run import aggregate_samples
+        agg = aggregate_samples(
+            "f", [], [{"passed": True, "findings": []}, {"passed": True, "findings": []}])
+        assert agg["passed"] is True and agg["pass_rate"] == 1.0 and agg["detail"] == ""
+
+
 class TestAdjudicationFixtures:
     def test_两条裁定fixture带plan_expect且无预存plan(self):
         """裁定评测 fixture 必须现跑 planner（无预存 plan）并携带 plan_expect，否则评不到裁定。"""

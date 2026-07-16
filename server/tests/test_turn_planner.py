@@ -334,6 +334,17 @@ def test_auto_outcome_与检定互斥且非法值归一():
     assert p3.auto_outcome == "none"                                     # 开战取消自动结局
 
 
+def test_sanity_loss_容忍整数与null():
+    """SAN 损失字段是「骰式/数字」，模型常写成 int 0/1 或 null —— 必须 str 化容错，
+    否则整份计划因 str 类型校验失败回退旧流程（丢掉全部裁定信号，评测里已复现）。"""
+    from app.ai.turn_planner import TurnPlan
+
+    p = TurnPlan.model_validate({"sanity": {"trigger": True, "success_loss": 0, "failure_loss": 1}})
+    assert p.sanity.success_loss == "0" and p.sanity.failure_loss == "1"
+    p2 = TurnPlan.model_validate({"sanity": {"success_loss": None, "failure_loss": None}})
+    assert p2.sanity.success_loss == "0" and p2.sanity.failure_loss == "1d6"   # None→字段默认
+
+
 def test_build_turn_plan_message_注入自动结局硬约束():
     """auto_outcome=failure 时注入「直接失败、据此确定性叙述、绝不写成侥幸成功」的硬约束（含入戏缘由）。"""
     from app.ai.turn_planner import TurnPlan

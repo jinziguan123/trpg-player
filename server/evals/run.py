@@ -228,29 +228,56 @@ def run_smoke(paths: list[Path]) -> int:
     return 1 if failed else 0
 
 
+def aggregate_samples(name: str, tags: list[str], samples: list[dict]) -> dict:
+    """把某 fixture 的 N 次采样聚合成一条结果：通过率 + 最常见失败原因。纯函数，便于单测。
+
+    passed 语义：**全部采样都过**才算稳过（pass_rate==1）；否则视为存在波动/不过。
+    detail 汇总各次的失败标签及其命中次数（如「plan_adjudication×3」「裁判:pacing×1」）。
+    """
+    runs = len(samples)
+    pass_count = sum(1 for s in samples if s.get("passed"))
+    reasons: dict[str, int] = {}
+    for s in samples:
+        for f in s.get("findings") or []:
+            if f.get("severity") == "error":
+                reasons[f["check"]] = reasons.get(f["check"], 0) + 1
+        judge = s.get("judge") or {}
+        for k, v in judge.items():
+            if not v.get("pass"):
+                reasons[f"裁判:{k}"] = reasons.get(f"裁判:{k}", 0) + 1
+        if s.get("judge_error"):
+            reasons["裁判失败"] = reasons.get("裁判失败", 0) + 1
+        if s.get("run_error"):
+            reasons["运行出错"] = reasons.get("运行出错", 0) + 1
+    detail = "；".join(f"{k}×{n}" for k, n in sorted(reasons.items(), key=lambda kv: -kv[1]))
+    return {
+        "fixture": name,
+        "tags": tags,
+        "runs": runs,
+        "pass_count": pass_count,
+        "pass_rate": pass_count / runs if runs else 0.0,
+        "passed": runs > 0 and pass_count == runs,
+        "detail": detail,
+        "samples": samples,
+    }
+
+
 def _print_summary(results: list[dict]) -> None:
-    print(f"\n{'fixture':<28} {'结果':<6} 明细")
+    print(f"\n{'fixture':<28} {'通过率':<10} 明细")
     print("-" * 72)
     for r in results:
-        errors = [f for f in r["findings"] if f["severity"] == "error"]
-        warns = [f for f in r["findings"] if f["severity"] == "warn"]
-        judge_failed = (
-            [k for k, v in r["judge"].items() if not v["pass"]] if r["judge"] else []
-        )
-        detail_parts = []
-        if errors:
-            detail_parts.append(f"检查错误 {len(errors)}")
-        if judge_failed:
-            detail_parts.append(f"裁判不过: {','.join(judge_failed)}")
-        if r["judge_error"]:
-            detail_parts.append("裁判失败")
-        if warns:
-            detail_parts.append(f"警告 {len(warns)}")
-        status = "PASS" if r["passed"] else "FAIL"
-        print(f"{r['fixture']:<28} {status:<6} {'; '.join(detail_parts) or '-'}")
-    passed = sum(1 for r in results if r["passed"])
+        rate = f"{r['pass_count']}/{r['runs']}"
+        if r["runs"] > 1:
+            rate += f" ({r['pass_rate'] * 100:.0f}%)"
+        print(f"{r['fixture']:<28} {rate:<10} {r.get('detail') or '-'}")
+    total_runs = sum(r["runs"] for r in results)
+    total_pass = sum(r["pass_count"] for r in results)
+    fully = sum(1 for r in results if r["passed"])
     print("-" * 72)
-    print(f"共 {len(results)} 个，通过 {passed}，不通过 {len(results) - passed}")
+    print(
+        f"共 {len(results)} 个 fixture、合计 {total_runs} 次采样；"
+        f"总通过 {total_pass}/{total_runs}，稳过（全采样通过）{fully}/{len(results)}"
+    )
 
 
 async def main_async(args: argparse.Namespace) -> int:
@@ -266,22 +293,26 @@ async def main_async(args: argparse.Namespace) -> int:
     if args.tool_loop and not llm.supports_tools():
         print("当前激活的 AI 配置不支持工具调用（supports_tools=False），无法 --tool-loop。")
         return 1
+    repeat = max(1, args.repeat)
     results = []
     for path in paths:
         case = load_fixture(path)
-        print(f"运行 {case.name} …", flush=True)
-        try:
-            results.append(await run_case(
-                case, llm, use_judge=not args.no_judge, tool_loop=args.tool_loop,
-            ))
-        except Exception as exc:  # noqa: BLE001 —— 单个 fixture 失败不中断整套
-            print(f"  出错: {type(exc).__name__}: {exc}")
-            results.append({
-                "fixture": case.name, "tags": case.tags, "plan_source": None,
-                "plan": None, "narration": "", "findings": [],
-                "judge": None, "judge_error": True, "passed": False,
-                "run_error": f"{type(exc).__name__}: {exc}",
-            })
+        print(f"运行 {case.name}{f' ×{repeat}' if repeat > 1 else ''} …", flush=True)
+        samples = []
+        for i in range(repeat):
+            try:
+                samples.append(await run_case(
+                    case, llm, use_judge=not args.no_judge, tool_loop=args.tool_loop,
+                ))
+            except Exception as exc:  # noqa: BLE001 —— 单次采样失败不中断整套
+                print(f"  第{i + 1}次出错: {type(exc).__name__}: {exc}")
+                samples.append({
+                    "fixture": case.name, "tags": case.tags, "plan_source": None,
+                    "plan": None, "narration": "", "findings": [],
+                    "judge": None, "judge_error": True, "passed": False,
+                    "run_error": f"{type(exc).__name__}: {exc}",
+                })
+        results.append(aggregate_samples(case.name, case.tags, samples))
 
     scorecard = {
         "meta": {
@@ -291,11 +322,17 @@ async def main_async(args: argparse.Namespace) -> int:
             "suite": args.suite,
             "judge": not args.no_judge,
             "tool_loop": args.tool_loop,
+            "repeat": repeat,
         },
         "results": results,
         "summary": {
             "total": len(results),
-            "passed": sum(1 for r in results if r["passed"]),
+            "fully_passed": sum(1 for r in results if r["passed"]),
+            "total_runs": sum(r["runs"] for r in results),
+            "total_passed": sum(r["pass_count"] for r in results),
+            "mean_pass_rate": (
+                sum(r["pass_rate"] for r in results) / len(results) if results else 0.0
+            ),
         },
     }
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -305,7 +342,7 @@ async def main_async(args: argparse.Namespace) -> int:
 
     _print_summary(results)
     print(f"\nscorecard 已写入 {out}")
-    return 0 if scorecard["summary"]["passed"] == len(results) else 1
+    return 0 if scorecard["summary"]["fully_passed"] == len(results) else 1
 
 
 def main() -> None:
@@ -314,6 +351,10 @@ def main() -> None:
     parser.add_argument("--fixture", help="只跑指定名字的 fixture")
     parser.add_argument("--no-judge", action="store_true", help="跳过裁判模型（只跑确定性检查）")
     parser.add_argument("--smoke", action="store_true", help="不调 LLM，只验证 fixture 可重建")
+    parser.add_argument(
+        "--repeat", type=int, default=1, metavar="N",
+        help="每个 fixture 重复采样 N 次，报通过率——抵消 LLM 波动，稳定 scorecard（默认 1）",
+    )
     parser.add_argument(
         "--tool-loop", dest="tool_loop", action="store_true",
         help="走 agent loop（工具调用）路径重放生成（需当前 Provider 支持工具）",
