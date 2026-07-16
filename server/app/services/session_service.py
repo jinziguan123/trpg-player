@@ -251,6 +251,77 @@ def is_host(db: Session, session_id: str, token: str | None) -> bool:
     return bool(token and seat and seat.owner_token == token)
 
 
+# ── 结束模组：全体非AI玩家共识投票 ──────────────────────────────────
+# 结束不再由房主单方拍板，而是「所有真人玩家一致同意」才执行（单人时自然退化为一键结束）。
+# 投票者口径与回合确认（turn_confirm）一致：所有已填角色的真人席，按 character_id 计票；
+# 投票经 resolve_actor 按 token 校验席位归属。按 A 方案不做掉线豁免（严格全体一致）。
+
+def _end_voter_ids(db: Session, session_id: str) -> set[str]:
+    """有资格参与结束投票的角色 id = 所有已填角色的真人席（与回合确认口径一致）。"""
+    return {
+        p.character_id for p in get_participants(db, session_id)
+        if p.role == "human" and p.character_id
+    }
+
+
+def end_vote_public(db: Session, session_id: str) -> dict:
+    """对外可见的结束投票态：每个真人玩家是否已同意、已同意数 / 总数、是否进行中。"""
+    session = db.get(GameSession, session_id)
+    voter_ids = _end_voter_ids(db, session_id)
+    agreed = (
+        set((session.world_state or {}).get("end_vote", {}).get("agreed") or []) & voter_ids
+        if session else set()
+    )
+    names = {
+        c.id: c.name
+        for c in db.query(Character).filter(Character.id.in_(voter_ids)).all()
+    } if voter_ids else {}
+    voters = [
+        {"character_id": cid, "name": names.get(cid, "玩家"), "agreed": cid in agreed}
+        for cid in sorted(voter_ids)
+    ]
+    return {
+        "open": len(agreed) > 0,
+        "voters": voters,
+        "agreed_count": len(agreed),
+        "total": len(voter_ids),
+    }
+
+
+def cast_end_vote(
+    db: Session, session_id: str, token: str | None, acting_character_id: str | None,
+) -> tuple[bool, dict]:
+    """某真人玩家投票同意结束模组。返回 (是否已全体共识并结束, 公开投票态)。
+
+    经 resolve_actor 校验 token 拥有该角色（否则 ValueError）。所有当前有效投票者都同意时，
+    确定性置会话为 ended 并清票；有人中途离席，其票按当前投票者集合作废。
+    """
+    from app.services import world_state
+    actor = resolve_actor(db, session_id, token, acting_character_id)  # 校验 token 拥有该角色
+    voter_ids = _end_voter_ids(db, session_id)
+    if actor.id not in voter_ids:
+        raise ValueError("只有真人玩家可参与结束投票")
+    session = db.get(GameSession, session_id)
+    ev = dict((session.world_state or {}).get("end_vote") or {})
+    agreed = (set(ev.get("agreed") or []) | {actor.id}) & voter_ids
+    world_state.set_key(db, session, "end_vote", {"agreed": sorted(agreed)})
+    if agreed >= voter_ids:                                            # 全体真人一致同意
+        update_session_status(db, session_id, "ended")
+        world_state.set_key(db, db.get(GameSession, session_id), "end_vote", None)
+        return True, end_vote_public(db, session_id)
+    return False, end_vote_public(db, session_id)
+
+
+def cancel_end_vote(
+    db: Session, session_id: str, token: str | None, acting_character_id: str | None,
+) -> dict:
+    """撤销进行中的结束投票（任一在场真人玩家可撤，避免误触卡住）。返回公开投票态。"""
+    from app.services import world_state
+    resolve_actor(db, session_id, token, acting_character_id)  # 校验来自在场真人席
+    world_state.set_key(db, db.get(GameSession, session_id), "end_vote", None)
+    return end_vote_public(db, session_id)
+
+
 def set_ready(
     db: Session, session_id: str, token: str | None, ready: bool
 ) -> GameSession:

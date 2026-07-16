@@ -71,3 +71,9 @@ class ClaimSeatRequest(BaseModel):
 
 class ReadyRequest(BaseModel):
     ready: bool = True
+
+
+class EndVoteRequest(BaseModel):
+    """结束模组投票：以哪个真人席角色发起 / 同意；缺省取主角席。"""
+
+    acting_character_id: str | None = None

@@ -397,8 +397,8 @@ def test_resolve_actor_rejects_missing_token_on_owned_seat(client):
         gen.close()
 
 
-def test_end_session_requires_host_and_reaches_growth(client):
-    """房主可结束会话（status=ended）；非房主被拒；非法状态 400。"""
+def test_end_module_single_player_one_click_and_reaches_growth(client):
+    """单人：结束必须走投票端点；直接 PUT ended 已封死（400）；一票即结束，成长入口随之出现。"""
     c, ids = client
     host = {"X-Player-Token": "host-tok"}
     sid = c.post(
@@ -408,22 +408,74 @@ def test_end_session_requires_host_and_reaches_growth(client):
         headers=host,
     ).json()["id"]
 
-    # 非房主不能改状态
+    # 直接置 ended 的老路已封死：结束只能走全体共识投票
     assert c.put(
-        f"/api/sessions/{sid}/status", json={"status": "ended"},
-        headers={"X-Player-Token": "guest"},
-    ).status_code == 403
-    # 非法状态 400
+        f"/api/sessions/{sid}/status", json={"status": "ended"}, headers=host,
+    ).status_code == 400
+    # 非法状态仍 400
     assert c.put(
         f"/api/sessions/{sid}/status", json={"status": "bogus"}, headers=host,
     ).status_code == 400
-    # 房主结束 → ended
-    r = c.put(f"/api/sessions/{sid}/status", json={"status": "ended"}, headers=host)
+
+    # 单人（仅房主）→ 一票即结束
+    r = c.post(f"/api/sessions/{sid}/end-vote",
+               json={"acting_character_id": ids["hero"]}, headers=host)
     assert r.status_code == 200, r.text
-    assert r.json()["status"] == "ended"
-    # 结束后 growth 端点可查（成长入口据此出现）
-    g = c.get(f"/api/sessions/{sid}/growth", params={"character_id": ids["hero"]})
-    assert g.status_code == 200
+    assert r.json()["ended"] is True
+    assert c.get(f"/api/sessions/{sid}").json()["status"] == "ended"
+    # 已结束再投 → 400
+    assert c.post(f"/api/sessions/{sid}/end-vote",
+                  json={"acting_character_id": ids["hero"]}, headers=host).status_code == 400
+    # 成长入口据 ended 出现
+    assert c.get(f"/api/sessions/{sid}/growth",
+                 params={"character_id": ids["hero"]}).status_code == 200
+
+
+def test_end_module_multi_human_needs_all_agree(client):
+    """多真人：先一人同意只推进投票不结束；撤销可清空；全部同意才真正结束。"""
+    c, ids = client
+    host = {"X-Player-Token": "host-tok"}
+    sid = c.post("/api/sessions", json={
+        "module_id": ids["module"],
+        "participants": [
+            {"character_id": ids["hero"], "role": "human", "is_primary": True},
+            {"character_id": ids["ally"], "role": "human"},
+        ],
+    }, headers=host).json()["id"]
+
+    # 房主(hero)先同意 → 投票开启但未结束（还差 ally）
+    r1 = c.post(f"/api/sessions/{sid}/end-vote",
+                json={"acting_character_id": ids["hero"]}, headers=host)
+    assert r1.status_code == 200 and r1.json()["ended"] is False
+    v = r1.json()["vote"]
+    assert v["agreed_count"] == 1 and v["total"] == 2 and v["open"] is True
+    assert c.get(f"/api/sessions/{sid}").json()["status"] != "ended"
+
+    # 撤销 → 清空（ally 席未认领，可无 token 撤）
+    rc = c.request("DELETE", f"/api/sessions/{sid}/end-vote",
+                   json={"acting_character_id": ids["ally"]})
+    assert rc.status_code == 200 and rc.json()["vote"]["agreed_count"] == 0
+
+    # 再来：hero 同意，ally 同意 → 全体一致 → 结束
+    c.post(f"/api/sessions/{sid}/end-vote",
+           json={"acting_character_id": ids["hero"]}, headers=host)
+    r2 = c.post(f"/api/sessions/{sid}/end-vote", json={"acting_character_id": ids["ally"]})
+    assert r2.status_code == 200 and r2.json()["ended"] is True
+    assert c.get(f"/api/sessions/{sid}").json()["status"] == "ended"
+
+
+def test_end_vote_rejects_impersonating_owned_seat(client):
+    """冒用他人已认领角色投票被拒 403（token 不匹配席位归属）。"""
+    c, ids = client
+    host = {"X-Player-Token": "host-tok"}
+    sid = c.post("/api/sessions",
+                 json={"module_id": ids["module"],
+                       "participants": [{"character_id": ids["hero"], "is_primary": True}]},
+                 headers=host).json()["id"]
+    # hero 已被 host 认领；guest 冒用 hero 投票 → 403
+    r = c.post(f"/api/sessions/{sid}/end-vote", json={"acting_character_id": ids["hero"]},
+               headers={"X-Player-Token": "guest"})
+    assert r.status_code == 403
 
 
 def test_offline_human_is_exempted_from_turn_confirm(client):

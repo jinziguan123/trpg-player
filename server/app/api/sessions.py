@@ -10,6 +10,7 @@ from app.models.session import GameSession
 from app.schemas.event import EventRead
 from app.schemas.session import (
     ClaimSeatRequest,
+    EndVoteRequest,
     ReadyRequest,
     SessionCreate,
     SessionRead,
@@ -391,7 +392,8 @@ async def export_replay(
     return result
 
 
-_ALLOWED_STATUSES = {"setup", "active", "paused", "ended"}
+# 「ended」不在此列：结束模组必须走全体真人共识投票（/end-vote），房主不能单方置 ended。
+_ALLOWED_STATUSES = {"setup", "active", "paused"}
 
 
 @router.put("/{session_id}/status", response_model=SessionRead)
@@ -410,13 +412,58 @@ def update_status(
     session = session_service.update_session_status(db, session_id, data.status)
     if not session:
         raise HTTPException(404, "会话不存在")
-    # 结束模组：广播状态变更，各端刷新会话（成长结算入口据 status==ended 出现）。
-    if data.status == "ended":
+    return session
+
+
+@router.post("/{session_id}/end-vote")
+def vote_end_module(
+    session_id: str,
+    data: EndVoteRequest | None = None,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """发起 / 同意「结束模组」。任一真人玩家可投；全体真人一致同意才真正结束（单人时一票即结束）。
+    返回 {ended, vote}——vote 为不含 token 的公开投票态。"""
+    session = session_service.get_session(db, session_id)
+    if not session:
+        raise HTTPException(404, "会话不存在")
+    if session.status == "ended":
+        raise HTTPException(400, "本模组已结束")
+    acting = data.acting_character_id if data else None
+    try:
+        ended, vote = session_service.cast_end_vote(db, session_id, token, acting)
+    except ValueError as e:
+        raise HTTPException(403, str(e)) from e
+    if ended:
+        # 达成共识：广播状态变更，各端刷新会话（成长结算 / 最终战报入口据 status==ended 出现）。
         room_hub.broadcast(
             session_id,
-            _make_chunk("status", "（房主已结束本模组，可进行成长结算与最终战报。）", actor_name="系统"),
+            _make_chunk("status", "（全体玩家一致同意，本模组已结束，可进行成长结算与最终战报。）",
+                        actor_name="系统"),
         )
-    return session
+    else:
+        # 投票进行中：广播公开投票态，各端更新「已同意 N/M」提示。
+        room_hub.broadcast(session_id, _make_chunk("end_vote", metadata={"end_vote": vote}))
+    return {"ended": ended, "vote": vote}
+
+
+@router.delete("/{session_id}/end-vote")
+def cancel_end_module_vote(
+    session_id: str,
+    data: EndVoteRequest | None = None,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """撤销进行中的结束投票（任一在场真人玩家可撤）。返回公开投票态。"""
+    if not session_service.get_session(db, session_id):
+        raise HTTPException(404, "会话不存在")
+    acting = data.acting_character_id if data else None
+    try:
+        vote = session_service.cancel_end_vote(db, session_id, token, acting)
+    except ValueError as e:
+        raise HTTPException(403, str(e)) from e
+    room_hub.broadcast(session_id, _make_chunk("end_vote", metadata={"end_vote": vote}))
+    return {"vote": vote}
 
 
 @router.get("/{session_id}/events")

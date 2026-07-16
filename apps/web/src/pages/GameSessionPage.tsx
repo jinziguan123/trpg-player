@@ -202,6 +202,14 @@ interface BurstData {
   shots: BurstShot[]
 }
 
+/** 结束模组投票的公开态（与后端 end_vote_public 对齐，不含 token）。 */
+interface EndVoteState {
+  open: boolean
+  voters: { character_id: string; name: string; agreed: boolean }[]
+  agreed_count: number
+  total: number
+}
+
 /** 连射结果卡：一轮多枪逐发列出（命中/伤害/换目标惩罚骰），整体一次性展示（不逐发 3D 骰）。 */
 function BurstCard({ data, fresh, ts }: { data: BurstData; fresh: boolean; ts?: string }) {
   const hits = data.shots.filter((s) => s.hit).length
@@ -344,6 +352,9 @@ export function GameSessionPage() {
   // 「本批之前见过的最大事件序号」——用于区分「实时新到达」（seq 更大，尾部追加）与
   // 「往前翻页 prepend 的历史事件」（seq 更小）。仅在 effect 里更新（渲染阶段只读上一提交的值）。
   const maxSeqSeen = useRef(-1)
+
+  // 结束模组投票（全体真人共识）：进行中的公开投票态；无则 null。由 end_vote 广播与投票响应驱动。
+  const [endVote, setEndVote] = useState<EndVoteState | null>(null)
 
   // —— 3D 骰子动画层 ——
   // diceRollerRef：命令式触发投掷；revealedDice：已「放行」显示结果卡的 dice 事件 id
@@ -568,9 +579,16 @@ export function GameSessionPage() {
       return
     }
     if (t === 'status') {
-      // 会话状态变更（如房主结束模组）：刷新会话，成长/最终战报入口据 status 出现
+      // 会话状态变更（如结束模组达成共识）：刷新会话，成长/最终战报入口据 status 出现
+      setEndVote(null)   // 投票已收束（结束或失效）
       refetchSession()
       if (chunk.content) addMessage({ id: '', type: 'system', content: chunk.content, actor_name: chunk.actor_name })
+      return
+    }
+    if (t === 'end_vote') {
+      // 结束模组投票进度：更新各端「已同意 N/M」提示；未进行中则收起
+      const v = (chunk.metadata as { end_vote?: EndVoteState } | undefined)?.end_vote
+      setEndVote(v && v.open ? v : null)
       return
     }
     if (t === 'typing') {
@@ -852,15 +870,37 @@ export function GameSessionPage() {
     }
   }
 
-  // 房主结束本模组：置会话为 ended（后端广播 status，各端刷新）→ 成长结算与最终战报入口出现。
-  const endSession = async () => {
+  // 结束模组（全体真人共识）：任一真人发起/同意；全票通过后端置 ended 并广播 status，各端刷新
+  // → 成长结算与最终战报入口出现。未满票则更新投票进度提示，待其他玩家确认。
+  const voteEndModule = async () => {
     if (!currentSession) return
     try {
-      const s = await api.put(`/sessions/${currentSession.id}/status`, { status: 'ended' })
-      setCurrentSession(s as never)
-      toast.success('本模组已结束，可进行成长结算')
+      const r = await api.post<{ ended: boolean; vote: EndVoteState }>(
+        `/sessions/${currentSession.id}/end-vote`,
+        myCharId ? { acting_character_id: myCharId } : {},
+      )
+      if (r.ended) {
+        setEndVote(null); refetchSession()
+        toast.success('全体一致同意，本模组已结束，可进行成长结算')
+      } else {
+        setEndVote(r.vote.open ? r.vote : null)
+        toast.success(`已同意结束（${r.vote.agreed_count}/${r.vote.total}），待其他玩家确认`)
+      }
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : '结束失败')
+      toast.error(e instanceof Error ? e.message : '结束投票失败')
+    }
+  }
+  const cancelEndVote = async () => {
+    if (!currentSession) return
+    try {
+      const r = await api.delete<{ vote: EndVoteState }>(
+        `/sessions/${currentSession.id}/end-vote`,
+        myCharId ? { acting_character_id: myCharId } : undefined,
+      )
+      setEndVote(r.vote.open ? r.vote : null)
+      toast.success('已撤销结束投票')
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : '撤销失败')
     }
   }
 
@@ -1039,23 +1079,40 @@ export function GameSessionPage() {
             >
               <GiScrollUnfurled size={13} /> 战报
             </button>
-            {isHost && currentSession.status !== 'ended' && (
-              <ConfirmDialog
-                title="结束本模组"
-                description="将把本局标记为已结束：之后可进行成长结算与最终战报，但不再继续跑团。确定结束吗？"
-                confirmLabel="结束本模组"
-                onConfirm={endSession}
-              >
-                {(open) => (
-                  <button
-                    onClick={open}
-                    className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
-                    title="结束本模组：结算成长、生成最终战报（房主）"
-                  >
-                    <GiUpgrade size={13} /> 结束模组
-                  </button>
-                )}
-              </ConfirmDialog>
+            {myCharId && currentSession.status !== 'ended' && (
+              endVote?.open ? (
+                // 投票进行中：显示进度；本人未同意则给「同意」，任何人可「撤销」。
+                <span
+                  className="text-xs inline-flex items-center gap-1.5 px-2 py-0.5 rounded border"
+                  style={{ borderColor: 'var(--color-accent)', color: 'var(--color-text-secondary)' }}
+                  title={endVote.voters.map((v) => `${v.name}：${v.agreed ? '已同意' : '待确认'}`).join('\n')}
+                >
+                  <GiUpgrade size={13} /> 结束投票 {endVote.agreed_count}/{endVote.total}
+                  {!endVote.voters.find((v) => v.character_id === myCharId)?.agreed && (
+                    <button onClick={voteEndModule} className="underline"
+                      style={{ color: 'var(--color-text-accent)' }}>同意</button>
+                  )}
+                  <button onClick={cancelEndVote} className="underline"
+                    style={{ color: 'var(--color-text-secondary)' }}>撤销</button>
+                </span>
+              ) : (
+                <ConfirmDialog
+                  title="结束本模组"
+                  description="发起结束投票：需全体真人玩家一致同意，才会把本局标记为已结束（之后可进行成长结算与最终战报，但不再继续跑团）。"
+                  confirmLabel="发起结束投票"
+                  onConfirm={voteEndModule}
+                >
+                  {(open) => (
+                    <button
+                      onClick={open}
+                      className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
+                      title="结束本模组：需全体真人玩家一致同意"
+                    >
+                      <GiUpgrade size={13} /> 结束模组
+                    </button>
+                  )}
+                </ConfirmDialog>
+              )
             )}
             {myCharId && currentSession.status === 'ended' && (
               <button
