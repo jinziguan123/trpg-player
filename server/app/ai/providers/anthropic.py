@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 
 import httpx
 
+from app.ai import usage_tracker
 from app.ai.provider import LLMProvider, StreamDelta, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,7 @@ class AnthropicProvider(LLMProvider):
             "completion_tokens": ct or 0,
             "total_tokens": (pt or 0) + (ct or 0),
         }
+        usage_tracker.add(self.last_usage)   # 累进本局用量（此前只写 last_usage、系统性漏记）
 
     def _headers(self) -> dict[str, str]:
         return {

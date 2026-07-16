@@ -220,6 +220,19 @@ def test_complete_tracks_usage_into_accumulator(monkeypatch):
     assert snap["total_tokens"] == 12 and snap["calls"] == 1
 
 
+def test_anthropic_set_usage_accumulates():
+    """Anthropic 的 _set_usage 归一后也累进 usage_tracker（此前只写 last_usage、系统性漏记）。"""
+    from app.ai import usage_tracker
+    from app.ai.providers.anthropic import AnthropicProvider
+
+    prov = AnthropicProvider(model="claude-x", api_key="k")
+    usage_tracker._acc.set(usage_tracker._zero())
+    prov._set_usage({"input_tokens": 10, "output_tokens": 2})
+    snap = usage_tracker.snapshot()
+    assert snap["total_tokens"] == 12 and snap["prompt_tokens"] == 10 and snap["calls"] == 1
+    assert prov.last_usage["total_tokens"] == 12   # last_usage 仍照常写
+
+
 def test_stream_skips_empty_choices(monkeypatch):
     prov = OpenAICompatProvider(model="x", api_key="k")
     lines = [

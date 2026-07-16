@@ -25,6 +25,8 @@ jobs:
         run: ruff check .
       - name: Pytest
         run: pytest -q
+      - name: Evals 冒烟（零 LLM 费用：验 fixture 可重建 / 上下文可构建 / ORM）
+        run: python -m evals.run --smoke
 
   frontend:
     name: 前端（tsc + build + oxlint）
