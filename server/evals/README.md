@@ -83,6 +83,34 @@ TurnPlan 校验失败退回旧流程）压了出来。改 planner/裁定相关 p
 
 `compare.py` 已按通过率逐项 diff，直接对比两次 `--repeat` 的 scorecard 即可。
 
+## 文风回归探针（`style` 套件）
+
+把「读着难受」变成可复现的数字，让文风退化**改提示时就看见**、而不是跑团时才发现。三件事凑齐才有用：
+**固定刺激**（golden fixture 冻结上下文，输出差异只来自模型/提示）＋**客观度量**（`checks.py` 里的
+确定性 tic 探针，warn 级、免费）＋**消噪**（`--repeat` 取分布，文风波动大，单次会骗人）。
+
+现有 tic 探针（都在 `run_all_checks` 里，均 warn，只量化不判失败）：
+- `antithesis_tic`——否定式对比句「不是A是B」过度复用；
+- `name_led_cadence`——同一角色名反复领起段落（掷骰续写「每段以执行者姓名打头」的病灶）。
+
+改任何 KP / 续写提示后的**准入闸**（人工、非 CI —— 真生成要花钱）：
+
+```bash
+# 改提示前先存基线，改完再跑一次，逐项 diff：探针命中数/通过率变差就别合
+.venv/bin/python -m evals.run --suite style --repeat 5      # 改动前（基线）
+# …改提示…
+.venv/bin/python -m evals.run --suite style --repeat 5      # 改动后
+.venv/bin/python -m evals.compare results/<基线>.json results/<改后>.json
+```
+
+黄金 fixture `crash_strength_continuation`（列车出轨力量检定续写）是**长动作多段落**探针：旧提示下
+「姓名流水账」5/5 命中、修复后 0/5（`name_led_cadence` 4.6→0.8 段）。要它有效，fixture 必须能稳定
+生成**多段**续写（段落够多，tic 才有地方现形）。
+
+**边界**（别当自动驾驶）：探针只认**已写过的 tic**，没见过的新毛病靠 LLM judge 的 `in_character/
+coherence` 兜底、或**遇到真问题时再补一条探针**（探针库是长出来的，不为不存在的毛病预写）；一个
+fixture 只覆盖一个场景，`style` 套件需按场景（开场/审讯/分头/暗投…）逐步攒。
+
 ## 评测集建设目标（tags 约定）
 
 初始目标 10~15 个 fixture，覆盖以下轮型（tag 标注）：
@@ -92,6 +120,7 @@ TurnPlan 校验失败退回旧流程）压了出来。改 planner/裁定相关 p
 | `opening` | 开场（无历史事件） |
 | `check` | 检定裁定轮 |
 | `adjudication` | 裁定质量轮（据虚构态势调难度/奖惩骰/免检，配 `plan_expect`） |
+| `style` | 文风回归探针（长动作续写等，靠确定性 tic 探针量化文笔退化） |
 | `npc` | NPC 对话轮 |
 | `split` | 分头行动 |
 | `blind` | 暗投（心理学等）后的叙事轮 |
