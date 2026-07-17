@@ -357,6 +357,32 @@ def test_isolation_c_team_context(db_factory):
     assert "烛火" in joined                       # 普通旁白照常进摘要
 
 
+def test_team_context_不泄漏场景作者描述(db_factory):
+    """AI 队友（玩家侧）不得看到模组场景的作者视角 description/keywords——那含玩家尚未发现的
+    细节（门上的便签等）；泄露即队友会「主动」抖出 KP 还没揭示的线索（线上复现的 bug）。"""
+    db = db_factory()
+    module = Module(
+        title="常暗", rule_system="coc", npcs=[],
+        scenes=[{"id": "scene_1", "name": "6号车厢",
+                 "description": "车厢门上贴着一张便签，门旁有电车示意图。",
+                 "keywords": ["便签", "电车示意图"]}],
+    )
+    player = Character(name="龙牙", rule_system="coc")
+    mate = Character(name="直树", rule_system="coc")
+    db.add_all([module, player, mate]); db.flush()
+    session = GameSession(module_id=module.id, player_character_id=player.id,
+                          current_scene_id="scene_1", status="active", world_state={})
+    db.add(session); db.commit()
+    # KP 只叙述了车门与示意图，没提便签
+    session_service.add_event(db, session.id, "narration",
+                              "车厢空无一人，门旁固定着电车示意图。", actor_name="KP")
+    events = session_service.get_session_events(db, session.id)
+    joined = "\n".join(m["content"] for m in build_team_context(mate, session, module, events, player))
+    assert "便签" not in joined                   # 作者描述里未揭示的细节绝不泄露
+    assert "6号车厢" in joined                    # 位置名（current_location）照常给
+    assert "电车示意图" in joined                  # KP 已叙述的内容经事件摘要照常可见
+
+
 def test_isolation_d_npc_context(db_factory):
     """出口 d：NPC 上下文的 _npc_can_see 天然排除 visibility=["kp"]（锁死语义）。"""
     db = db_factory()

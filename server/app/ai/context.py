@@ -1059,12 +1059,14 @@ def build_team_context(
         if separated
         else TEAM_MODE_TOGETHER
     )
+    # 刻意不把模组的原始场景对象喂给队友：它的 description/keywords 是 KP 的作者视角材料，
+    # 含玩家尚未发现的细节（门上的便签、暗格等）——队友是玩家方，看到即泄露、会主动"揭示"未揭示的线索。
+    # 队友对场景的认知只来自 current_location（位置名）+ 下方最近事件摘要（KP 实际叙述/已揭示的内容）。
     system_content = TEAM_SYSTEM_PROMPT.format(
         rule_system=module.rule_system.upper(),
         name=teammate.name,
         char_info=_format_player_info(teammate),
         current_location=current_location,
-        scene=_format_json(current_scene) if current_scene else "初始场景",
         party_info=party_info,
         known_locations=known_locations,
         mode_guidance=mode_guidance,

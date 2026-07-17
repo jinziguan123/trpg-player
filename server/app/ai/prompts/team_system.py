@@ -9,9 +9,6 @@ TEAM_SYSTEM_PROMPT = """\
 ## 你当前所在
 {current_location}
 
-## 当前场景
-{scene}
-
 ## 在场队伍
 {party_info}
 
