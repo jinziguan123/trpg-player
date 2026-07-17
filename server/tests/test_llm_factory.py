@@ -268,6 +268,47 @@ def test_no_reasoning_effort_keeps_temperature(monkeypatch):
     assert captured["payload"]["temperature"] == 0.7
 
 
+def test_generate_image_returns_b64(monkeypatch):
+    """文生图：打 {base}/images/generations，解析 data[0].b64_json 返回 base64。"""
+    prov = OpenAICompatProvider(model="x", api_key="k", image_model="dall-e-3")
+    captured = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": [{"b64_json": "AAAABBBB"}]}
+
+    async def fake_post(url, headers=None, json=None):
+        captured["url"] = url; captured["payload"] = json
+        return _Resp()
+
+    monkeypatch.setattr(prov._client, "post", fake_post)
+    out = asyncio.run(prov.generate_image("a cat"))
+    assert out == "AAAABBBB"
+    assert captured["url"].endswith("/images/generations")
+    assert captured["payload"]["model"] == "dall-e-3"
+
+
+def test_generate_image_none_when_unconfigured():
+    """未填 image_model → supports_image_gen False、generate_image 返回 None（不打端点）。"""
+    prov = OpenAICompatProvider(model="x", api_key="k")
+    assert prov.supports_image_gen() is False
+    assert asyncio.run(prov.generate_image("x")) is None
+
+
+def test_generate_image_swallows_error(monkeypatch):
+    """生图失败一律返回 None、绝不抛（配图是可选增强，不能中断游戏）。"""
+    prov = OpenAICompatProvider(model="x", api_key="k", image_model="dall-e-3")
+
+    async def boom(*a, **k):
+        raise RuntimeError("端点炸了")
+
+    monkeypatch.setattr(prov._client, "post", boom)
+    assert asyncio.run(prov.generate_image("x")) is None
+
+
 def test_stream_skips_empty_choices(monkeypatch):
     prov = OpenAICompatProvider(model="x", api_key="k")
     lines = [

@@ -41,6 +41,9 @@ class AIProfile(BaseModel):
     # 推理档位（reasoning_effort）：minimal/low/medium/high/xhigh 等。空=不下发该参数、用模型默认档。
     # 仅 OpenAI 兼容协议、且模型支持推理时生效；设了会一并省略 temperature（推理模型多拒绝/忽略它）。
     reasoning_effort: str = ""
+    # 文生图模型名（如 dall-e-3 / gpt-image-1）。空=不生图。走 OpenAI Images 端点
+    # （{base_url}/images/generations），复用本 profile 的 base_url + api_key。用于手书配图。
+    image_model: str = ""
 
 
 class AIProfileCreate(BaseModel):
@@ -53,6 +56,7 @@ class AIProfileCreate(BaseModel):
     use_tool_calls: bool = True
     context_window: int = 0
     reasoning_effort: str = ""
+    image_model: str = ""
 
 
 class AIProfileUpdate(BaseModel):
@@ -65,6 +69,7 @@ class AIProfileUpdate(BaseModel):
     use_tool_calls: bool | None = None
     context_window: int | None = None
     reasoning_effort: str | None = None
+    image_model: str | None = None
 
 
 # 常见模型的上下文窗口（token）——用于用户没显式配 context_window 时的启发式回落。
@@ -210,6 +215,7 @@ def create_profile(body: AIProfileCreate):
         use_tool_calls=body.use_tool_calls,
         context_window=body.context_window,
         reasoning_effort=body.reasoning_effort,
+        image_model=body.image_model,
         is_active=len(profiles) == 0,  # 第一个配置自动激活
     )
     profiles.append(new_profile)
@@ -246,6 +252,8 @@ def update_profile(profile_id: str, body: AIProfileUpdate):
         target.context_window = body.context_window
     if body.reasoning_effort is not None:
         target.reasoning_effort = body.reasoning_effort
+    if body.image_model is not None:
+        target.image_model = body.image_model
     if body.api_key is not None:
         # 如果包含掩码字符，说明前端没有修改 key，保留旧值
         if "****" not in body.api_key:
@@ -327,6 +335,51 @@ async def test_profile(profile_id: str):
     except Exception as e:
         latency = int((time.time() - start) * 1000)
         return TestResult(success=False, message=str(e), latency_ms=latency)
+
+
+async def _test_image(client: httpx.AsyncClient, profile: AIProfile) -> str:
+    """真调一次 OpenAI Images 端点，判断该配置能否生图。失败抛错（由端点统一格式化）。"""
+    base = profile.base_url.rstrip("/") if profile.base_url else "https://api.openai.com/v1"
+    url = f"{base}/images/generations"
+    headers = {"Authorization": f"Bearer {profile.api_key}", "Content-Type": "application/json"}
+    payload = {"model": profile.image_model, "prompt": "A small grey test square on white background.",
+               "n": 1, "size": "1024x1024"}
+    resp = await client.post(url, headers=headers, json=payload)
+    resp.raise_for_status()
+    item = ((resp.json().get("data") or [{}])[0]) or {}
+    if item.get("b64_json") or item.get("url"):
+        return "生图成功：该配置可用于手书配图。"
+    return "端点有响应但未返回图像数据（检查模型名/返回格式）。"
+
+
+@router.post("/ai/profiles/{profile_id}/test-image", response_model=TestResult)
+async def test_profile_image(profile_id: str):
+    """测试文生图能力：填了 image_model 后，真打一次 images 端点看能否生图。"""
+    profiles = _load_profiles()
+    target = next((p for p in profiles if p.id == profile_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="配置不存在")
+    if not (getattr(target, "image_model", "") or "").strip():
+        return TestResult(success=False, message="未填写「文生图模型」（image_model）", latency_ms=0)
+    if target.protocol != "openai":
+        return TestResult(success=False, message="文生图仅支持 OpenAI 兼容协议的配置", latency_ms=0)
+    start = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:  # 生图慢，给足超时
+            result = await _test_image(client, target)
+        return TestResult(success=True, message=result, latency_ms=int((time.time() - start) * 1000))
+    except httpx.TimeoutException:
+        return TestResult(success=False, message="生图超时（>60s）", latency_ms=int((time.time() - start) * 1000))
+    except httpx.HTTPStatusError as e:
+        detail = ""
+        try:
+            detail = e.response.json().get("error", {}).get("message", "") or e.response.text[:200]
+        except Exception:
+            detail = e.response.text[:200]
+        return TestResult(success=False, message=f"HTTP {e.response.status_code}: {detail}",
+                          latency_ms=int((time.time() - start) * 1000))
+    except Exception as e:
+        return TestResult(success=False, message=str(e), latency_ms=int((time.time() - start) * 1000))
 
 
 async def _test_openai(client: httpx.AsyncClient, profile: AIProfile) -> str:

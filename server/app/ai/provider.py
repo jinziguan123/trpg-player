@@ -84,3 +84,11 @@ class LLMProvider(ABC):
     ) -> str:
         """据若干图片 + 文本提示生成文本（多模态）。images=[(base64, mime), …]。非视觉 Provider 不实现。"""
         raise NotImplementedError("当前模型不支持多模态")
+
+    # ── 文生图（可选增强，如手书配图）：默认不支持，OpenAI 兼容 Provider 覆盖 ──
+    def supports_image_gen(self) -> bool:
+        return False
+
+    async def generate_image(self, prompt: str, size: str = "1024x1024") -> str | None:
+        """文生图，返回 base64（无 data: 前缀）；不支持/失败返回 None（绝不因配图中断游戏）。"""
+        return None

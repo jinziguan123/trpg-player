@@ -38,4 +38,5 @@ def get_llm() -> LLMProvider:
         api_key=profile.api_key,
         vision=getattr(profile, "vision", False),
         reasoning_effort=getattr(profile, "reasoning_effort", ""),
+        image_model=getattr(profile, "image_model", ""),
     )

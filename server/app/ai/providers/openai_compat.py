@@ -1,6 +1,7 @@
 """OpenAI 兼容协议的 Provider（DeepSeek / OpenAI / 任意 OpenAI 兼容端点）。"""
 
 import asyncio
+import base64
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -70,16 +71,19 @@ class OpenAICompatProvider(LLMProvider):
 
     def __init__(
         self, model: str = "deepseek-chat", base_url: str = "", api_key: str = "",
-        vision: bool = False, reasoning_effort: str = "",
+        vision: bool = False, reasoning_effort: str = "", image_model: str = "",
     ):
         self.model = model
         self._api_key = api_key
         self._vision = vision  # 配置里的显式「支持视觉」开关
         # 推理档位（reasoning_effort：minimal/low/medium/high/xhigh…）。空=不带该参数，用模型默认档。
         self._reasoning_effort = (reasoning_effort or "").strip()
+        # 文生图模型名（dall-e-3 / gpt-image-1…）。空=不生图。
+        self._image_model = (image_model or "").strip()
         self._client = httpx.AsyncClient(timeout=120.0)
         base = base_url.rstrip("/") if base_url else "https://api.deepseek.com"
         self._api_url = f"{base}/chat/completions"
+        self._images_url = f"{base}/images/generations"
         # 最近一次调用的服务端真实 usage（prompt/completion/total_tokens）。每次 complete/stream
         # 结束后更新——调用方须在下一次调用前读取（生成串行化，主叙事后、validator 前读即拿到主叙事那次）。
         self.last_usage: dict | None = None
@@ -96,6 +100,33 @@ class OpenAICompatProvider(LLMProvider):
             payload["reasoning_effort"] = self._reasoning_effort
             payload.pop("temperature", None)
         return payload
+
+    def supports_image_gen(self) -> bool:
+        return bool(self._image_model)
+
+    async def generate_image(self, prompt: str, size: str = "1024x1024") -> str | None:
+        """文生图（OpenAI Images 端点 {base}/images/generations）。返回 base64（无 data: 前缀）。
+
+        未配置 image_model 或任何失败一律返回 None——配图是可选增强，**绝不因它失败而中断游戏**。
+        不下发 response_format 以兼容 dall-e-3（默认回 url）与 gpt-image-1（默认回 b64_json）：
+        两种响应都能解析，回的是 url 时再抓一次转成 base64。
+        """
+        if not self._image_model:
+            return None
+        payload = {"model": self._image_model, "prompt": prompt, "size": size, "n": 1}
+        try:
+            resp = await self._client.post(self._images_url, headers=self._headers(), json=payload)
+            resp.raise_for_status()
+            item = ((resp.json().get("data") or [{}])[0]) or {}
+            if item.get("b64_json"):
+                return item["b64_json"]
+            if item.get("url"):
+                img = await self._client.get(item["url"])
+                img.raise_for_status()
+                return base64.b64encode(img.content).decode()
+        except Exception:
+            logger.warning("文生图失败（忽略，不影响游戏）: model=%s", self._image_model, exc_info=True)
+        return None
 
     async def complete(
         self,

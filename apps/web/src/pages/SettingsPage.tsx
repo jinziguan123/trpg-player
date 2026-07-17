@@ -25,6 +25,7 @@ interface AIProfile {
   vision?: boolean
   context_window?: number
   reasoning_effort?: string
+  image_model?: string
 }
 
 interface TestResult {
@@ -42,6 +43,7 @@ type FormData = {
   vision: boolean
   context_window: number
   reasoning_effort: string
+  image_model: string
 }
 
 const EMPTY_FORM: FormData = {
@@ -53,6 +55,7 @@ const EMPTY_FORM: FormData = {
   vision: false,
   context_window: 0,
   reasoning_effort: '',
+  image_model: '',
 }
 
 const PROTOCOL_INFO: Record<
@@ -502,6 +505,7 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
       vision: !!p.vision,
       context_window: p.context_window || 0,
       reasoning_effort: p.reasoning_effort || '',
+      image_model: p.image_model || '',
     })
   }
 
@@ -573,6 +577,20 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
       } else {
         toast.error(`连接失败: ${result.message}`)
       }
+    } catch (e) {
+      toast.error(`测试出错: ${e instanceof Error ? e.message : '未知错误'}`)
+    } finally {
+      setTestingId(null)
+    }
+  }
+
+  /* 测试文生图：真打一次 images 端点，判断该配置能否生图 */
+  const handleTestImage = async (id: string) => {
+    setTestingId(id)
+    try {
+      const result = await api.post<TestResult>(`/settings/ai/profiles/${id}/test-image`)
+      if (result.success) toast.success(`${result.message}（${result.latency_ms}ms）`)
+      else toast.error(`生图测试失败: ${result.message}`)
     } catch (e) {
       toast.error(`测试出错: ${e instanceof Error ? e.message : '未知错误'}`)
     } finally {
@@ -710,6 +728,17 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
                 >
                   {testingId === p.id ? '测试中...' : '测试'}
                 </button>
+                {p.image_model && (
+                  <button
+                    className="btn-secondary"
+                    style={{ padding: '0.25rem 0.6rem', fontSize: '0.8rem' }}
+                    onClick={() => handleTestImage(p.id)}
+                    disabled={testingId !== null}
+                    title={`测试文生图（${p.image_model}）`}
+                  >
+                    {testingId === p.id ? '测试中...' : '测试生图'}
+                  </button>
+                )}
                 <button
                   className="btn-secondary"
                   style={{
@@ -864,6 +893,23 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
                   <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
                     仅对支持推理的 OpenAI 兼容模型生效（如 gpt-5 系）。设定后会一并省略 temperature；
                     非推理模型请留「默认」，否则个别端点会因未知参数报错。
+                  </p>
+                </div>
+
+                {/* 文生图模型（手书配图） */}
+                <div>
+                  <label className="block text-sm font-semibold mb-1" style={{ fontSize: '0.85rem' }}>
+                    文生图模型（手书配图，可选）
+                  </label>
+                  <input
+                    className="input w-full"
+                    placeholder="留空=不生图；OpenAI 填 dall-e-3 或 gpt-image-1"
+                    value={form.image_model}
+                    onChange={(e) => setForm({ ...form, image_model: e.target.value })}
+                  />
+                  <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
+                    与聊天模型分开的**文生图**模型（走 images 端点，复用本配置的地址+密钥）。填好后**保存**，
+                    再到下方配置卡点「测试生图」确认能否生成。KP 发手书（信件/报纸/照片等）时会据此配图。
                   </p>
                 </div>
 
