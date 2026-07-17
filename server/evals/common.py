@@ -70,6 +70,9 @@ class ReplayCase:
     # 形如 {"note": "...", "any_of": [{"path": "check.penalty", "op": ">=", "value": 1}, ...]}；
     # any_of 里任一条满足即通过。用于量化「虚构态势→难度调节」的裁定准则是否奏效。
     plan_expect: dict | None = None
+    # 叙事期望：对 KP 续写/叙事做确定性断言（如「危险大失败必出 [HP_CHANGE] 负 delta」）。
+    # 形如 {"note": "...", "any_of": [{"regex": "..."}|{"contains": "..."}(可加 "absent": true)]}。
+    narration_expect: dict | None = None
 
     @property
     def player_names(self) -> list[str]:
@@ -102,6 +105,7 @@ def load_fixture(path: Path) -> ReplayCase:
         note=meta.get("note") or "",
         continuation=payload.get("continuation") or None,
         plan_expect=payload.get("plan_expect") or None,
+        narration_expect=payload.get("narration_expect") or None,
     )
 
 

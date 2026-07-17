@@ -177,6 +177,24 @@ class TestAntithesisTic:
         assert not checks.check_antithesis_tic(text)
 
 
+class TestNarrationExpect:
+    """叙事断言：危险大失败续写须结算 [HP_CHANGE] 负 delta，否则 error（量化大失败机械后果）。"""
+
+    HP = {"note": "危险大失败须扣血", "any_of": [{"regex": r"\[HP_CHANGE:[^\]]*delta\s*=\s*-\s*\d"}]}
+
+    def test_出了HP_CHANGE负delta则通过(self):
+        n = "火焰溅上腿脚。[HP_CHANGE: target=江户川龙牙, delta=-3, reason=踢翻的燃烧瓶]"
+        assert not checks.check_narration_expect(n, self.HP)
+
+    def test_只叙述没机械指令则不过(self):
+        n = "火焰溅上他的腿，一阵剧痛——但没有任何结算。"
+        f = checks.check_narration_expect(n, self.HP)
+        assert f and f[0].severity == "error"
+
+    def test_无期望时不产出(self):
+        assert checks.check_narration_expect("随便什么", None) == []
+
+
 class TestNameLedCadence:
     """姓名流水账探针：同一角色名领起多段旁白 → warn（掷骰续写「每段以执行者姓名打头」的病灶）。"""
 

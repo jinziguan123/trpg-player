@@ -208,6 +208,31 @@ def check_plan_adjudication(plan: dict | None, expect: dict | None) -> list[Find
     )]
 
 
+def check_narration_expect(narration: str, expect: dict | None) -> list[Finding]:
+    """对 KP 续写/叙事做断言：expect.any_of 里任一子句命中即通过，否则 error。
+
+    子句：{"regex": "..."} 或 {"contains": "..."}；可加 "absent": true 表示要求「**不**出现」。
+    用于量化「危险动作大失败必须结算身体伤害（[HP_CHANGE] 负 delta）」这类机械后果是否真落地。
+    """
+    if not expect:
+        return []
+    for c in expect.get("any_of") or []:
+        if "regex" in c:
+            hit = re.search(c["regex"], narration) is not None
+        elif "contains" in c:
+            hit = c["contains"] in narration
+        else:
+            hit = False
+        if c.get("absent"):
+            hit = not hit
+        if hit:
+            return []
+    return [Finding(
+        check="narration_expect", severity="error",
+        detail=f"叙事未达期望（{expect.get('note', '')}）：期望任一 {expect.get('any_of')}",
+    )]
+
+
 _LEAD_NAME_THRESHOLD = 3  # 同一角色名领起达此数量的段落即算「姓名流水账」
 
 

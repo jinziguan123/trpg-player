@@ -130,6 +130,7 @@ async def run_case(case: ReplayCase, llm, use_judge: bool, tool_loop: bool = Fal
         plan = None
         plan_source = "continuation"
         findings = checks.run_all_checks(narration, case.player_names)
+        findings += checks.check_narration_expect(narration, case.narration_expect)
         judge_result = await judge.run_judge(llm, case, plan, narration) if use_judge else None
         errors = [f for f in findings if f.severity == "error"]
         judge_failed = (
@@ -179,6 +180,7 @@ async def run_case(case: ReplayCase, llm, use_judge: bool, tool_loop: bool = Fal
     findings += checks.check_plan_adjudication(
         plan.model_dump() if plan else None, case.plan_expect,
     )
+    findings += checks.check_narration_expect(narration, case.narration_expect)
     judge_result = None
     if use_judge:
         judge_result = await judge.run_judge(llm, case, plan, narration)
