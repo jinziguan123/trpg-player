@@ -184,6 +184,30 @@ class SanityPolicy(BaseModel):
         return str(v).strip() or default
 
 
+class MishapPolicy(BaseModel):
+    """本轮玩家掷出**大失败**、且所做动作本身有身体危险时，危险反噬自身造成的伤害——由 planner
+    在检定后裁定，引擎确定性扣 HP，不依赖 KP 记得发 HP_CHANGE。trigger=False 或非危险动作时其余
+    字段忽略（多数大失败并无身体伤害，如图书馆/话术检定失败）。仅大失败才可能触发。"""
+
+    trigger: bool = False
+    hp_delta: int = 0     # 扣血（负）：轻度反噬 -1~-3（烧灼/擦碰/割伤），重度 -4~-6（跌落/大面积灼伤）
+    target: str = ""      # 受伤角色名（缺省=本轮掷骰的玩家）
+    reason: str = ""      # 一句话缘由（如「踢翻的燃烧瓶溅到自己」）
+
+    @field_validator("hp_delta", mode="before")
+    @classmethod
+    def _coerce_delta(cls, v):
+        """hp_delta 恒为伤害（负整数）；模型可能写成 "-3"/正数/"1d3"/null。取整→强制取负→夹在 -8，
+        取不到整数则 0（不伤）。绝不因这个字段格式不对而让整份计划校验失败回退旧流程。"""
+        if isinstance(v, bool) or v is None:
+            return 0
+        try:
+            n = int(v) if isinstance(v, (int, float)) else int(str(v).strip())
+        except (ValueError, TypeError):
+            return 0
+        return max(-abs(n), -8)
+
+
 class DirectionPolicy(BaseModel):
     """导演层：本轮的节奏经营意图。只影响「怎么讲」，不改变世界状态。
 
@@ -226,7 +250,7 @@ class DirectionPolicy(BaseModel):
 # 形状错误只应让该字段退到默认，绝不能连累整份计划被丢弃回退旧流程。
 _SUBMODEL_FIELDS = (
     "check", "clue_policy", "npc_policy", "scene_policy", "combat", "combat_damage",
-    "safety", "sanity", "direction",
+    "safety", "sanity", "mishap", "direction",
 )
 _TURN_KINDS = frozenset(
     ("investigate", "social", "move", "combat", "knowledge", "roleplay", "mixed")
@@ -249,6 +273,7 @@ class TurnPlan(BaseModel):
     narration_brief: StrList = Field(default_factory=list)
     safety: SafetyPolicy = Field(default_factory=SafetyPolicy)
     sanity: SanityPolicy = Field(default_factory=SanityPolicy)
+    mishap: MishapPolicy = Field(default_factory=MishapPolicy)  # 大失败的身体反噬伤害（确定性扣 HP）
     combat_damage: CombatDamage = Field(default_factory=CombatDamage)  # 战斗中非常规/范围攻击伤害
     items_gained: ItemDeltaList = Field(default_factory=list)  # 本轮玩家获得的物品 → 确定性入库
     items_lost: ItemDeltaList = Field(default_factory=list)     # 本轮确定性失去/消耗/损毁的物品
@@ -504,6 +529,12 @@ def build_turn_plan_messages(
                 "寻常尸体已见过）不触发。true 时给 source（恐怖源标识，如「墓室腐尸」，同一源只检一次）、"
                 "success_loss/failure_loss（按冲击：尸体 0/1d3，血腥或怪物 1/1d6，强大神话生物 1d6/1d20），"
                 "witnesses 缺省=在场全体。后端会据此确定性发理智检定，不靠 KP 记得。\n"
+                "mishap.trigger 仅在**本轮玩家掷出大失败、且其所做动作本身有身体危险**时为 true："
+                "踢/扑正在燃烧或爆裂之物、攀高/走不稳结构、持械或搏斗、玩火电毒、强行破障等——大失败令"
+                "危险反噬自身。true 时给 hp_delta（负整数，轻度反噬 -1~-3 如灼烧/擦碰/割伤，重度 -4~-6 如"
+                "跌落/大面积灼伤）、target（受伤者，缺省=本轮掷骰玩家）、reason（一句话缘由）。后端据此确定性"
+                "扣 HP，不靠 KP 记得。**非身体危险的大失败不触发**（图书馆/话术/侦查等失败只是没结果或误导，"
+                "不掉血）；非大失败一律 false。\n"
                 "items_gained/items_lost：本轮玩家**确实**获得或失去/用掉/损毁的物品——后端据此"
                 "确定性增减库存，不靠 KP 记账。每项给 name、qty（缺省 1）、who（获得/失去者角色名，"
                 "缺省=本轮行动玩家）；获得时 kind 可选 consumable/gear/key/document。只记**已然发生**"

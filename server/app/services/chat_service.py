@@ -2198,6 +2198,44 @@ async def _ensure_planned_sanity(
         yield chunk
 
 
+def _hp_changed_this_turn(db: Session, session_id: str, pre_gen_seq: int) -> bool:
+    """本轮生成里是否已发生过**扣血**事件（KP 自发 HP_CHANGE 或先前守卫）——用于让大失败反噬守卫
+    在 KP 已自行扣血时幂等跳过，不重复伤害。只认伤害（hp_change<0），治疗不算。"""
+    for ev in session_service.get_session_events(db, session_id):
+        if (ev.sequence_num or 0) > pre_gen_seq and ((ev.metadata_ or {}).get("hp_change") or 0) < 0:
+            return True
+    return False
+
+
+async def _ensure_planned_mishap(
+    db: Session,
+    session_id: str,
+    player_char: Character,
+    teammates: list[Character] | None,
+    plan: turn_planner.TurnPlan | None,
+    pre_gen_seq: int,
+) -> AsyncIterator[str]:
+    """确保规划器裁定的『大失败身体反噬』一定落成扣血，补偿 KP 漏发 HP_CHANGE。
+
+    仅大失败且所做动作本身有身体危险时，planner 才置 mishap.trigger（图书馆/话术等无害失败不触发）。
+    KP 本轮已自行扣过血则幂等跳过，不重复伤害；受伤者按 plan 指定，缺省本轮掷骰玩家。
+    """
+    if plan is None or not plan.mishap.trigger:
+        return
+    delta = int(plan.mishap.hp_delta or 0)
+    if delta >= 0:                                          # 恒为伤害；非负=无有效反噬
+        return
+    if _hp_changed_this_turn(db, session_id, pre_gen_seq):  # KP 已自行扣血 → 不重复
+        return
+    target = (plan.mishap.target or player_char.name).strip()
+    reason = (plan.mishap.reason or "大失败反噬").strip()
+    chunks = await _exec_hp_change(
+        db, session_id, player_char, target, str(delta), reason, teammates=teammates,
+    )
+    for chunk in chunks:
+        yield chunk
+
+
 async def _ensure_planned_items(
     db: Session,
     session_id: str,
@@ -2837,6 +2875,7 @@ async def _run_kp_turn(
     db, session_id, game_session, module, player_char, party_others, user_prompt: str,
     then_team_turn: list[Character] | None = None,
     sanity_guard: bool = False,
+    mishap_guard: bool = False,
 ) -> None:
     """跑一轮 KP：注入 user_prompt → 流式叙事 → 处理指令（待定检定/掷骰/场景等）→ done。
 
@@ -2887,9 +2926,12 @@ async def _run_kp_turn(
     ):
         room_hub.broadcast(session_id, chunk)
 
-    # 确定性 SAN 守卫（检定后续写等路径）：若 KP 未自发掷 SAN，就在叙事之后现跑一次 planner
-    # ——此时上下文已含刚揭示的恐怖，planner 能正确裁定「本轮目睹恐怖」→ 后端确定性补发理智检定。
-    if sanity_guard and not _san_rolled_this_turn(db, session_id, pre_gen_seq):
+    # 确定性后果守卫（检定后续写等路径）：恐怖揭示 / 大失败身体反噬都是在**叙事生成时**才定的
+    # （回合起点的 plan 看不到），故在叙事之后现跑一次 planner——此时上下文已含刚揭示的恐怖与
+    # 大失败结果——据其 sanity / mishap 裁定确定性补发 SAN / 扣血。KP 已自发掷 SAN / 扣血则各自幂等跳过。
+    need_sanity = sanity_guard and not _san_rolled_this_turn(db, session_id, pre_gen_seq)
+    need_mishap = mishap_guard and not _hp_changed_this_turn(db, session_id, pre_gen_seq)
+    if need_sanity or need_mishap:
         post_events = session_service.get_session_events(db, session_id)
         rules_enabled = bool(post_events) and rulebook_service.has_rulebook(db, module.rule_system)
         plan_messages = turn_planner.build_turn_plan_messages(
@@ -2897,10 +2939,16 @@ async def _run_kp_turn(
             rules_lookup_enabled=rules_enabled,
         )
         plan = await turn_planner.run_turn_planner(llm, plan_messages)
-        async for chunk in _ensure_planned_sanity(
-            db, session_id, game_session, player_char, party_others, plan, pre_gen_seq,
-        ):
-            room_hub.broadcast(session_id, chunk)
+        if need_sanity:
+            async for chunk in _ensure_planned_sanity(
+                db, session_id, game_session, player_char, party_others, plan, pre_gen_seq,
+            ):
+                room_hub.broadcast(session_id, chunk)
+        if need_mishap:
+            async for chunk in _ensure_planned_mishap(
+                db, session_id, player_char, party_others, plan, pre_gen_seq,
+            ):
+                room_hub.broadcast(session_id, chunk)
 
     if then_team_turn:
         db.refresh(game_session)  # 叙事里可能有 [SCENE_CHANGE]/[MOVE] 改了位置，重取再判分头
@@ -3052,11 +3100,13 @@ async def run_roll_generation(session_id: str, check_id: str) -> None:
         )
         # 恐怖多在**检定成功**时才被揭示（看清那具尸体…）；仅成功时才在叙事后补跑 planner
         # 判理智（失败不多花这次调用）。失败若也揭示了恐怖，仍可由 KP 自发 [SAN_CHECK] 兜底。
+        # 大失败则可能有**身体反噬**（踢燃烧瓶被烧等）→ 开 mishap 守卫，叙事后据 planner 确定性扣血。
         succeeded = result.outcome not in ("failure", "fumble")
         await _run_kp_turn(
             db, session_id, game_session, module, player_char, party_others,
             KP_DICE_CONTINUATION_PROMPT.format(dice_results=desc),
             sanity_guard=succeeded,
+            mishap_guard=(result.outcome == "fumble"),
         )
     except asyncio.CancelledError:
         logger.info("投骰生成被取消: session=%s", session_id)
