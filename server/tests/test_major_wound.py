@@ -67,7 +67,8 @@ def test_重伤且体质检定失败则昏迷(db_factory, monkeypatch):
     assert len(dice) == 1
     assert dice[0].metadata_.get("major_wound_check") is True
     assert "昏迷倒地" in dice[0].content
-    assert len(chunks) == 2  # HP 结算 + 体质检定两条
+    # HP 结算 + 体质检定两条（character_update 刷新信号不计）
+    assert len([c for c in chunks if "character_update" not in c]) == 2
 
 
 def test_重伤但体质检定成功保持清醒(db_factory, monkeypatch):
@@ -101,7 +102,7 @@ def test_伤害致零直接濒死不再过体质(db_factory):
 
     assert not [e for e in _events(db, sid) if e.event_type == "dice"]
     assert "濒死" in _events(db, sid)[0].content
-    assert len(chunks) == 1
+    assert len([c for c in chunks if "character_update" not in c]) == 1
 
 
 def test_恢复不触发(db_factory):
@@ -122,7 +123,8 @@ def test_无module时向后兼容不检定(db_factory):
         db, sid, char, "player", "-5", "测试",
     ))
 
-    assert len(chunks) == 1  # 只有 HP 结算，无检定（module 缺省 → 与旧行为一致）
+    # 只有 HP 结算，无检定（module 缺省 → 与旧行为一致）；character_update 刷新信号不计
+    assert len([c for c in chunks if "character_update" not in c]) == 1
     assert char.status == "active"
 
 

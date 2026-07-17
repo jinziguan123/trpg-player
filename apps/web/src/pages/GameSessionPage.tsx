@@ -556,10 +556,11 @@ export function GameSessionPage() {
       setCombatLogSince(meta?.started_seq ?? maxSeqSeen.current)
       return
     }
-    if (t === 'combat_state') { setCombat(parseCombatState(chunk.metadata)); setPendingReaction(null); return }  // 续跑广播新态 → 清反应提示
+    if (t === 'combat_state') { setCombat(parseCombatState(chunk.metadata)); setPendingReaction(null); setRefreshTick((x) => x + 1); return }  // 续跑广播新态 → 清反应提示 + 刷新角色卡 HP/状态
     if (t === 'combat_reaction_prompt') { setPendingReaction(parsePendingReaction(chunk.metadata)); return }  // NPC 攻击真人：弹反应按钮
     if (t === 'combat_end') { setCombat(null); setPendingReaction(null); return }  // 结果那句话已由后端落库为消息，不额外处理
     if (t === 'inventory_update') { setRefreshTick((x) => x + 1); return }  // 库存变更 → 刷新角色卡「道具」页
+    if (t === 'character_update') { setRefreshTick((x) => x + 1); return }  // HP/SAN/状态变更 → 刷新角色卡数值
     if (t === 'chase_start' || t === 'chase_state') { setChase(parseChaseState(chunk.metadata)); return }
     if (t === 'chase_end') { setChase(null); return }  // 结果那句话已由后端落库为消息，不额外处理
     if (t === 'event_delete') { if (chunk.id) removeMessage(chunk.id); return }

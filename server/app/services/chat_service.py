@@ -3405,6 +3405,8 @@ async def _exec_san_check(
             actor_name="系统", metadata=dice_meta,
         )
         chunks.append(_make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id))
+        # 通知前端刷新角色卡（SAN/疯狂状态已变）——与 inventory_update 同一套刷新机制。
+        chunks.append(_make_chunk("character_update", metadata={"char_id": tchar.id}))
         descs.append(
             f"{tchar.name} 理智检定（{outcome_text}）：损失 {result['san_loss']} SAN"
             f"（{result['old_san']}→{result['new_san']}）"
@@ -3515,7 +3517,10 @@ def _apply_heal_on_success(
     ev = session_service.add_event(db, session_id, "system", line, actor_name="系统",
                                    metadata={"heal": gained, "old_hp": old, "new_hp": new_hp,
                                              "actor": target.name})
-    return [_make_chunk("system", line, event_id=ev.id)]
+    return [
+        _make_chunk("system", line, event_id=ev.id),
+        _make_chunk("character_update", metadata={"char_id": target.id}),  # 刷新角色卡 HP
+    ]
 
 
 async def _exec_hp_change(
@@ -3605,6 +3610,8 @@ async def _exec_hp_change(
             chunks.append(_make_chunk("dice", con_content, event_id=dev.id))
         except Exception:
             logger.exception("重伤体质检定失败（忽略，不阻塞结算）: char=%s", char.id)
+    # 通知前端刷新角色卡（HP/状态已变）——与 inventory_update 同一套刷新机制。
+    chunks.append(_make_chunk("character_update", metadata={"char_id": char.id}))
     return chunks
 
 
