@@ -2804,6 +2804,10 @@ async def run_chat_generation(session_id: str) -> None:
         )
         llm = get_llm()
 
+        # 一阵疯狂计时：本回合开始给在场角色的临时疯狂发作各减 1 回合，到期自动解除并广播恢复。
+        for chunk in _tick_madness_recovery(db, session_id, [player_char, *party_others]):
+            room_hub.broadcast(session_id, chunk)
+
         # 意图分诊：玩家本轮是否在申请技能检定？是 → 直接走确定性检定裁定（避免被 KP 当叙事顺过去），
         # 不再跑队友回合与常规叙事。取本轮该玩家的行动/台词文本做判断。
         turn = _current_turn_events(session_service.get_session_events(db, session_id))
@@ -3063,6 +3067,9 @@ async def run_roll_generation(session_id: str, check_id: str) -> None:
         char_data, disp_name, _is_npc, _cid = _resolve_check_actor(
             check.get("char_ref", ""), skill, player_char, party_others, module,
         )
+        # 临时疯狂：症状波及该技能域 → 自动加惩罚骰（确定性，不问 KP 当初有没有标 penalty）。
+        from app.rules.coc import madness as coc_madness
+        penalty += coc_madness.check_penalty((char_data.get("system_data") or {}).get("madness"), skill)
         engine = get_engine(module.rule_system)
         result = engine.resolve_check(char_data, skill, difficulty, bonus=bonus, penalty=penalty)
         tier_cn = TIER_LABEL.get(result.tier, result.tier)
@@ -3316,9 +3323,49 @@ def _apply_madness_status(
     if _STATUS_SEVERITY.get(target, 0) <= _STATUS_SEVERITY.get(cur, 0):
         return None  # 既有状态已同等或更严重，不降级
     char.status = target
+    if target == "temporary_insanity":
+        # 一阵疯狂：掷 1D10 随机症状 + 1D10 回合时长，存进角色卡（影响检定与言行，到期自动解除）。
+        from app.rules.coc import madness as coc_madness
+        sd = dict(char.system_data or {})
+        sd["madness"] = coc_madness.make_bout()
+        char.system_data = sd
     db.add(char)
     db.commit()
     return target
+
+
+def _tick_madness_recovery(
+    db: Session, session_id: str, chars: list[Character | None],
+) -> list[str]:
+    """每个玩家行动回合开始时，给在场角色进行中的『一阵疯狂』各减 1 回合；减到 0 → 解除
+    （status 回 active、清 system_data.madness），广播恢复消息 + 角色卡刷新。返回待广播 chunks。"""
+    out: list[str] = []
+    for char in chars:
+        if char is None or char.status != "temporary_insanity":
+            continue
+        sd = dict(char.system_data or {})
+        bout = sd.get("madness")
+        if not bout:
+            continue
+        left = int(bout.get("turns_left") or 0) - 1
+        if left > 0:
+            bout = dict(bout); bout["turns_left"] = left
+            sd["madness"] = bout
+            char.system_data = sd
+            db.add(char); db.commit()
+            continue
+        sd.pop("madness", None)                 # 到期解除
+        char.system_data = sd
+        char.status = "active"
+        db.add(char); db.commit()
+        line = f"{char.name} 从『{bout.get('label')}』的疯狂发作中缓过神来，重新恢复了神智。"
+        ev = session_service.add_event(
+            db, session_id, "system", line, actor_name="系统",
+            metadata={"madness_recovered": True, "actor": char.name},
+        )
+        out.append(_make_chunk("system", line, event_id=ev.id))
+        out.append(_make_chunk("character_update", metadata={"char_id": char.id}))
+    return out
 
 
 # ── 指令执行器（旧正则路径与 agent loop 共用的单一实现）─────────────────────
@@ -3375,7 +3422,9 @@ async def _exec_san_check(
         if madness == "permanent_insanity":
             dice_content += "\n永久疯狂！SAN 归零，调查员就此永远失常。"
         elif madness == "temporary_insanity":
-            dice_content += "\n临时疯狂！（一次性损失 SAN ≥ 当前 SAN/5）"
+            bout = (tchar.system_data or {}).get("madness") or {}
+            sym = f"：【{bout.get('label')}】{bout.get('manifest')}" if bout else ""
+            dice_content += f"\n临时疯狂发作{sym}（约 {bout.get('turns_left', '?')} 回合内影响其检定与言行）"
 
         dice_meta = {
             "skill": "SAN",

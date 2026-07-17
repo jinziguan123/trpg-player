@@ -428,6 +428,20 @@ def _format_player_info(char: Character) -> str:
         lines.append(f"SAN：{san.get('current', '?')}/{san.get('max', '?')}")
     if mp:
         lines.append(f"MP：{mp.get('current', '?')}/{mp.get('max', '?')}")
+    # 临时疯狂症状：注入到角色信息，让 KP 叙述与 AI 队友演绎都体现该症状（言行影响）。
+    madness = sd.get("madness")
+    if madness and char.status == "temporary_insanity":
+        note = (
+            f"【临时疯狂·{madness.get('label')}】：{madness.get('manifest')}。"
+            "叙述其言行必须体现该症状；受影响技能的检定系统已自动加惩罚骰。"
+        )
+        if madness.get("incapacitated"):
+            note += (
+                "**该角色此刻无法正常自主行动（系统接管）**：本回合请直接叙述其不受控的疯狂行为"
+                "（昏厥倒地 / 尖叫逃窜 / 无差别攻击最近目标等，按症状），不要等其正常宣言、"
+                "也不要让其做出清醒的选择。"
+            )
+        lines.append(note)
     if char.backstory:
         lines.append(f"背景：{char.backstory[:200]}")
     return "\n".join(lines)
