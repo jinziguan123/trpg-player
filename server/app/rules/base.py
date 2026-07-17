@@ -24,15 +24,6 @@ class CheckResult:
     penalty: int = 0       # 惩罚骰数量
 
 
-@dataclass
-class DamageResult:
-    target_id: str
-    damage_dealt: int
-    damage_type: str
-    remaining_hp: int
-    status_change: str | None
-
-
 class RuleEngine(ABC):
     """规则引擎抽象基类"""
 
@@ -58,10 +49,7 @@ class RuleEngine(ABC):
         bonus: int = 0, penalty: int = 0,
     ) -> CheckResult: ...
 
-    @abstractmethod
-    def apply_damage(
-        self, target_data: dict, damage: int, damage_type: str = "physical"
-    ) -> DamageResult: ...
+    # 伤害/重伤/濒死/死亡结算见 app.rules.coc.combat.resolve_wound（不走 engine，避免规则漂移）。
 
     def roll_dice(self, notation: str):
         return roll(notation)

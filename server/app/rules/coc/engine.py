@@ -1,6 +1,6 @@
 """CoC 7th Edition 规则引擎"""
 
-from app.rules.base import CheckResult, DamageResult, RuleEngine
+from app.rules.base import CheckResult, RuleEngine
 from app.rules.dice import roll, roll_percentile
 from app.rules.coc.character import (
     COC_DEFAULT_SKILLS,
@@ -98,29 +98,8 @@ class CoCRuleEngine(RuleEngine):
             "new_value": new_value,
         }
 
-    def apply_damage(
-        self, target_data: dict, damage: int, damage_type: str = "physical"
-    ) -> DamageResult:
-        system_data = target_data.get("system_data", {})
-        hp = system_data.get("hitPoints", {})
-        current_hp = hp.get("current", 0)
-        max_hp = hp.get("max", 0)
-
-        new_hp = max(0, current_hp - damage)
-
-        status_change = None
-        if new_hp <= 0:
-            status_change = "dead"
-        elif damage >= max_hp // 2:
-            status_change = "major_wound"
-
-        return DamageResult(
-            target_id=target_data.get("id", ""),
-            damage_dealt=damage,
-            damage_type=damage_type,
-            remaining_hp=new_hp,
-            status_change=status_change,
-        )
+    # 伤害/重伤/濒死/死亡的权威结算见 combat.resolve_wound（战斗与叙事 HP_CHANGE 共用同一份规则）；
+    # 此处不再另立一份简化 apply_damage，避免规则漂移。
 
     def roll_attribute_sets(self, count: int = 3) -> list[dict[str, int]]:
         """掷多组属性供玩家选择"""

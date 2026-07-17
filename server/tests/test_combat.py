@@ -210,15 +210,30 @@ def test_resolve_wound_minor_hit_no_status_change():
     assert r["new_hp"] == 8 and r["status"] == "ok"
 
 
-def test_resolve_wound_zero_hp_is_dying():
+def test_resolve_wound_minor_hit_zero_is_unconscious():
+    # 单击 5 < 半血(13//2=6) 且未曾重伤 → 归零只是昏迷（稳定、不致死），不是濒死
     from app.rules.coc import combat
     r = combat.resolve_wound(hp=3, max_hp=13, damage=5, defender_data={})
+    assert r["new_hp"] == 0 and r["status"] == "unconscious"
+
+
+def test_resolve_wound_major_hit_zero_is_dying():
+    # 单击 7 ≥ 半血 → 重伤，归零 → 濒死
+    from app.rules.coc import combat
+    r = combat.resolve_wound(hp=3, max_hp=13, damage=7, defender_data={})
     assert r["new_hp"] == 0 and r["status"] == "dying"
+
+
+def test_resolve_wound_already_wounded_zero_is_dying():
+    # 已带重伤标记者，即便小击归零也濒死
+    from app.rules.coc import combat
+    r = combat.resolve_wound(hp=2, max_hp=13, damage=2, defender_data={}, already_wounded=True)
+    assert r["status"] == "dying"
 
 
 def test_resolve_wound_overkill_is_dead():
     from app.rules.coc import combat
-    r = combat.resolve_wound(hp=1, max_hp=13, damage=99, defender_data={})
+    r = combat.resolve_wound(hp=13, max_hp=13, damage=14, defender_data={})  # 14 > max13 → 必死
     assert r["status"] == "dead"
 
 

@@ -328,19 +328,29 @@ def resolve_attack(
     return result
 
 
-def resolve_wound(hp: int, max_hp: int, damage: int, defender_data: dict) -> dict:
-    """结算一次伤害的 HP 与状态迁移（纯规则，不碰 DB）。
-    返回 {new_hp, status, lines}。重伤（单击≥半血）触发 CON 检定，失败则昏迷。"""
-    max_hp = max(1, max_hp)   # 归一非正 max_hp，避免半血阈值/贯穿判定被负值扭曲
-    raw = hp - damage
-    new_hp = max(0, raw)
+def resolve_wound(
+    hp: int, max_hp: int, damage: int, defender_data: dict, already_wounded: bool = False,
+) -> dict:
+    """结算一次伤害的 HP 与状态迁移（纯规则，不碰 DB）。返回 {new_hp, status, lines}。
+
+    CoC 7e：
+    - 单次伤害 **> 最大 HP** → 当场死亡（dead）。
+    - HP 归零：**受过重伤**（本击重伤 或 已带重伤标记 already_wounded）→ 濒死（dying）；
+      **只受轻伤**归零 → 昏迷（unconscious，伤势稳定、不致死，会随时间恢复）。
+    - 未归零的重伤（单击 ≥ 半血）→ 立刻过体质检定，失败则昏迷、成功则重伤（major_wound）。
+    """
+    max_hp = max(1, max_hp)   # 归一非正 max_hp，避免半血阈值判定被负值扭曲
+    new_hp = max(0, hp - damage)
     lines = [f"受到 {damage} 点伤害（HP {hp}→{new_hp}）"]
     major = damage >= max_hp // 2
-    if raw <= -max_hp:
-        return {"new_hp": new_hp, "status": "dead", "lines": lines + ["当场毙命！"]}
-    if new_hp <= 0:
-        return {"new_hp": 0, "status": "dying", "lines": lines + ["濒死，需急救/医学稳定。"]}
-    if major:
+    if damage > max_hp:                                   # ① 单击超过满血 → 必死
+        return {"new_hp": 0, "status": "dead", "lines": lines + ["单次伤害超过最大生命值，当场毙命！"]}
+    if new_hp <= 0:                                       # ② 归零：分轻/重伤
+        if major or already_wounded:
+            return {"new_hp": 0, "status": "dying", "lines": lines + ["濒死，需急救稳住，否则每轮体质检定失败即死。"]}
+        return {"new_hp": 0, "status": "unconscious",
+                "lines": lines + ["昏迷倒地（生命值归零，但只受轻伤、伤势稳定、不致死）。"]}
+    if major:                                             # ③ 未归零的重伤 → 体质检定判昏迷
         con = resolve_skill_check(defender_data, "体质", "normal")
         lines.append(f"重伤体质检定：{con.description}")
         if con.outcome in ("failure", "fumble"):

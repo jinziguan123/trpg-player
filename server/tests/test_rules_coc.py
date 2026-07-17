@@ -6,6 +6,7 @@ from app.rules.coc.character import (
     roll_attributes,
 )
 from app.rules.coc.checks import resolve_skill_check, san_check
+from app.rules.coc.combat import resolve_wound
 from app.rules.dice import roll
 from app.rules.registry import get_engine
 
@@ -183,35 +184,39 @@ class TestCoCChecks:
         assert result["new_san"] <= 50
 
 
-class TestCoCDamage:
-    def test_apply_damage(self):
-        engine = get_engine("coc")
-        target = {
-            "id": "test",
-            "system_data": {"hitPoints": {"current": 12, "max": 12}},
-        }
-        result = engine.apply_damage(target, 5)
-        assert result.remaining_hp == 7
-        assert result.status_change is None
+class TestCoCWound:
+    """伤害/重伤/濒死/死亡判定（resolve_wound，CoC 7e 权威规则）。"""
 
-    def test_lethal_damage(self):
-        engine = get_engine("coc")
-        target = {
-            "id": "test",
-            "system_data": {"hitPoints": {"current": 5, "max": 12}},
-        }
-        result = engine.apply_damage(target, 10)
-        assert result.remaining_hp == 0
-        assert result.status_change == "dead"
+    _CD = {"skills": {}, "base_attributes": {"CON": 50}, "system_data": {}}
 
-    def test_major_wound(self):
-        engine = get_engine("coc")
-        target = {
-            "id": "test",
-            "system_data": {"hitPoints": {"current": 12, "max": 12}},
-        }
-        result = engine.apply_damage(target, 7)
-        assert result.status_change == "major_wound"
+    def test_轻伤不改状态(self):
+        r = resolve_wound(12, 12, 5, self._CD)           # 5 < 半血6
+        assert r["new_hp"] == 7 and r["status"] == "ok"
+
+    def test_单击超过满血当场死亡(self):
+        r = resolve_wound(12, 12, 13, self._CD)          # 13 > max12 → 必死
+        assert r["status"] == "dead" and r["new_hp"] == 0
+
+    def test_单击恰等满血是重伤致濒死非瞬死(self):
+        r = resolve_wound(12, 12, 12, self._CD)          # =max → 重伤，归零 → 濒死（非瞬死）
+        assert r["status"] == "dying" and r["new_hp"] == 0
+
+    def test_只受轻伤归零是昏迷不濒死(self):
+        r = resolve_wound(4, 12, 4, self._CD)            # 单击4<半血且未曾重伤 → 昏迷稳定
+        assert r["new_hp"] == 0 and r["status"] == "unconscious"
+
+    def test_重伤归零是濒死(self):
+        r = resolve_wound(6, 12, 6, self._CD)            # 单击6=半血 → 重伤，归零 → 濒死
+        assert r["new_hp"] == 0 and r["status"] == "dying"
+
+    def test_已重伤者小击归零也濒死(self):
+        r = resolve_wound(3, 12, 3, self._CD, already_wounded=True)
+        assert r["status"] == "dying"
+
+    def test_重伤未归零走体质检定(self, monkeypatch):
+        monkeypatch.setattr("app.rules.coc.checks.roll_percentile", lambda: 99)  # CON 必失败
+        r = resolve_wound(12, 12, 6, self._CD)           # 6=半血 → 重伤未归零 → 体质失败 → 昏迷
+        assert r["status"] == "unconscious"
 
 
 class TestCharacteristicRolls:

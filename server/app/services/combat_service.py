@@ -270,7 +270,10 @@ def apply_damage(db: Session, state: dict, target: dict, amount: int, reason: st
     if armor > 0 and amount > 0:
         absorbed = min(amount, armor)
         amount = amount - absorbed
-    r = engine.resolve_wound(target.get("hp", 0), target.get("max_hp") or 1, amount, _char_data(target))
+    r = engine.resolve_wound(
+        target.get("hp", 0), target.get("max_hp") or 1, amount, _char_data(target),
+        already_wounded=(target.get("status") == "major_wound"),
+    )
     target["hp"] = r["new_hp"]
     target["status"] = r["status"]
     # 新伤 = 新的急救机会：重置 first_aid_used，否则前期被急救过的人再受伤（乃至濒死）

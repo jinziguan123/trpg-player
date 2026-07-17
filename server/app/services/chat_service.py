@@ -3606,14 +3606,28 @@ async def _exec_hp_change(
 
     chunks: list[str] = []
     if delta < 0:
-        hp_content = f"{char.name} 受到 {abs(delta)} 点伤害（HP {old_hp} → {new_hp}）"
+        dmg = abs(delta)
+        hp_content = f"{char.name} 受到 {dmg} 点伤害（HP {old_hp} → {new_hp}）"
         if reason:
             hp_content += f"——{reason}"
-        major_wound = abs(delta) >= max_hp // 2 and max_hp > 0
-        if major_wound:
+        major_wound = dmg >= max_hp // 2 and max_hp > 0
+        already_major = char.status == "major_wound"
+        if max_hp > 0 and dmg > max_hp:
+            # 单次伤害 > 最大 HP → 当场毙命（CoC 7e）
+            char.status = "dead"; db.add(char); db.commit()
+            hp_content += "\n单次伤害超过最大生命值，当场毙命！"
+        elif new_hp <= 0:
+            # 归零：受过重伤（本击重伤 或 已带重伤标记）→ 濒死；只受轻伤 → 昏迷（稳定、不致死）
+            if major_wound or already_major:
+                char.status = "dying"
+                hp_content += "\n濒死！需急救稳住，否则每轮体质检定失败即死。"
+            else:
+                char.status = "unconscious"
+                hp_content += "\n昏迷倒地（生命值归零，但只受轻伤、伤势稳定、不致死）。"
+            db.add(char); db.commit()
+            major_wound = False   # 已按归零结算，不再走下方「未归零重伤体质检定」
+        elif major_wound:
             hp_content += "\n重伤！"
-        if new_hp <= 0:
-            hp_content += "\n濒死！需急救/医学稳定，否则将持续流失生命"
     else:
         hp_content = f"{char.name} 恢复 {delta} 点生命（HP {old_hp} → {new_hp}）"
         if reason:

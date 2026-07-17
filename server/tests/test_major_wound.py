@@ -102,7 +102,26 @@ def test_伤害致零直接濒死不再过体质(db_factory):
 
     assert not [e for e in _events(db, sid) if e.event_type == "dice"]
     assert "濒死" in _events(db, sid)[0].content
+    assert char.status == "dying"     # 重伤（10=半血以上）归零 → 濒死
     assert len([c for c in chunks if "character_update" not in c]) == 1
+
+
+def test_单次伤害超过满血当场死亡(db_factory):
+    db = db_factory()
+    module, char, sid = _seed(db)                        # max 10
+    _run_hp_change(db, module, char, sid, "-11")         # 11 > 10 → 必死
+    assert char.status == "dead"
+    assert "当场毙命" in _events(db, sid)[-1].content
+
+
+def test_只受轻伤累积归零是昏迷不濒死(db_factory):
+    db = db_factory()
+    module, char, sid = _seed(db)                        # max 10，半血阈值 5
+    _run_hp_change(db, module, char, sid, "-4")          # 10→6，轻伤
+    _run_hp_change(db, module, char, sid, "-4")          # 6→2，轻伤
+    _run_hp_change(db, module, char, sid, "-2")          # 2→0，轻伤致零 → 昏迷（稳定、不濒死）
+    assert char.status == "unconscious"
+    assert "不致死" in _events(db, sid)[-1].content
 
 
 def test_恢复不触发(db_factory):
