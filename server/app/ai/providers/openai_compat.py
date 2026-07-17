@@ -72,6 +72,7 @@ class OpenAICompatProvider(LLMProvider):
     def __init__(
         self, model: str = "deepseek-chat", base_url: str = "", api_key: str = "",
         vision: bool = False, reasoning_effort: str = "", image_model: str = "",
+        image_base_url: str = "", image_api_key: str = "",
     ):
         self.model = model
         self._api_key = api_key
@@ -80,10 +81,13 @@ class OpenAICompatProvider(LLMProvider):
         self._reasoning_effort = (reasoning_effort or "").strip()
         # 文生图模型名（dall-e-3 / gpt-image-1…）。空=不生图。
         self._image_model = (image_model or "").strip()
+        self._image_key = image_api_key or api_key   # 生图密钥可独立，空则回落文本 key
         self._client = httpx.AsyncClient(timeout=120.0)
         base = base_url.rstrip("/") if base_url else "https://api.deepseek.com"
         self._api_url = f"{base}/chat/completions"
-        self._images_url = f"{base}/images/generations"
+        # 生图地址可独立（生图常与文本不在同一分组/供应商），空则回落文本 base
+        img_base = image_base_url.rstrip("/") if image_base_url else base
+        self._images_url = f"{img_base}/images/generations"
         # 最近一次调用的服务端真实 usage（prompt/completion/total_tokens）。每次 complete/stream
         # 结束后更新——调用方须在下一次调用前读取（生成串行化，主叙事后、validator 前读即拿到主叙事那次）。
         self.last_usage: dict | None = None
@@ -114,8 +118,9 @@ class OpenAICompatProvider(LLMProvider):
         if not self._image_model:
             return None
         payload = {"model": self._image_model, "prompt": prompt, "size": size, "n": 1}
+        headers = {"Authorization": f"Bearer {self._image_key}", "Content-Type": "application/json"}
         try:
-            resp = await self._client.post(self._images_url, headers=self._headers(), json=payload)
+            resp = await self._client.post(self._images_url, headers=headers, json=payload)
             resp.raise_for_status()
             item = ((resp.json().get("data") or [{}])[0]) or {}
             if item.get("b64_json"):

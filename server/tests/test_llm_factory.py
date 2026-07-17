@@ -291,6 +291,31 @@ def test_generate_image_returns_b64(monkeypatch):
     assert captured["payload"]["model"] == "dall-e-3"
 
 
+def test_generate_image_uses_independent_base_and_key(monkeypatch):
+    """生图可独立走自己的 base_url/api_key，不强绑文本模型。"""
+    prov = OpenAICompatProvider(
+        model="x", base_url="https://chat.example/v1", api_key="chatkey",
+        image_model="dall-e-3", image_base_url="https://img.example/v1", image_api_key="imgkey",
+    )
+    captured = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": [{"b64_json": "Zm9v"}]}
+
+    async def fake_post(url, headers=None, json=None):
+        captured["url"] = url; captured["headers"] = headers
+        return _Resp()
+
+    monkeypatch.setattr(prov._client, "post", fake_post)
+    asyncio.run(prov.generate_image("x"))
+    assert captured["url"] == "https://img.example/v1/images/generations"
+    assert captured["headers"]["Authorization"] == "Bearer imgkey"
+
+
 def test_generate_image_none_when_unconfigured():
     """未填 image_model → supports_image_gen False、generate_image 返回 None（不打端点）。"""
     prov = OpenAICompatProvider(model="x", api_key="k")

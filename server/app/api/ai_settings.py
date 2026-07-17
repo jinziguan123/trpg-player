@@ -41,9 +41,11 @@ class AIProfile(BaseModel):
     # 推理档位（reasoning_effort）：minimal/low/medium/high/xhigh 等。空=不下发该参数、用模型默认档。
     # 仅 OpenAI 兼容协议、且模型支持推理时生效；设了会一并省略 temperature（推理模型多拒绝/忽略它）。
     reasoning_effort: str = ""
-    # 文生图模型名（如 dall-e-3 / gpt-image-1）。空=不生图。走 OpenAI Images 端点
-    # （{base_url}/images/generations），复用本 profile 的 base_url + api_key。用于手书配图。
+    # 文生图模型名（如 dall-e-3 / gpt-image-1）。空=不生图。走 OpenAI Images 端点。用于手书配图。
     image_model: str = ""
+    # 文生图**可独立**的地址与密钥（生图常与文本不在同一分组/供应商）。空则回落到上面的 base_url/api_key。
+    image_base_url: str = ""
+    image_api_key: str = ""
 
 
 class AIProfileCreate(BaseModel):
@@ -57,6 +59,8 @@ class AIProfileCreate(BaseModel):
     context_window: int = 0
     reasoning_effort: str = ""
     image_model: str = ""
+    image_base_url: str = ""
+    image_api_key: str = ""
 
 
 class AIProfileUpdate(BaseModel):
@@ -70,6 +74,8 @@ class AIProfileUpdate(BaseModel):
     context_window: int | None = None
     reasoning_effort: str | None = None
     image_model: str | None = None
+    image_base_url: str | None = None
+    image_api_key: str | None = None
 
 
 # 常见模型的上下文窗口（token）——用于用户没显式配 context_window 时的启发式回落。
@@ -197,6 +203,7 @@ def list_profiles():
     profiles = _load_profiles()
     for p in profiles:
         p.api_key = _mask_key(p.api_key)
+        p.image_api_key = _mask_key(p.image_api_key)
     return profiles
 
 
@@ -216,11 +223,14 @@ def create_profile(body: AIProfileCreate):
         context_window=body.context_window,
         reasoning_effort=body.reasoning_effort,
         image_model=body.image_model,
+        image_base_url=body.image_base_url,
+        image_api_key=body.image_api_key,
         is_active=len(profiles) == 0,  # 第一个配置自动激活
     )
     profiles.append(new_profile)
     _save_profiles(profiles)
     new_profile.api_key = _mask_key(new_profile.api_key)
+    new_profile.image_api_key = _mask_key(new_profile.image_api_key)
     return new_profile
 
 
@@ -254,13 +264,18 @@ def update_profile(profile_id: str, body: AIProfileUpdate):
         target.reasoning_effort = body.reasoning_effort
     if body.image_model is not None:
         target.image_model = body.image_model
+    if body.image_base_url is not None:
+        target.image_base_url = body.image_base_url
     if body.api_key is not None:
         # 如果包含掩码字符，说明前端没有修改 key，保留旧值
         if "****" not in body.api_key:
             target.api_key = body.api_key
+    if body.image_api_key is not None and "****" not in body.image_api_key:
+        target.image_api_key = body.image_api_key
 
     _save_profiles(profiles)
     target.api_key = _mask_key(target.api_key)
+    target.image_api_key = _mask_key(target.image_api_key)
     return target
 
 
@@ -337,11 +352,18 @@ async def test_profile(profile_id: str):
         return TestResult(success=False, message=str(e), latency_ms=latency)
 
 
+def _image_base_key(profile: AIProfile) -> tuple[str, str]:
+    """文生图的地址与密钥：优先用独立的 image_base_url/image_api_key，空则回落到文本 base_url/api_key。"""
+    base = (getattr(profile, "image_base_url", "") or profile.base_url or "https://api.openai.com/v1").rstrip("/")
+    key = getattr(profile, "image_api_key", "") or profile.api_key
+    return base, key
+
+
 async def _test_image(client: httpx.AsyncClient, profile: AIProfile) -> str:
     """真调一次 OpenAI Images 端点，判断该配置能否生图。失败抛错（由端点统一格式化）。"""
-    base = profile.base_url.rstrip("/") if profile.base_url else "https://api.openai.com/v1"
+    base, key = _image_base_key(profile)
     url = f"{base}/images/generations"
-    headers = {"Authorization": f"Bearer {profile.api_key}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     payload = {"model": profile.image_model, "prompt": "A small grey test square on white background.",
                "n": 1, "size": "1024x1024"}
     resp = await client.post(url, headers=headers, json=payload)
@@ -350,6 +372,21 @@ async def _test_image(client: httpx.AsyncClient, profile: AIProfile) -> str:
     if item.get("b64_json") or item.get("url"):
         return "生图成功：该配置可用于手书配图。"
     return "端点有响应但未返回图像数据（检查模型名/返回格式）。"
+
+
+def _clean_http_error(e: httpx.HTTPStatusError) -> str:
+    """把 HTTP 错误体压成一句可读信息：JSON 取 error.message；HTML 错误页（网关 5xx）只报状态，
+    不把整页 HTML 糊到提示里。"""
+    body = (e.response.text or "").strip()
+    try:
+        detail = e.response.json().get("error", {}).get("message", "")
+        if detail:
+            return f"HTTP {e.response.status_code}: {detail}"
+    except Exception:
+        pass
+    if body[:64].lstrip().lower().startswith(("<!doctype", "<html")):
+        return f"HTTP {e.response.status_code}：网关返回了 HTML 错误页——该地址多半不是可用的 images 端点，或分组/供应商此刻不可用。"
+    return f"HTTP {e.response.status_code}: {body[:160]}"
 
 
 @router.post("/ai/profiles/{profile_id}/test-image", response_model=TestResult)
@@ -371,12 +408,7 @@ async def test_profile_image(profile_id: str):
     except httpx.TimeoutException:
         return TestResult(success=False, message="生图超时（>60s）", latency_ms=int((time.time() - start) * 1000))
     except httpx.HTTPStatusError as e:
-        detail = ""
-        try:
-            detail = e.response.json().get("error", {}).get("message", "") or e.response.text[:200]
-        except Exception:
-            detail = e.response.text[:200]
-        return TestResult(success=False, message=f"HTTP {e.response.status_code}: {detail}",
+        return TestResult(success=False, message=_clean_http_error(e),
                           latency_ms=int((time.time() - start) * 1000))
     except Exception as e:
         return TestResult(success=False, message=str(e), latency_ms=int((time.time() - start) * 1000))

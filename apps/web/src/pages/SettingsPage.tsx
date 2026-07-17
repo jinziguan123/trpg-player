@@ -26,6 +26,8 @@ interface AIProfile {
   context_window?: number
   reasoning_effort?: string
   image_model?: string
+  image_base_url?: string
+  image_api_key?: string
 }
 
 interface TestResult {
@@ -44,6 +46,8 @@ type FormData = {
   context_window: number
   reasoning_effort: string
   image_model: string
+  image_base_url: string
+  image_api_key: string
 }
 
 const EMPTY_FORM: FormData = {
@@ -56,6 +60,8 @@ const EMPTY_FORM: FormData = {
   context_window: 0,
   reasoning_effort: '',
   image_model: '',
+  image_base_url: '',
+  image_api_key: '',
 }
 
 const PROTOCOL_INFO: Record<
@@ -468,7 +474,8 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null) // null=列表模式, 'new'=新建, 其他=编辑
   const [form, setForm] = useState<FormData>(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
-  const [testingId, setTestingId] = useState<string | null>(null)
+  // 哪个配置的哪种测试在进行中（区分「测试连接」与「测试生图」，两按钮才不会一起变「测试中」）
+  const [testing, setTesting] = useState<{ id: string; kind: 'conn' | 'image' } | null>(null)
 
   const fetchProfiles = useCallback(async () => {
     try {
@@ -506,6 +513,8 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
       context_window: p.context_window || 0,
       reasoning_effort: p.reasoning_effort || '',
       image_model: p.image_model || '',
+      image_base_url: p.image_base_url || '',
+      image_api_key: p.image_api_key || '',
     })
   }
 
@@ -566,7 +575,7 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
 
   /* 测试连接 */
   const handleTest = async (id: string) => {
-    setTestingId(id)
+    setTesting({ id, kind: 'conn' })
     try {
       const result = await api.post<TestResult>(
         `/settings/ai/profiles/${id}/test`,
@@ -580,13 +589,13 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
     } catch (e) {
       toast.error(`测试出错: ${e instanceof Error ? e.message : '未知错误'}`)
     } finally {
-      setTestingId(null)
+      setTesting(null)
     }
   }
 
   /* 测试文生图：真打一次 images 端点，判断该配置能否生图 */
   const handleTestImage = async (id: string) => {
-    setTestingId(id)
+    setTesting({ id, kind: 'image' })
     try {
       const result = await api.post<TestResult>(`/settings/ai/profiles/${id}/test-image`)
       if (result.success) toast.success(`${result.message}（${result.latency_ms}ms）`)
@@ -594,7 +603,7 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
     } catch (e) {
       toast.error(`测试出错: ${e instanceof Error ? e.message : '未知错误'}`)
     } finally {
-      setTestingId(null)
+      setTesting(null)
     }
   }
 
@@ -724,19 +733,19 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
                   className="btn-secondary"
                   style={{ padding: '0.25rem 0.6rem', fontSize: '0.8rem' }}
                   onClick={() => handleTest(p.id)}
-                  disabled={testingId !== null}
+                  disabled={testing !== null}
                 >
-                  {testingId === p.id ? '测试中...' : '测试'}
+                  {testing?.id === p.id && testing.kind === 'conn' ? '测试中...' : '测试'}
                 </button>
                 {p.image_model && (
                   <button
                     className="btn-secondary"
                     style={{ padding: '0.25rem 0.6rem', fontSize: '0.8rem' }}
                     onClick={() => handleTestImage(p.id)}
-                    disabled={testingId !== null}
+                    disabled={testing !== null}
                     title={`测试文生图（${p.image_model}）`}
                   >
-                    {testingId === p.id ? '测试中...' : '测试生图'}
+                    {testing?.id === p.id && testing.kind === 'image' ? '测试中...' : '测试生图'}
                   </button>
                 )}
                 <button
@@ -908,9 +917,29 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
                     onChange={(e) => setForm({ ...form, image_model: e.target.value })}
                   />
                   <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
-                    与聊天模型分开的**文生图**模型（走 images 端点，复用本配置的地址+密钥）。填好后**保存**，
-                    再到下方配置卡点「测试生图」确认能否生成。KP 发手书（信件/报纸/照片等）时会据此配图。
+                    与聊天模型分开的文生图模型。填好后**保存**，再到下方配置卡点「测试生图」确认能否生成。
+                    KP 发手书（信件/报纸/照片等）时会据此配图。
                   </p>
+                  {form.image_model && (
+                    <div className="mt-2 flex flex-col gap-2">
+                      <input
+                        className="input w-full"
+                        placeholder="生图地址（可选）：留空=复用上面的接口地址；生图另在一处就填这里"
+                        value={form.image_base_url}
+                        onChange={(e) => setForm({ ...form, image_base_url: e.target.value })}
+                      />
+                      <input
+                        type="password"
+                        className="input w-full"
+                        placeholder="生图密钥（可选）：留空=复用上面的 API Key"
+                        value={form.image_api_key}
+                        onChange={(e) => setForm({ ...form, image_api_key: e.target.value })}
+                      />
+                      <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                        生图与文本不在同一分组/供应商时，在此单独填地址与密钥；两者留空则复用上面文本模型的。
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* 多模态（视觉） */}
