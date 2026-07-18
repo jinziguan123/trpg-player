@@ -156,8 +156,12 @@ def san_check(character_data: dict, success_loss: str, failure_loss: str) -> dic
     else:
         loss_expr = failure_loss
 
-    if loss_expr == "0":
-        loss = 0
+    # 纯数字 = 固定损失，不掷骰。CoC 的 SAN 损失本就常是「固定值/骰式」混排（0/1d3、
+    # 1/1d6），planner 的指引也明确给出「血腥或怪物 1/1d6」——只特判 "0" 会让
+    # "1"、"2" 落进 roll() 抛「无效的骰子表达式」，整次理智检定被吞。
+    loss_expr = str(loss_expr or "0").strip()
+    if loss_expr.isdigit():
+        loss = int(loss_expr)
         loss_roll = None
     else:
         loss_roll = roll(loss_expr)

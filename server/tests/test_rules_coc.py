@@ -183,6 +183,29 @@ class TestCoCChecks:
         assert result["old_san"] == 50
         assert result["new_san"] <= 50
 
+    def test_san_check_fixed_integer_loss(self):
+        """纯数字损失（CoC 常见的「1/1d6」写法）= 固定损失不掷骰，不得当骰式解析炸掉。"""
+        char = {
+            "skills": {},
+            "base_attributes": {},
+            "system_data": {"sanity": {"current": 50, "max": 99}},
+        }
+        result = san_check(char, "1", "2")   # 成败两侧都是固定值 → 损失必为 1 或 2
+        assert result["san_loss"] in (1, 2)
+        assert result["loss_roll"] is None                  # 固定损失不产生损失骰池
+        assert result["new_san"] == 50 - result["san_loss"]
+
+    def test_san_check_dice_loss_still_rolls(self):
+        """骰式损失照常掷骰（回归护栏：整数特判不得误伤 XdY 路径）。"""
+        char = {
+            "skills": {},
+            "base_attributes": {},
+            "system_data": {"sanity": {"current": 50, "max": 99}},
+        }
+        result = san_check(char, "1d3", "1d6")
+        assert result["loss_roll"] is not None
+        assert 1 <= result["san_loss"] <= 6
+
 
 class TestCoCWound:
     """伤害/重伤/濒死/死亡判定（resolve_wound，CoC 7e 权威规则）。"""
