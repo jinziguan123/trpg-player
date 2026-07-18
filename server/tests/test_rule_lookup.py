@@ -176,7 +176,8 @@ def _make_event(content, seq=1):
 
 
 def test_rule_excerpts_query_mapping_by_turn_kind(db_factory, monkeypatch):
-    """turn_kind → 规则术语 query 的映射；roleplay/mixed 不检索不注入。"""
+    """turn_kind → 规则术语 query 的映射（动作无规则关键词时即纯 turn_kind 术语）；
+    roleplay/mixed 且无规则关键词 → 不检索不注入。"""
     db = db_factory()
     module, char, session = _seed(db)
     events = session_service.get_session_events(db, session.id)
@@ -242,7 +243,8 @@ def test_rule_excerpts_san_context_overrides_turn_kind(db_factory, monkeypatch):
 
 
 def test_rule_excerpts_gates_and_fail_open(db_factory, monkeypatch):
-    """无 plan / 开场（无事件）/ 未挂规则书 / 检索抛错 → 一律 None（行为不变）。"""
+    """组不出 query（此处种子动作无规则关键词，plan=None）/ 开场（无事件）/ 未挂规则书 /
+    检索抛错 → 一律 None（fail-open）。"""
     db = db_factory()
     module, char, session = _seed(db)
     events = session_service.get_session_events(db, session.id)
@@ -273,6 +275,55 @@ def test_rule_excerpts_gates_and_fail_open(db_factory, monkeypatch):
 
     monkeypatch.setattr(rulebook_service, "retrieve", boom)
     assert chat_service._rule_excerpts_for_context(db, module, plan, events) is None
+
+
+def _cap_retrieve(monkeypatch, cap):
+    monkeypatch.setattr(rulebook_service, "has_rulebook", lambda *a, **k: True)
+    monkeypatch.setattr(
+        rulebook_service, "retrieve",
+        lambda db_, q, rs, k=3: (cap.__setitem__("q", q),
+                                 [{"text": "片段", "page": 1, "score": 1.0, "rulebook_id": "x"}])[1],
+    )
+
+
+def test_rule_excerpts_query_is_situation_specific(db_factory, monkeypatch):
+    """query 据**具体技能 + 玩家动作关键词**组合，而非每 turn_kind 一句死词。"""
+    db = db_factory()
+    module, char, session = _seed(db)
+    session_service.add_event(db, session.id, "action", "我贴着阴影潜行过去",
+                              actor_id=char.id, actor_name=char.name)
+    events = session_service.get_session_events(db, session.id)
+    cap = {}
+    _cap_retrieve(monkeypatch, cap)
+    plan = TurnPlan(turn_kind="investigate", check=CheckPlan(skill="潜行"))
+    chat_service._rule_excerpts_for_context(db, module, plan, events)
+    assert "潜行" in cap["q"] and "隐匿" in cap["q"]   # 技能名 + 动作关键词都进 query
+
+
+def test_rule_excerpts_fallback_to_action_when_no_plan(db_factory, monkeypatch):
+    """planner 挂了（plan=None）也据玩家动作关键词取规则——不被 planner 失败连累清零。"""
+    db = db_factory()
+    module, char, session = _seed(db)
+    session_service.add_event(db, session.id, "action", "我举枪朝它开火",
+                              actor_id=char.id, actor_name=char.name)
+    events = session_service.get_session_events(db, session.id)
+    cap = {}
+    _cap_retrieve(monkeypatch, cap)
+    hits = chat_service._rule_excerpts_for_context(db, module, None, events)  # plan=None
+    assert hits and "射击" in cap["q"]
+
+
+def test_rule_excerpts_for_planner_from_action(db_factory, monkeypatch):
+    """给 planner 的规则片段据玩家动作关键词取（planner 尚无 plan），让裁定更贴规则。"""
+    db = db_factory()
+    module, char, session = _seed(db)
+    session_service.add_event(db, session.id, "action", "我扑上去和它扭打",
+                              actor_id=char.id, actor_name=char.name)
+    events = session_service.get_session_events(db, session.id)
+    cap = {}
+    _cap_retrieve(monkeypatch, cap)
+    hits = chat_service._rule_excerpts_for_planner(db, module, events)
+    assert hits and "擒抱" in cap["q"]
 
 
 def test_kp_context_injects_rule_excerpts_section(db_factory):

@@ -377,6 +377,7 @@ def build_turn_plan_messages(
     events: list[Any],
     teammates: list[Character] | None = None,
     rules_lookup_enabled: bool = False,
+    rule_excerpts: list[dict] | None = None,
 ) -> list[dict]:
     """构建 KP 回合规划器消息。
 
@@ -548,9 +549,26 @@ def build_turn_plan_messages(
                 "最多作为氛围出现，追问时指回模组内容。\n"
                 + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
                 + director_block
+                + _rule_block(rule_excerpts)
             ),
         },
     ]
+
+
+def _rule_block(rule_excerpts: list[dict] | None) -> str:
+    """把检索到的规则书片段拼成一段「裁定参考」——planner 定检定难度/奖惩骰/SAN 时优先遵照条文，
+    而非凭印象。空则返回空串（不注入）。"""
+    if not rule_excerpts:
+        return ""
+    passages = "\n---\n".join(
+        (h.get("text") or "").strip() for h in rule_excerpts if (h.get("text") or "").strip()
+    )
+    if not passages:
+        return ""
+    return (
+        "\n\n规则要点（据此裁定难度/检定/奖惩骰/SAN，优先遵照条文而非凭印象；这些是系统按本轮"
+        "情境预取的规则书原文，非玩家可见）：\n" + passages
+    )
 
 
 def _extract_json_object(raw: Any) -> dict | None:

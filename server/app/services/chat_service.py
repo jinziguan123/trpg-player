@@ -2038,28 +2038,79 @@ def _plan_involves_san(plan: turn_planner.TurnPlan, events: list) -> bool:
     return False
 
 
-def _rule_excerpts_for_context(
-    db: Session,
-    module: Module,
-    plan: turn_planner.TurnPlan | None,
-    events: list,
-    game_session: GameSession | None = None,
-) -> list[dict] | None:
-    """被动注入用的规则书要点：按本轮 plan.turn_kind 组规则术语 query，检索 top-2。
+# 玩家动作里的规则触发词 → 规则书检索术语：让被动注入按**当前具体情境**取条文，
+# 而非每种 turn_kind 一句死词（潜行/擒抱/穿透/孤注一掷等各自命中各自的规则页）。
+_ACTION_RULE_HINTS: list[tuple[tuple[str, ...], str]] = [
+    (("潜行", "躲", "隐匿", "藏身"), "潜行 隐匿 躲藏 对抗 侦查"),
+    (("擒", "抓住", "扭打", "制服", "缠斗", "抱摔"), "擒抱 制服 扭打 对抗"),
+    (("攀", "爬", "翻越"), "攀爬 敏捷 跌落"),
+    (("跳",), "跳跃 敏捷 跌落"),
+    (("追", "逃跑", "甩开"), "追逐 移动 距离"),
+    (("开枪", "射击", "扣动扳机", "开火", "瞄准", "连发", "扫射", "点射"), "射击 火器 穿透 连发 伤害"),
+    (("格斗", "拳", "殴", "近战", "挥砍", "劈"), "格斗 近战 伤害 对抗"),
+    (("急救", "止血", "包扎"), "急救 生命值 恢复 濒死"),
+    (("医学", "治疗", "缝合"), "医学 治疗 生命值 恢复"),
+    (("说服", "劝说", "话术"), "话术 说服 意志 对抗"),
+    (("威胁", "恐吓", "逼问"), "恐吓 意志 对抗"),
+    (("取悦", "讨好", "谄媚"), "取悦 社交 对抗"),
+    (("燃烧", "点燃", "纵火", "汽油", "莫洛托夫", "火把"), "燃烧 火焰 每轮伤害"),
+    (("中毒", "毒"), "中毒 体质 抗性"),
+    (("孤注一掷", "豁出去", "拼了"), "孤注一掷 重掷 后果"),
+    (("濒死", "重伤", "昏迷", "流血", "垂死"), "重伤 濒死 体质检定 死亡"),
+    (("护甲", "防弹", "盔甲", "钢板"), "护甲 伤害 减免"),
+    (("花幸运", "消耗幸运", "拼运气"), "幸运 消耗 补足"),
+    (("发疯", "崩溃", "疯狂"), "疯狂 症状 恐惧"),
+]
 
-    镜像 ``_module_excerpts_for_context`` 的 fail-open 模式：无 plan、开场（无事件）、
-    turn_kind 无对应规则情境、该规则系统未挂规则书、或检索失败，一律返回 None——
-    build_kp_context 收到 None 时行为与无此特性完全一致。
-    query 用固定规则术语而非玩家输入：规则书语料是条文术语，掺入剧情叙述文本反而
-    稀释余弦命中（与模组原文检索相反——那边语料本身就是叙事文本，才拼玩家输入）。
-    """
-    if plan is None or not events:
-        return None
-    query = _RULE_QUERY_BY_TURN_KIND.get(plan.turn_kind)
-    if _plan_involves_san(plan, events):
-        query = _SAN_RULE_QUERY
-    if not query:
-        return None
+
+def _rule_keywords_from_events(events: list) -> str:
+    """从最近几条玩家动作/发言里抽规则相关术语——只取规则显著的关键词，不整段掺叙事文本
+    （规则语料是条文术语，掺叙事会稀释余弦命中）。planner 缺失或情境补强时用。"""
+    text = " ".join(
+        (getattr(e, "content", "") or "")
+        for e in (events or [])[-4:]
+        if getattr(e, "event_type", None) in ("action", "dialogue")
+    )
+    if not text:
+        return ""
+    hit = [terms for keys, terms in _ACTION_RULE_HINTS if any(k in text for k in keys)]
+    return " ".join(hit)
+
+
+def _san_context(plan: turn_planner.TurnPlan | None, events: list) -> bool:
+    """本轮是否处于理智/疯狂情境（plan 可能为 None，故不复用 _plan_involves_san 的直接取值）。"""
+    if plan is not None and _plan_involves_san(plan, events):
+        return True
+    for ev in (events or [])[-6:]:
+        c = getattr(ev, "content", "") or ""
+        if "理智检定" in c or "SAN" in c:
+            return True
+    return False
+
+
+def _rule_query(plan: turn_planner.TurnPlan | None, events: list) -> str | None:
+    """KP 上下文用的规则检索 query：SAN 情境优先；否则据 planner 的**具体技能** + turn_kind 术语
+    + 玩家动作关键词组合去重。planner 缺失时退化为纯动作关键词——规则照进、不被 planner 失败连累。"""
+    if _san_context(plan, events):
+        return _SAN_RULE_QUERY
+    parts: list[str] = []
+    if plan is not None:
+        skill = (plan.check.skill or "").strip()
+        if skill:
+            parts.append(skill)
+        base = _RULE_QUERY_BY_TURN_KIND.get(plan.turn_kind)
+        if base:
+            parts.append(base)
+    parts.append(_rule_keywords_from_events(events))
+    seen: set[str] = set()
+    toks = [t for t in " ".join(parts).split() if not (t in seen or seen.add(t))]
+    return " ".join(toks) or None
+
+
+def _retrieve_rules(
+    db: Session, module: Module, query: str, game_session: GameSession | None,
+) -> list[dict] | None:
+    """按 query 检索规则书 top-2 并记 RAG 台账。未挂规则书/检索失败一律 None（fail-open）。"""
     try:
         if not rulebook_service.has_rulebook(db, module.rule_system):
             return None
@@ -2067,8 +2118,41 @@ def _rule_excerpts_for_context(
         _record_rag(db, game_session, kind="rule", mode="passive", query=query, hits=hits)
         return hits or None
     except Exception:  # noqa: BLE001 — 检索失败不得阻塞生成主流程
-        logger.exception("规则书被动检索失败（已降级）：rule_system=%s", module.rule_system)
+        logger.exception("规则书检索失败（已降级）：rule_system=%s", module.rule_system)
         return None
+
+
+def _rule_excerpts_for_context(
+    db: Session,
+    module: Module,
+    plan: turn_planner.TurnPlan | None,
+    events: list,
+    game_session: GameSession | None = None,
+) -> list[dict] | None:
+    """被动注入用的规则书要点（供 KP 上下文）：按当前**具体情境**组 query 检索 top-2。
+
+    fail-open：开场（无事件）、组不出 query、未挂规则书、或检索失败一律返回 None——
+    build_kp_context 收到 None 时行为与无此特性完全一致。
+    """
+    if not events:
+        return None
+    query = _rule_query(plan, events)
+    if not query:
+        return None
+    return _retrieve_rules(db, module, query, game_session)
+
+
+def _rule_excerpts_for_planner(
+    db: Session, module: Module, events: list, game_session: GameSession | None = None,
+) -> list[dict] | None:
+    """给 planner 用的规则片段：planner 在 KP 之前跑、还没有 plan，故 query 只据玩家动作（+SAN 情境）取。
+    让规则条文先进裁定环节，使难度/检定/奖惩骰/SAN 的判定更贴规则而非凭印象。"""
+    if not events:
+        return None
+    query = _SAN_RULE_QUERY if _san_context(None, events) else _rule_keywords_from_events(events).strip()
+    if not query:
+        return None
+    return _retrieve_rules(db, module, query, game_session)
 
 
 def _record_rag(
@@ -2391,6 +2475,7 @@ async def _run_generation(
         plan_messages = turn_planner.build_turn_plan_messages(
             game_session, module, player_char, events, teammates=teammates,
             rules_lookup_enabled=rules_enabled,
+            rule_excerpts=_rule_excerpts_for_planner(db, module, events, game_session),
         )
         plan = await turn_planner.run_turn_planner(llm, plan_messages)
         # 世界记忆钩子 a：本轮裁定要揭示线索 → 写入线索台账（纯确定性，零额外 LLM 调用）
@@ -2841,6 +2926,7 @@ async def run_chat_generation(session_id: str) -> None:
             plan_messages = turn_planner.build_turn_plan_messages(
                 game_session, module, player_char, pre_events,
                 teammates=party_others, rules_lookup_enabled=rules_enabled,
+                rule_excerpts=_rule_excerpts_for_planner(db, module, pre_events, game_session),
             )
             plan = await turn_planner.run_turn_planner(llm, plan_messages)
             # 世界记忆钩子 a：本轮裁定要揭示线索 → 写入线索台账（前移后在此统一记账）
@@ -2941,6 +3027,7 @@ async def _run_kp_turn(
         plan_messages = turn_planner.build_turn_plan_messages(
             game_session, module, player_char, post_events, teammates=party_others,
             rules_lookup_enabled=rules_enabled,
+            rule_excerpts=_rule_excerpts_for_planner(db, module, post_events, game_session),
         )
         plan = await turn_planner.run_turn_planner(llm, plan_messages)
         if need_sanity:
