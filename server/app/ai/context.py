@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from app.models.character import Character
 from app.models.event_log import EventLog
@@ -402,7 +403,47 @@ def _compact_clues(
     return json.dumps(result, ensure_ascii=False, separators=(",", ":")) if result else "无"
 
 
-def _format_player_info(char: Character) -> str:
+# 建卡时生成的六段结构化背景（system_data 键 → 中文标签），与
+# ai_character_service.BACKSTORY_LABELS 一致（本地复制，避免 ai 层反向依赖 services 层）。
+# 顺序刻意把「性格/信念/特点」放前面：这是队友言行贴合角色的根基。
+_PERSONA_SECTIONS = [
+    ("personalDescription", "个人描述"),
+    ("ideologyBeliefs", "思想/信念"),
+    ("traits", "特点"),
+    ("significantPeople", "重要之人"),
+    ("meaningfulLocations", "意义非凡之地"),
+    ("treasuredPossessions", "宝贵之物"),
+]
+
+
+def _format_persona(sd: dict, backstory: str | None) -> str:
+    """AI 队友人设全量注入：优先用建卡产出的六段结构化背景，缺失时回退整段 backstory。
+
+    不做截断——性格与信念决定队友「像不像这个人」，截掉它们比省这点 token 代价大得多。
+    """
+    parts = [
+        f"- {label}：{text}"
+        for key, label in _PERSONA_SECTIONS
+        if (text := str(sd.get(key) or "").strip())
+    ]
+    if parts:
+        return "背景与性格：\n" + "\n".join(parts)
+    if backstory and backstory.strip():
+        return f"背景：{backstory.strip()}"
+    return ""
+
+
+def _party_member_brief(m: Character) -> str:
+    """队伍列表里的一行队友简介：名字（职业，一句特点）。"""
+    sd = m.system_data or {}
+    trait = str(sd.get("traits") or sd.get("personalDescription") or "").strip()
+    if trait:
+        trait = re.split(r"[。；;\n]", trait)[0].strip()[:40]
+    detail = "，".join(b for b in (str(sd.get("occupation") or "").strip(), trait) if b)
+    return f"- 队友：{m.name}" + (f"（{detail}）" if detail else "")
+
+
+def _format_player_info(char: Character, full_persona: bool = False) -> str:
     lines = [
         f"姓名：{char.name}",
         f"属性：{_format_json_compact(char.base_attributes)}",
@@ -442,7 +483,12 @@ def _format_player_info(char: Character) -> str:
                 "也不要让其做出清醒的选择。"
             )
         lines.append(note)
-    if char.backstory:
+    if full_persona:
+        # AI 队友自我扮演用：六段结构化人设全量注入（不截断）
+        persona = _format_persona(sd, char.backstory)
+        if persona:
+            lines.append(persona)
+    elif char.backstory:
         lines.append(f"背景：{char.backstory[:200]}")
     return "\n".join(lines)
 
@@ -1044,11 +1090,13 @@ def build_team_context(
     current_scene = _resolve_scene(scenes, viewer_scene_id, flags)
     current_location = (current_scene.get("title") or current_scene.get("name") or "当前所在") if current_scene else "当前所在"
 
-    # 队伍其他成员（一视同仁，无主角；房主角色也只是其中一名队友）
+    # 队伍其他成员（一视同仁，无主角；房主角色也只是其中一名队友）。
+    # 每人附一行「职业 + 一句特点」的简介：让队友互相认识彼此，对话时能称呼职业、
+    # 呼应对方性格，而不是只知道一个名字。
     party_members = [player_char] + [
         t for t in (all_teammates or []) if t.id != teammate.id
     ]
-    party_info = "\n".join(f"- 队友：{m.name}" for m in party_members) or "无"
+    party_info = "\n".join(_party_member_brief(m) for m in party_members) or "无"
 
     # 可前往的已知地点（对话提及/已访问；排除当前所在），供 travel 选 target
     known = session_service.list_known_locations(module, session, char_id=teammate.id, events=events)
@@ -1065,15 +1113,17 @@ def build_team_context(
     system_content = TEAM_SYSTEM_PROMPT.format(
         rule_system=module.rule_system.upper(),
         name=teammate.name,
-        char_info=_format_player_info(teammate),
+        char_info=_format_player_info(teammate, full_persona=True),
         current_location=current_location,
         party_info=party_info,
         known_locations=known_locations,
         mode_guidance=mode_guidance,
     )
 
+    # 30 条：给队友多一点连续剧情记忆（digest 每行很短，成本可控），
+    # 减少「只看见眼前三句话」式的失忆反应。
     digest = _format_recent_events_digest(
-        events[-20:], self_char_id=teammate.id,
+        events[-30:], self_char_id=teammate.id,
     )
 
     messages = [{"role": "system", "content": system_content}]

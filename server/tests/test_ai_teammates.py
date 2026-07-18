@@ -183,7 +183,7 @@ def test_team_turn_holds_on_silent_and_bad_json(db_factory, monkeypatch):
 
 
 def test_team_context_switches_guidance_by_separation(db_factory):
-    """同处一地 → 克制补位（宁缺毋滥）；分头独处 → 主动推进本场景（全靠自己）。"""
+    """同处一地 → 不抢戏也不当壁花（人设相关就开口）；分头独处 → 主动推进本场景（全靠自己）。"""
     db = db_factory()
     module, hero, teammates, session = _seed(db)
     events = session_service.get_session_events(db, session.id)
@@ -197,9 +197,35 @@ def test_team_context_switches_guidance_by_separation(db_factory):
         all_teammates=teammates, separated=True,
     )[0]["content"]
 
-    assert "补位与响应" in together and "宁缺毋滥" in together
+    assert "不当壁花" in together and "带角色色彩" in together
     assert "全靠你自己" in apart and "主动" in apart
-    assert "补位与响应" not in apart  # 分头时不再是补位定位
+    assert "不当壁花" not in apart  # 分头时不再是同场定位
+
+
+def test_team_context_injects_full_persona_and_party_briefs(db_factory):
+    """队友人设全量注入：六段结构化背景（system_data）不截断进 system prompt，
+    队伍列表每人带「职业 + 一句特点」简介（不再只有名字）。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    a1 = teammates[0]
+    long_trait = "沉默寡言但极重情义，凡事先观察后开口，" * 15  # 远超旧的 200 字截断
+    a1.system_data = {
+        "occupation": "私家侦探",
+        "personalDescription": "高瘦，风衣不离身",
+        "ideologyBeliefs": "只信证据",
+        "traits": long_trait,
+    }
+    hero.system_data = {"occupation": "记者", "traits": "好奇心旺盛。爱惹麻烦"}
+    db.commit()
+    events = session_service.get_session_events(db, session.id)
+
+    system = ctx.build_team_context(
+        a1, session, module, events, hero, all_teammates=teammates,
+    )[0]["content"]
+
+    assert "思想/信念：只信证据" in system
+    assert long_trait in system  # 全量注入，无 200 字截断
+    assert "队友：主角（记者，好奇心旺盛）" in system  # 队伍简介：职业 + 特点第一句
 
 
 def test_team_turn_marks_separated_teammate_proactive(db_factory, monkeypatch):
@@ -241,7 +267,7 @@ def test_team_turn_marks_separated_teammate_proactive(db_factory, monkeypatch):
     )))
 
     assert "全靠你自己" in seen[a1.id]     # 分头 → 主动推进
-    assert "补位与响应" in seen[a2.id]     # 同处 → 克制补位
+    assert "不当壁花" in seen[a2.id]       # 同处 → 不抢戏但有人设立场就开口
 
 
 def test_rollback_last_kp_output_keeps_inputs_and_dice(db_factory):
