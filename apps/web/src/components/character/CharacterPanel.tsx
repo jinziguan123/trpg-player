@@ -58,12 +58,16 @@ const RADAR_LABELS = ['力量', '敏捷', '意志', '体质', '外貌', '教育'
 const TAB_KEYS = ['基本信息', '技能', '道具', '档案'] as const
 
 const STATUS_LABEL: Record<string, string> = {
-  active: '正常', major_wound: '重伤', unconscious: '昏迷', dead: '死亡',
+  active: '正常', ok: '正常', major_wound: '重伤', dying: '濒死', unconscious: '昏迷', dead: '死亡', fled: '逃离',
   temporary_insanity: '临时疯狂', indefinite_insanity: '不定期疯狂', permanent_insanity: '永久疯狂',
   incapacitated: '重伤',
 }
 // 非正常状态用醒目色
-const STATUS_DANGER = new Set(['major_wound', 'unconscious', 'dead', 'temporary_insanity', 'indefinite_insanity', 'permanent_insanity', 'incapacitated'])
+const STATUS_DANGER = new Set(['major_wound', 'dying', 'unconscious', 'dead', 'temporary_insanity', 'indefinite_insanity', 'permanent_insanity', 'incapacitated'])
+
+function statusLabel(status: string): string {
+  return STATUS_LABEL[status] || (/^[a-z_]+$/i.test(status) ? '未知状态' : status)
+}
 
 const BACKSTORY_SECTIONS: { key: string; label: string }[] = [
   { key: 'personalDescription', label: '个人描述' },
@@ -180,7 +184,7 @@ function BasicInfoTab({ character }: { character: CharacterData }) {
                 color: STATUS_DANGER.has(character.status) ? 'var(--color-on-danger)' : 'var(--color-text-secondary)',
               }}
             >
-              {STATUS_LABEL[character.status] || character.status}
+              {statusLabel(character.status)}
             </span>
           </div>
         )}
@@ -594,7 +598,7 @@ export function CharacterPanel({ character, onSkillCheck, inventoryActions, sess
         <SkillsTab character={character} onSkillCheck={onSkillCheck} />
       </TabsContent>
       <TabsContent value="道具">
-        <InventoryTab character={character} />
+        <InventoryTab character={character} actions={inventoryActions} sessionId={sessionId} refreshKey={refreshKey} />
       </TabsContent>
       <TabsContent value="档案">
         <ProfileTab character={character} />
