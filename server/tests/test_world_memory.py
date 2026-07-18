@@ -412,6 +412,80 @@ def test_apply_memory_delta_ignores_unknown_npc_and_clue():
     assert ws["npc_memory"]["npc_butler"]["attitude"] == "neutral"
 
 
+# ── 纯函数：AI 队友私有记忆（team_memory）──────────────────────
+
+
+def test_record_team_deed_ring_buffer():
+    ws = {}
+    for i in range(world_memory.MAX_TEAM_DEEDS + 3):
+        ws = world_memory.record_team_deed(ws, "char_a", i, f"言行{i}")
+    deeds = ws["team_memory"]["char_a"]["deeds"]
+    assert len(deeds) == world_memory.MAX_TEAM_DEEDS       # 环形缓冲
+    assert deeds[-1]["summary"] == f"言行{world_memory.MAX_TEAM_DEEDS + 2}"
+    assert deeds[0]["summary"] == "言行3"                   # 最老的被挤掉
+    # 空 id / 空摘要：no-op
+    assert world_memory.record_team_deed({}, "", 1, "x") == {}
+    assert world_memory.record_team_deed({}, "char_a", 1, "  ") == {}
+
+
+def test_apply_team_memory_delta_whitelist_and_goals():
+    allowed = {"char_a"}
+    ws = world_memory.apply_team_memory_delta(
+        {},
+        {
+            "char_a": {"new_goals": ["查明兄弟死因", "还哈桑的人情"], "new_notes": ["管家在撒谎"]},
+            "char_ghost": {"new_goals": ["幻觉目标"]},   # 不在白名单：忽略
+        },
+        allowed,
+    )
+    mem = ws["team_memory"]["char_a"]
+    assert mem["goals"] == ["查明兄弟死因", "还哈桑的人情"]
+    assert mem["notes"] == ["管家在撒谎"]
+    assert "char_ghost" not in ws["team_memory"]
+
+    # done_goals 按精确文本移除；new_goals 去重
+    ws = world_memory.apply_team_memory_delta(
+        ws,
+        {"char_a": {"new_goals": ["查明兄弟死因"], "done_goals": ["还哈桑的人情"]}},
+        allowed,
+    )
+    assert ws["team_memory"]["char_a"]["goals"] == ["查明兄弟死因"]
+
+    # goals 超上限丢最旧
+    many = {"char_a": {"new_goals": [f"目标{i}" for i in range(world_memory.MAX_TEAM_GOALS + 2)]}}
+    ws = world_memory.apply_team_memory_delta(ws, many, allowed)
+    goals = ws["team_memory"]["char_a"]["goals"]
+    assert len(goals) == world_memory.MAX_TEAM_GOALS
+    assert "查明兄弟死因" not in goals                       # 最旧的被挤掉
+
+    # deeds 绝不被差量触碰
+    ws2 = world_memory.record_team_deed({}, "char_a", 1, "做了件事")
+    ws2 = world_memory.apply_team_memory_delta(
+        ws2, {"char_a": {"new_notes": ["一条心事"]}}, allowed,
+    )
+    assert ws2["team_memory"]["char_a"]["deeds"][0]["summary"] == "做了件事"
+
+
+def test_format_team_self_memory_and_all_brief():
+    ws = world_memory.apply_team_memory_delta(
+        {}, {"char_a": {"new_goals": ["查明兄弟死因"], "new_notes": ["管家在撒谎"]}}, {"char_a"},
+    )
+    ws = world_memory.record_team_deed(ws, "char_a", 5, "说：我不信管家的话")
+
+    text = world_memory.format_team_self_memory(ws, "char_a")
+    assert "你当前的个人目标：查明兄弟死因" in text
+    assert "管家在撒谎" in text and "我不信管家的话" in text
+    assert world_memory.format_team_self_memory(ws, "char_b") == ""   # 无记忆不注入
+
+    # all_brief：按队友清单遍历——没记忆的队友也要列出（否则抽取器建不起第一个目标）
+    brief = world_memory.format_team_memory_all_brief(
+        ws, {"char_a": "阿尔法", "char_b": "贝塔"},
+    )
+    assert "char_a（阿尔法）" in brief and "查明兄弟死因" in brief
+    assert "char_b（贝塔）" in brief and "（暂无个人目标与心事）" in brief
+    assert world_memory.format_team_memory_all_brief(ws, {}) == ""
+
+
 # ── v2：合并调用形态（假 provider 桩，不调真实 LLM）──────────────
 
 
@@ -422,9 +496,11 @@ class _FakeLLM:
         self.resp = resp
         self.boom = boom
         self.last_kw = None
+        self.last_messages = None
 
     async def complete(self, messages, temperature=0.7, **kw):
         self.last_kw = {"temperature": temperature, **kw}
+        self.last_messages = messages
         if self.boom:
             raise RuntimeError("provider down")
         return self.resp
@@ -446,13 +522,40 @@ def test_summarize_and_extract_merged_shape():
         llm, "既往摘要", _summ_events(), "- npc_butler：态度：中立",
     ))
     assert got is not None
-    summary, npc_updates, clue_notes = got
+    summary, npc_updates, clue_notes, team_updates = got
     assert "审讯管家" in summary                       # 摘要文本正确产出，未因抽取回归
     assert npc_updates["npc_butler"]["attitude"] == "wary"
     assert clue_notes == {"clue_key": "管家回避提及钥匙"}
+    assert team_updates == {}                          # 未给 team_updates 时归一为空 dict
     # 合并调用是一次低温 json_object 调用
     assert llm.last_kw["temperature"] == 0
     assert llm.last_kw["response_format"] == {"type": "json_object"}
+
+
+def test_summarize_and_extract_team_updates():
+    """带 team_memory_brief 时：提示词包含队友差量任务，抽取结果第四元返回 team_updates。"""
+    llm = _FakeLLM(json.dumps({
+        "summary": "梗概。",
+        "npc_updates": {},
+        "clue_notes": {},
+        "team_updates": {"char_a": {"new_goals": ["查明兄弟的死因"]}},
+    }))
+    got = asyncio.run(story_summarizer.summarize_and_extract(
+        llm, "既往", _summ_events(), "",
+        team_memory_brief="- char_a（阿尔法）：（暂无个人目标与心事）",
+    ))
+    assert got is not None
+    assert got[3] == {"char_a": {"new_goals": ["查明兄弟的死因"]}}
+    prompt = llm.last_messages[1]["content"]
+    assert "team_updates" in prompt and "char_a（阿尔法）" in prompt
+
+    # 不带 team_memory_brief（无 AI 队友）：提示词不出现队友差量任务
+    llm2 = _FakeLLM(json.dumps({"summary": "梗概。", "npc_updates": {}, "clue_notes": {}}))
+    got2 = asyncio.run(story_summarizer.summarize_and_extract(
+        llm2, "既往", _summ_events(), "",
+    ))
+    assert got2 is not None and got2[3] == {}
+    assert "team_updates" not in llm2.last_messages[1]["content"]
 
 
 def test_summarize_and_extract_fail_open_on_exception():

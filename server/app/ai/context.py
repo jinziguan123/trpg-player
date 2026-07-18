@@ -1119,6 +1119,13 @@ def build_team_context(
         known_locations=known_locations,
         mode_guidance=mode_guidance,
     )
+    # 私有记忆（个人目标/心事/自己的言行史）：只注入该队友自己的上下文。
+    # 让队友跨越 30 条事件窗口保有连续性，并有自己要主动推进的事——不再只是被动应声。
+    self_memory = world_memory.format_team_self_memory(
+        session.world_state or {}, teammate.id,
+    )
+    if self_memory:
+        system_content += "\n\n" + self_memory
 
     # 30 条：给队友多一点连续剧情记忆（digest 每行很短，成本可控），
     # 减少「只看见眼前三句话」式的失忆反应。

@@ -1138,6 +1138,12 @@ async def _run_team_turn(
                     "action", f"（前往：{label}）", actor_name=teammate.name,
                     event_id=ev.id, actor_id=teammate.id,
                 )
+                # 私有记忆钩子：自己的移动落 deeds（确定性、零 LLM）
+                _apply_world_memory(
+                    db, game_session,
+                    lambda ws, _tid=teammate.id, _q=ev.sequence_num, _s=f"前往了{label}":
+                        world_memory.record_team_deed(ws, _tid, _q, _s),
+                )
             continue
         if action == "silent" or not content:
             continue
@@ -1152,6 +1158,14 @@ async def _run_team_turn(
             chunk_type, content, actor_name=teammate.name,
             event_id=ev.id, actor_id=teammate.id,
         )
+        # 私有记忆钩子：自己的言行落 deeds（确定性、零 LLM）。check 在掷骰后带结果另记。
+        if action != "check":
+            verb = "说" if event_type == "dialogue" else "做"
+            _apply_world_memory(
+                db, game_session,
+                lambda ws, _tid=teammate.id, _q=ev.sequence_num, _s=f"{verb}：{content}":
+                    world_memory.record_team_deed(ws, _tid, _q, _s),
+            )
         # 队友主动检定：紧接着掷骰，结果落库交由 KP 收束叙述。心理学等「始终暗投」技能只落
         # 「做了一次暗骰」的事实、结果仅回灌 KP（经 blind_results 注入当轮上下文），绝不落库/
         # 广播成败——否则玩家能从事件或网络看到结果而元游戏。
@@ -1186,6 +1200,18 @@ async def _run_team_turn(
                 actor_name="系统", metadata=dice_meta,
             )
             yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=dev.id)
+            # 私有记忆钩子：检定连同结果落 deeds。暗骰不落成败——team_memory 会注入队友
+            # 自身上下文，落了成败就可能经其言行外泄（与 blind_results 的守密边界一致）。
+            deed = (
+                f"做：{content}（暗骰·{skill}）"
+                if dice_meta.get("blind")
+                else f"做：{content}（{skill}检定：{TIER_LABEL.get(result.tier, result.tier)}）"
+            )
+            _apply_world_memory(
+                db, game_session,
+                lambda ws, _tid=teammate.id, _q=dev.sequence_num, _s=deed:
+                    world_memory.record_team_deed(ws, _tid, _q, _s),
+            )
             # 世界记忆钩子 d：队友暗投若能确定性归属到唯一 NPC（行动描述里恰好点名一个），
             # 记录该 NPC「被看穿/未被看穿」；归属不成立则跳过，绝不猜测。
             if dice_meta.get("blind"):
@@ -1546,25 +1572,37 @@ async def _maybe_roll_story_summary(db: Session, session_id: str, llm) -> None:
             for npc in ((module.npcs if module else None) or [])
             if npc.get("id")
         }
+        # AI 队友清单：喂抽取器（没记忆的队友也列出，否则永远建不起第一个目标），
+        # 同时作为 team_updates 落库时的白名单
+        ai_teammates = session_service.get_ai_teammates(db, session_id)
+        team_brief = world_memory.format_team_memory_all_brief(
+            ws, {t.id: t.name for t in ai_teammates},
+        )
         # 叙事主流已停但仍持锁做收尾：给前端一个可读状态，别让玩家对着无声脉冲点干等。
         room_hub.broadcast(session_id, _make_chunk("housekeeping", "KP 正在整理笔记…"))
         result = await story_summarizer.summarize_and_extract(
             llm, ws.get("story_summary") or "", to_summ,
             world_memory.format_npc_memory_all_brief(ws, npc_names),
+            team_memory_brief=team_brief,
         )
         if not result:
             return
-        new_summary, npc_updates, clue_notes = result
+        new_summary, npc_updates, clue_notes, team_updates = result
         ws2 = dict(session.world_state or {})
         ws2["story_summary"] = new_summary
         ws2["story_summary_seq"] = to_summ[-1].sequence_num
         session.world_state = ws2
         db.commit()
-        # 差量合并：只改 attitude/reason/promises/lies 与已存在线索的 note，绝不碰台账 status。
-        if npc_updates or clue_notes:
+        # 差量合并：只改 attitude/reason/promises/lies 与已存在线索的 note，绝不碰台账 status；
+        # 队友差量另经 apply_team_memory_delta（白名单 = 本会话真实 AI 队友 id）。
+        if npc_updates or clue_notes or team_updates:
+            allowed = {t.id for t in ai_teammates}
             _apply_world_memory(
                 db, session,
-                lambda w: world_memory.apply_memory_delta(w, npc_updates, clue_notes),
+                lambda w: world_memory.apply_team_memory_delta(
+                    world_memory.apply_memory_delta(w, npc_updates, clue_notes),
+                    team_updates, allowed,
+                ),
             )
         logger.info(
             "滚动剧情摘要更新：session=%s 游标→%s", session_id, to_summ[-1].sequence_num,

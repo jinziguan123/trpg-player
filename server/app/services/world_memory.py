@@ -313,6 +313,127 @@ def apply_memory_delta(
     return ws
 
 
+# ---------------------------------------------------------------------------
+# AI 队友私有记忆（team_memory）：goals 个人目标 / notes 心里记着的事 / deeds 自己的言行。
+# deeds 由确定性钩子写（队友每次行动落一条，零 LLM）；goals/notes 由 MemoryKeeper 抽取器
+# 差量维护（apply_team_memory_delta，带安全边界）。只注入该队友自己的上下文，不进玩家视野。
+# ---------------------------------------------------------------------------
+
+# deeds 环形缓冲上限：覆盖远超事件摘要窗口（30 条混合事件）的自身行动史
+MAX_TEAM_DEEDS = 10
+# goals 上限：满了丢最旧（旧目标要么已完成被 done_goals 移除，要么早已过时）
+MAX_TEAM_GOALS = 6
+# notes 环形缓冲上限
+MAX_TEAM_NOTES = 8
+
+
+def team_memory_of(ws: dict, char_id: str) -> dict:
+    return dict(dict((ws or {}).get("team_memory") or {}).get(str(char_id)) or {})
+
+
+def record_team_deed(ws: dict, char_id: str, seq: int, summary: str) -> dict:
+    """给某 AI 队友的言行史追加一条（环形缓冲，只保留最近 ``MAX_TEAM_DEEDS`` 条）。"""
+    char_id = str(char_id or "").strip()
+    summary = _truncate(summary)
+    if not char_id or not summary:
+        return ws
+    ws = dict(ws or {})
+    memory = dict(ws.get("team_memory") or {})
+    entry = dict(memory.get(char_id) or {})
+    deeds = list(entry.get("deeds") or [])
+    deeds.append({"seq": int(seq or 0), "summary": summary})
+    entry["deeds"] = deeds[-MAX_TEAM_DEEDS:]
+    memory[char_id] = entry
+    ws["team_memory"] = memory
+    return ws
+
+
+def apply_team_memory_delta(ws: dict, team_updates: dict | None, allowed_ids) -> dict:
+    """把 MemoryKeeper 抽取的队友记忆差量合并进 world_state。
+
+    安全边界（防抽取器幻觉污染）：
+    - key 必须落在 ``allowed_ids``（本会话真实存在的 AI 队友 id）内，其余一律忽略；
+    - 每个队友只允许：追加 ``new_goals`` 到 goals（去重，超上限丢最旧）、
+      按精确文本用 ``done_goals`` 移除已完成目标、追加 ``new_notes`` 到 notes
+      （去重，环形上限）；绝不触碰 ``deeds``（那是确定性来源）。
+
+    纯函数：不改入参，返回更新后的新 dict；无有效差量则原样返回。
+    """
+    if not team_updates:
+        return ws
+    allowed = {str(i) for i in (allowed_ids or ())}
+    ws = dict(ws or {})
+    memory = dict(ws.get("team_memory") or {})
+    changed = False
+    for cid, upd in team_updates.items():
+        cid = str(cid or "").strip()
+        if not cid or cid not in allowed or not isinstance(upd, dict):
+            continue
+        entry = dict(memory.get(cid) or {})
+        goals = _append_unique(entry.get("goals"), upd.get("new_goals"))
+        done = {str(g or "").strip() for g in (upd.get("done_goals") or [])}
+        if done:
+            goals = [g for g in goals if g not in done]
+        entry["goals"] = goals[-MAX_TEAM_GOALS:]
+        entry["notes"] = _append_unique(
+            entry.get("notes"), upd.get("new_notes"),
+        )[-MAX_TEAM_NOTES:]
+        memory[cid] = entry
+        changed = True
+    if changed:
+        ws["team_memory"] = memory
+    return ws
+
+
+def format_team_self_memory(ws: dict, char_id: str) -> str:
+    """给 ``build_team_context`` 的「你的私人记忆」小节：该队友自己的目标/心事/言行史。
+
+    无任何记忆返回空串（不注入，向后兼容）。
+    """
+    mem = team_memory_of(ws, char_id)
+    if not mem:
+        return ""
+    lines = ["【你的私人记忆】（只有你自己知道；你的言行应与之连贯，并主动推进你的目标）"]
+    goals = [str(g) for g in (mem.get("goals") or []) if str(g).strip()]
+    if goals:
+        lines.append("你当前的个人目标：" + "；".join(goals))
+    notes = [str(n) for n in (mem.get("notes") or []) if str(n).strip()]
+    if notes:
+        lines.append("你记在心里的事：" + "；".join(notes))
+    deeds = [
+        str((d or {}).get("summary") or "").strip()
+        for d in (mem.get("deeds") or [])
+    ]
+    deeds = [d for d in deeds if d]
+    if deeds:
+        lines.append("你此前的言行（从旧到新）：" + "；".join(deeds))
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def format_team_memory_all_brief(ws: dict, id_to_name: dict[str, str]) -> str:
+    """把**全部在场 AI 队友**的私有记忆各渲一行，喂给 MemoryKeeper 抽取器当输入。
+
+    与 NPC 版不同：按传入的队友清单遍历（而非只遍历已有记忆的 key）——没有记忆的队友
+    也要列出，否则抽取器永远没法为其建立第一个目标（差量 key 必须落在已列出的 id 内）。
+    无队友返回空串。
+    """
+    if not id_to_name:
+        return ""
+    lines: list[str] = []
+    for cid, name in id_to_name.items():
+        mem = team_memory_of(ws, cid)
+        parts: list[str] = []
+        goals = [str(g) for g in (mem.get("goals") or []) if str(g).strip()]
+        if goals:
+            parts.append("目标：" + "；".join(goals))
+        notes = [str(n) for n in (mem.get("notes") or []) if str(n).strip()]
+        if notes:
+            parts.append("心事：" + "；".join(notes))
+        brief = "。".join(parts) or "（暂无个人目标与心事）"
+        lines.append(f"- {cid}（{name}）：{brief}")
+    return "\n".join(lines)
+
+
 def advance_backstage_cursor(ws: dict, seq: int, scene_id: str | None = None) -> dict:
     """推进幕后推演游标（``world_state.backstage``，设计稿 1.1 预留的子键）。
 

@@ -228,6 +228,55 @@ def test_team_context_injects_full_persona_and_party_briefs(db_factory):
     assert "队友：主角（记者，好奇心旺盛）" in system  # 队伍简介：职业 + 特点第一句
 
 
+def test_team_context_injects_private_memory(db_factory):
+    """有私有记忆（goals/notes/deeds）时注入「你的私人记忆」小节；无记忆不注入。"""
+    from app.services import world_memory
+
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    a1 = teammates[0]
+
+    before = ctx.build_team_context(
+        a1, session, module, [], hero, all_teammates=teammates,
+    )[0]["content"]
+    assert "你的私人记忆" not in before
+
+    ws = world_memory.apply_team_memory_delta(
+        {}, {a1.id: {"new_goals": ["查明兄弟死因"]}}, {a1.id},
+    )
+    session.world_state = world_memory.record_team_deed(ws, a1.id, 3, "说：我不信管家")
+    db.commit()
+
+    after = ctx.build_team_context(
+        a1, session, module, [], hero, all_teammates=teammates,
+    )[0]["content"]
+    assert "你的私人记忆" in after
+    assert "查明兄弟死因" in after and "我不信管家" in after
+
+
+def test_team_turn_records_deeds(db_factory, monkeypatch):
+    """队友每次言行确定性落 team_memory.deeds（speak/act/check 各自的摘要形态）。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    a1, a2 = teammates
+
+    async def fake_decide(self, messages):
+        if self.character_id == a1.id:
+            return '{"action":"speak","content":"我们分头找线索"}'
+        return '{"action":"check","content":"辨认铭文","skill":"考古学"}'
+
+    monkeypatch.setattr(chat_service.TeamAgent, "decide", fake_decide)
+    asyncio.run(_collect(chat_service._run_team_turn(
+        db, session.id, session, module, hero, [a1, a2], llm=None,
+    )))
+
+    tm = (db.get(GameSession, session.id).world_state or {}).get("team_memory") or {}
+    d1 = [d["summary"] for d in tm[a1.id]["deeds"]]
+    assert d1 == ["说：我们分头找线索"]
+    d2 = [d["summary"] for d in tm[a2.id]["deeds"]]
+    assert len(d2) == 1 and d2[0].startswith("做：辨认铭文（考古学检定：")
+
+
 def test_team_turn_marks_separated_teammate_proactive(db_factory, monkeypatch):
     """_run_team_turn 按各队友「所在场景 vs 主队锚点」判定分头：分头者收到主动推进指引，
     同处者收到克制补位指引。"""
@@ -348,9 +397,9 @@ def test_story_summarizer_merges_and_fails_open():
 
 def test_maybe_roll_story_summary_updates_and_advances_cursor(db_factory, monkeypatch):
     """未并入摘要的事件超过阈值时，把较老的一批浓缩进持久摘要并推进游标；不足阈值则不动。"""
-    # v2：滚动点改走「摘要 + 记忆抽取」合并调用；桩返回三元组，差量为空只验摘要滚动。
-    async def fake_summarize(llm, prev, events, npc_brief):
-        return ("合并后的滚动摘要", {}, {})
+    # v2：滚动点改走「摘要 + 记忆抽取」合并调用；桩返回四元组，差量为空只验摘要滚动。
+    async def fake_summarize(llm, prev, events, npc_brief, team_memory_brief=""):
+        return ("合并后的滚动摘要", {}, {}, {})
 
     monkeypatch.setattr(
         chat_service.story_summarizer, "summarize_and_extract", fake_summarize,

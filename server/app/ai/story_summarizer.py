@@ -86,24 +86,38 @@ async def summarize_story(llm: Any, prev_summary: str, events: list[Any]) -> str
 
 def build_memory_keeper_messages(
     prev_summary: str, events: list[Any], npc_memory_brief: str,
+    team_memory_brief: str = "",
 ) -> list[dict]:
     """合并调用（v2）：一次低温 json_object 调用同时产出滚动摘要 + MemoryKeeper 差量。
 
     与纯摘要（``build_summary_messages``）共用同一批输入事件与既往摘要，额外喂入当前
     npc_memory 摘要，让抽取器据「本轮新事件里 NPC 的言行变化」输出态度/承诺/谎言的差量。
-    输出严格 JSON：{summary, npc_updates, clue_notes}。
+    ``team_memory_brief`` 非空时（会话有 AI 队友）再抽取队友私有记忆差量（个人目标/心事）。
+    输出严格 JSON：{summary, npc_updates, clue_notes[, team_updates]}。
     """
     body = _events_text(events)
     prev = (prev_summary or "").strip() or "（暂无既往摘要）"
     mem = (npc_memory_brief or "").strip() or "（暂无 NPC 记忆）"
+    team = (team_memory_brief or "").strip()
+    team_task = "" if not team else (
+        "【team_updates 要求】对象，key 只能是下面队友记忆里**已列出的队友 id**，value 形如："
+        '{"new_goals": ["该角色本段新产生的个人目标"], '
+        '"done_goals": ["已完成/已放弃的目标原文"], '
+        '"new_notes": ["该角色个人在意并会记住的事"]}。'
+        "目标/心事须是**该角色自己的个人视角**（还某人的人情、查明某桩私事、护住某人、"
+        "对某 NPC 起了疑心），不是全队共同的剧情待办（那归 summary 管）。"
+        "仅当本段事件确有依据时才写，没有就省略该队友或留空。绝不臆造。\n"
+    )
+    team_section = "" if not team else f"【当前队友私有记忆】\n{team}\n\n"
+    team_key = "" if not team else ', "team_updates": {}'
     return [
         {
             "role": "system",
             "content": (
-                "你身兼 TRPG 剧情书记员与世界记忆守护者。基于既往摘要、本轮新事件与当前 NPC 记忆，"
+                "你身兼 TRPG 剧情书记员与世界记忆守护者。基于既往摘要、本轮新事件与当前记忆，"
                 "同时完成两件事，**只输出一个 JSON 对象**（不要解释、不要 markdown 围栏）：\n"
                 "1. summary：把既往摘要与新事件合并浓缩成一份连贯、客观的剧情梗概正文。\n"
-                "2. npc_updates / clue_notes：从新事件里抽取 NPC 记忆与线索备注的**差量**。"
+                "2. 其余字段：从新事件里抽取各类记忆的**差量**。"
             ),
         },
         {
@@ -122,10 +136,13 @@ def build_memory_keeper_messages(
                 '"new_lies": ["本轮新说的谎"]}。仅当本轮事件确有变化时才写对应字段，'
                 "没有变化就省略该 NPC 或留空。绝不臆造。\n"
                 "【clue_notes 要求】对象，key 是线索 id，value 是一句话备注，"
-                "**只用于给已存在的线索补充观察备注，绝不涉及玩家是否已掌握**。无则空对象。\n\n"
-                f"【既往剧情摘要】\n{prev}\n\n【当前 NPC 记忆】\n{mem}\n\n"
-                f"【本轮新发生的事件】\n{body}\n\n"
-                '现在输出 JSON：{"summary": "...", "npc_updates": {}, "clue_notes": {}}'
+                "**只用于给已存在的线索补充观察备注，绝不涉及玩家是否已掌握**。无则空对象。\n"
+                + team_task
+                + f"\n【既往剧情摘要】\n{prev}\n\n【当前 NPC 记忆】\n{mem}\n\n"
+                + team_section
+                + f"【本轮新发生的事件】\n{body}\n\n"
+                + '现在输出 JSON：{"summary": "...", "npc_updates": {}, "clue_notes": {}'
+                + team_key + "}"
             ),
         },
     ]
@@ -158,18 +175,22 @@ def _extract_json_object(raw: Any) -> dict | None:
 
 async def summarize_and_extract(
     llm: Any, prev_summary: str, events: list[Any], npc_memory_brief: str,
-) -> tuple[str, dict, dict] | None:
+    team_memory_brief: str = "",
+) -> tuple[str, dict, dict, dict] | None:
     """合并调用：一次 complete() 同时拿到滚动摘要与 MemoryKeeper 差量。
 
-    返回 ``(summary, npc_updates, clue_notes)``；任何失败（无 LLM / 无事件 / 调用异常 /
-    坏 JSON / 摘要为空）一律返回 None，由调用方保持原摘要与原 npc_memory 完全不变，
-    绝不阻塞跑团。抽取的差量结构未经安全校验——落库前须经 ``world_memory.apply_memory_delta``。
+    返回 ``(summary, npc_updates, clue_notes, team_updates)``；任何失败（无 LLM / 无事件 /
+    调用异常 / 坏 JSON / 摘要为空）一律返回 None，由调用方保持原摘要与各记忆完全不变，
+    绝不阻塞跑团。抽取的差量结构未经安全校验——落库前须经 ``world_memory.apply_memory_delta``
+    / ``world_memory.apply_team_memory_delta``。
     """
     if llm is None or not events:
         return None
     try:
         raw = await llm.complete(
-            build_memory_keeper_messages(prev_summary, events, npc_memory_brief),
+            build_memory_keeper_messages(
+                prev_summary, events, npc_memory_brief, team_memory_brief,
+            ),
             temperature=0,
             max_tokens=MAX_MEMORY_KEEPER_TOKENS,
             response_format={"type": "json_object"},
@@ -185,8 +206,10 @@ async def summarize_and_extract(
         return None
     npc_updates = data.get("npc_updates")
     clue_notes = data.get("clue_notes")
+    team_updates = data.get("team_updates")
     return (
         summary,
         npc_updates if isinstance(npc_updates, dict) else {},
         clue_notes if isinstance(clue_notes, dict) else {},
+        team_updates if isinstance(team_updates, dict) else {},
     )
