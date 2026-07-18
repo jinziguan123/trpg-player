@@ -7,12 +7,11 @@ import type { Combatant, CombatGridInfo, HpDiff } from './types'
 import { TOKEN_STATUS_META, isOut, pctOf, sideColor } from './meta'
 import { useDeathFx, usePrefersReducedMotion } from './useHpDiff'
 
-const CELL = 46           // 单格边长（px）——放大后的战棋格
-const TOKEN = CELL - 8    // 令牌直径
+const DEFAULT_CELL = 46   // 单格边长（px）——嵌入面板的战棋格；沉浸布局经 cell prop 放大（至多 64）
 
 // 单个战棋令牌：外层 wrapper 只管棋盘定位（transform 补间），内层 fx 壳播抖动/死亡动画，
 // 两层 transform 分离，滑动补间与受击抖动互不打架。
-function CombatToken({ c, isTurn, isTarget, moveActive, reduced, diff, dieSeq, onClick }: {
+function CombatToken({ c, isTurn, isTarget, moveActive, reduced, diff, dieSeq, cell, onClick }: {
   c: Combatant
   isTurn: boolean
   isTarget: boolean
@@ -20,8 +19,11 @@ function CombatToken({ c, isTurn, isTarget, moveActive, reduced, diff, dieSeq, o
   reduced: boolean
   diff?: HpDiff
   dieSeq?: number
+  cell: number
   onClick: () => void
 }) {
+  const CELL = cell
+  const TOKEN = cell - 8    // 令牌直径
   const out = isOut(c)
   const col = sideColor(c)
   const pct = pctOf(c)
@@ -72,7 +74,7 @@ function CombatToken({ c, isTurn, isTarget, moveActive, reduced, diff, dieSeq, o
           }}
         >
           <span style={{
-            fontFamily: 'var(--font-title)', fontSize: '0.95rem', fontWeight: 600,
+            fontFamily: 'var(--font-title)', fontSize: `${(0.95 * cell / DEFAULT_CELL).toFixed(2)}rem`, fontWeight: 600,
             lineHeight: 1, letterSpacing: 0, userSelect: 'none',
             textShadow: '0 1px 2px rgba(0, 0, 0, 0.45)',
           }}>
@@ -122,7 +124,7 @@ function CombatToken({ c, isTurn, isTarget, moveActive, reduced, diff, dieSeq, o
   )
 }
 
-export function CombatGrid({ grid, order, turn, myCharId, moveActive, budget, dash, targetId, fx, onCellMove, onPieceClick }: {
+export function CombatGrid({ grid, order, turn, myCharId, moveActive, budget, dash, targetId, fx, onCellMove, onPieceClick, cell = DEFAULT_CELL }: {
   grid: CombatGridInfo
   order: Combatant[]
   turn: string | null
@@ -134,7 +136,9 @@ export function CombatGrid({ grid, order, turn, myCharId, moveActive, budget, da
   fx: Record<string, HpDiff>   // useHpDiff 产出（与右侧卡片共用），驱动令牌受击/飘字
   onCellMove: (x: number, y: number) => void
   onPieceClick: (c: Combatant) => void
+  cell?: number                // 单格边长（px）：沉浸布局按容器自适应放大（46~64）
 }) {
+  const CELL = cell
   const reduced = usePrefersReducedMotion()
   const deathFx = useDeathFx(order)
   const me = myCharId ? order.find((c) => c.id === myCharId) : null
@@ -170,7 +174,8 @@ export function CombatGrid({ grid, order, turn, myCharId, moveActive, budget, da
         backgroundImage: 'linear-gradient(var(--color-border) 1px, transparent 1px), linear-gradient(90deg, var(--color-border) 1px, transparent 1px)',
         backgroundSize: `${CELL}px ${CELL}px`,
         border: '1px solid var(--color-border-strong)',
-        background: 'var(--color-bg-secondary)',
+        // 不能用 background 简写：与 backgroundImage/backgroundSize 混用会在重渲染时互相覆盖（React 警告）
+        backgroundColor: 'var(--color-bg-secondary)',
       }}>
         {(grid.blocked || []).map((k) => {
           const [x, y] = k.split(',').map(Number)
@@ -225,6 +230,7 @@ export function CombatGrid({ grid, order, turn, myCharId, moveActive, budget, da
             reduced={reduced}
             diff={fx[c.id]}
             dieSeq={deathFx[c.id]}
+            cell={CELL}
             onClick={() => onPieceClick(c)}
           />
         ))}

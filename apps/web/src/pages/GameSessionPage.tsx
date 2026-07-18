@@ -507,6 +507,46 @@ export function GameSessionPage() {
     return null
   }, [combat, messages, combatLogSince, diceAnimating, revealedDice])
 
+  // —— 沉浸战斗布局 ——
+  // 战斗激活 + 宽视口 + 用户未切回经典时，页面主体从单列聊天切成「战场（左，约 2/3）+ 聊天侧栏（右，约 1/3）」。
+  // 偏好本局内记住（useState 不持久化）：默认沉浸；切回经典后后续战斗沿用，直到再次手动切换。
+  const [battleLayout, setBattleLayout] = useState<'immersive' | 'classic'>('immersive')
+  // 响应式兜底：视口宽度不足 1100px 时不启用双栏，维持现有嵌入式面板。
+  const [wideViewport, setWideViewport] = useState(() => window.matchMedia('(min-width: 1100px)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1100px)')
+    const onChange = (e: MediaQueryListEvent) => setWideViewport(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  const immersiveOn = !!combat && battleLayout === 'immersive' && wideViewport
+  // 聊天侧栏折叠：折叠后战场更大；期间到达的新消息计入未读徽标（展开即清）。
+  const [chatCollapsed, setChatCollapsed] = useState(false)
+  const chatBaseCount = useRef(0)   // 折叠那一刻的可见消息数（未读 = 当前数 − 它）
+  useEffect(() => { if (!immersiveOn) setChatCollapsed(false) }, [immersiveOn])
+  // 进出沉浸布局时放一次短暗幕转场（复用场景转场 scene-veil 的观感；reduced-motion 下全局禁用）。
+  const [battleVeil, setBattleVeil] = useState(false)
+  const prevImmersiveOn = useRef(immersiveOn)
+  useEffect(() => {
+    if (prevImmersiveOn.current === immersiveOn) return
+    prevImmersiveOn.current = immersiveOn
+    setBattleVeil(true)
+    const t = setTimeout(() => setBattleVeil(false), 620)
+    return () => clearTimeout(t)
+  }, [immersiveOn])
+  // 聊天侧栏未读：只数会出现在主流里的消息（combat_log 机械结算行不算，它进战斗日志抽屉）。
+  const chatMsgCount = useMemo(() => messages.filter((m) => m.metadata?.combat_log !== true).length, [messages])
+  const chatUnread = chatCollapsed ? Math.max(0, chatMsgCount - chatBaseCount.current) : 0
+  const toggleChatCollapsed = () => setChatCollapsed((v) => {
+    if (!v) chatBaseCount.current = chatMsgCount
+    return !v
+  })
+  // 展开聊天侧栏后把消息流重新钉底（display:none 期间 scrollTop 会归零）。
+  useEffect(() => {
+    if (chatCollapsed) return
+    requestAnimationFrame(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight })
+  }, [chatCollapsed])
+
   const seenIds = useRef<Set<string>>(new Set())
   const liveTypeRef = useRef<string>('')
   const liveGroupRef = useRef<string>('')   // 当前流式 narration 所属分组（分头行动实时分栏）
@@ -1056,8 +1096,38 @@ export function GameSessionPage() {
   return (
     <div className="flex h-full gap-4">
       {sceneVeil && <div className="scene-veil" aria-hidden="true" />}
-      <div className="flex flex-col flex-1 min-w-0 relative">
-        {/* 3D 骰子投掷覆盖层：覆盖聊天主列，投掷时半透明暗底聚焦，落定后淡出 */}
+      {battleVeil && <div className="scene-veil" aria-hidden="true" />}
+      {/* 沉浸战斗布局：战斗激活时战场占左侧约 2/3（棋盘居中放大、参战卡环绕、动作区钉底），
+          聊天整列收成右侧栏（组件不动、仅收窄），完全可用；战斗结束自动回到单列。 */}
+      {immersiveOn && combat && (
+        <div className="battle-stage-pane flex-1 min-w-0 flex flex-col min-h-0">
+          <CombatStage
+            combat={combat}
+            myCharId={myCharId}
+            sessionId={currentSession.id}
+            pendingReaction={pendingReaction}
+            log={combatLog}
+            result={combatResult}
+            myWeapons={myWeapons}
+            layout="immersive"
+            onToggleLayout={() => setBattleLayout('classic')}
+          />
+        </div>
+      )}
+      {/* 聊天侧栏折叠后的窄条：点击展开；折叠期间新消息给未读徽标 */}
+      {immersiveOn && chatCollapsed && (
+        <button onClick={toggleChatCollapsed} className="chat-rail flex-shrink-0" title="展开聊天侧栏">
+          <PanelRightOpen size={16} />
+          {chatUnread > 0 && <span className="chat-unread-badge">{chatUnread > 99 ? '99+' : chatUnread}</span>}
+        </button>
+      )}
+      <div
+        className={`flex-col relative ${immersiveOn
+          ? (chatCollapsed ? 'hidden' : 'flex flex-shrink-0 chat-side-pane')
+          : 'flex flex-1 min-w-0'}`}
+        style={immersiveOn && !chatCollapsed ? { width: 'clamp(280px, 25vw, 420px)' } : undefined}
+      >
+        {/* 3D 骰子投掷覆盖层：portal 到 body、fixed 铺满视口，挂载位置不影响呈现 */}
         <DiceRoller ref={diceRollerRef} />
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pb-2 mb-2 border-b" style={{ borderColor: 'var(--color-border)' }}>
           <button
@@ -1155,13 +1225,22 @@ export function GameSessionPage() {
                 <GiCharacter size={13} /> 临场角色
               </button>
             )}
-            {!(showPanel && panelChar) && (
+            {!immersiveOn && !(showPanel && panelChar) && (
               <button
                 onClick={() => setShowPanel(true)}
                 className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
                 title="展开角色卡"
               >
                 <PanelRightOpen size={13} />
+              </button>
+            )}
+            {immersiveOn && (
+              <button
+                onClick={toggleChatCollapsed}
+                className="text-xs btn-secondary !px-2 !py-0.5 flex items-center gap-1"
+                title="收起聊天侧栏（战场更大；有新消息时侧条会显示未读徽标）"
+              >
+                <PanelRightClose size={13} />
               </button>
             )}
           </div>
@@ -1633,8 +1712,13 @@ export function GameSessionPage() {
           )}
         </div>
 
-        {combat && (
-          <CombatStage combat={combat} myCharId={myCharId} sessionId={currentSession.id} pendingReaction={pendingReaction} log={combatLog} result={combatResult} myWeapons={myWeapons} />
+        {combat && !immersiveOn && (
+          <CombatStage
+            combat={combat} myCharId={myCharId} sessionId={currentSession.id}
+            pendingReaction={pendingReaction} log={combatLog} result={combatResult} myWeapons={myWeapons}
+            layout="inline"
+            onToggleLayout={wideViewport ? () => setBattleLayout('immersive') : undefined}
+          />
         )}
         {chase && (
           <ChasePanel chase={chase} sessionId={currentSession.id} />
@@ -1762,7 +1846,8 @@ export function GameSessionPage() {
         </div>
       </div>
 
-      {showPanel && panelChar && (
+      {/* 角色卡侧栏：沉浸战斗布局下暂时隐藏（参战卡已带 HP/状态，屏幕让给战场与聊天） */}
+      {!immersiveOn && showPanel && panelChar && (
         <aside
           className="w-64 flex-shrink-0 border-l overflow-y-auto game-info"
           style={{ borderColor: 'var(--color-border)', background: 'var(--color-bg-card)' }}
