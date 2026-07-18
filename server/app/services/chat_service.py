@@ -2013,8 +2013,8 @@ def _module_excerpts_for_context(
         return None
 
 
-# plan.turn_kind → 规则书被动检索 query（规则术语导向）。roleplay/mixed 不注入：
-# 无明确规则情境，检索命中噪声大且白耗 token。
+# plan.turn_kind → 规则书被动检索 query（规则术语导向）。roleplay/mixed 无映射
+# （无明确规则情境），此时 _rule_query 会退到动作关键词 / 玩家原话兜底，仍然会查。
 _RULE_QUERY_BY_TURN_KIND = {
     "combat": "战斗 轮次 伤害 护甲",
     "investigate": "线索 检定 困难等级",
@@ -2088,9 +2088,30 @@ def _san_context(plan: turn_planner.TurnPlan | None, events: list) -> bool:
     return False
 
 
+def _recent_player_text(events: list, limit_chars: int = 120) -> str:
+    """玩家最近一条动作/发言的原文（截断）——术语词表没命中时的检索 query 兜底。
+
+    bge 的 query 侧本就面向自然语言（embed_query 自带检索指令前缀），玩家原话直查
+    好过不查：词表只该决定「查什么更准」，不该决定「查不查」。"""
+    for ev in reversed(events or []):
+        if getattr(ev, "event_type", None) in ("action", "dialogue"):
+            text = (getattr(ev, "content", "") or "").strip()
+            if text:
+                return text[:limit_chars]
+    return ""
+
+
 def _rule_query(plan: turn_planner.TurnPlan | None, events: list) -> str | None:
-    """KP 上下文用的规则检索 query：SAN 情境优先；否则据 planner 的**具体技能** + turn_kind 术语
-    + 玩家动作关键词组合去重。planner 缺失时退化为纯动作关键词——规则照进、不被 planner 失败连累。"""
+    """KP 上下文用的规则检索 query，按优先级：
+
+    1. planner 显式点名要查的规则（plan.rule_query）——裁定器最清楚本轮拿不准哪条；
+    2. SAN 情境固定查疯狂规则；
+    3. planner 的**具体技能** + turn_kind 术语 + 玩家动作关键词组合去重；
+    4. 都组不出来时兜底用玩家最近发言原文——保证有玩家行动的回合**每轮必查**，
+       不再因 turn_kind=roleplay/mixed 或词表未命中而整轮跳过（此前「查询长期偏少」的主因）。
+    """
+    if plan is not None and (explicit := (plan.rule_query or "").strip()):
+        return explicit
     if _san_context(plan, events):
         return _SAN_RULE_QUERY
     parts: list[str] = []
@@ -2104,17 +2125,17 @@ def _rule_query(plan: turn_planner.TurnPlan | None, events: list) -> str | None:
     parts.append(_rule_keywords_from_events(events))
     seen: set[str] = set()
     toks = [t for t in " ".join(parts).split() if not (t in seen or seen.add(t))]
-    return " ".join(toks) or None
+    return " ".join(toks) or _recent_player_text(events) or None
 
 
 def _retrieve_rules(
     db: Session, module: Module, query: str, game_session: GameSession | None,
 ) -> list[dict] | None:
-    """按 query 检索规则书 top-2 并记 RAG 台账。未挂规则书/检索失败一律 None（fail-open）。"""
+    """按 query 检索规则书 top-3 并记 RAG 台账。未挂规则书/检索失败一律 None（fail-open）。"""
     try:
         if not rulebook_service.has_rulebook(db, module.rule_system):
             return None
-        hits = rulebook_service.retrieve(db, query, module.rule_system, k=2)
+        hits = rulebook_service.retrieve(db, query, module.rule_system, k=3)
         _record_rag(db, game_session, kind="rule", mode="passive", query=query, hits=hits)
         return hits or None
     except Exception:  # noqa: BLE001 — 检索失败不得阻塞生成主流程
@@ -2129,10 +2150,10 @@ def _rule_excerpts_for_context(
     events: list,
     game_session: GameSession | None = None,
 ) -> list[dict] | None:
-    """被动注入用的规则书要点（供 KP 上下文）：按当前**具体情境**组 query 检索 top-2。
+    """被动注入用的规则书要点（供 KP 上下文）：按当前**具体情境**组 query 检索 top-3。
 
-    fail-open：开场（无事件）、组不出 query、未挂规则书、或检索失败一律返回 None——
-    build_kp_context 收到 None 时行为与无此特性完全一致。
+    fail-open：开场（无事件）、组不出 query（本轮无任何玩家动作/发言）、未挂规则书、
+    或检索失败一律返回 None——build_kp_context 收到 None 时行为与无此特性完全一致。
     """
     if not events:
         return None
@@ -2146,10 +2167,12 @@ def _rule_excerpts_for_planner(
     db: Session, module: Module, events: list, game_session: GameSession | None = None,
 ) -> list[dict] | None:
     """给 planner 用的规则片段：planner 在 KP 之前跑、还没有 plan，故 query 只据玩家动作（+SAN 情境）取。
-    让规则条文先进裁定环节，使难度/检定/奖惩骰/SAN 的判定更贴规则而非凭印象。"""
+    让规则条文先进裁定环节，使难度/检定/奖惩骰/SAN 的判定更贴规则而非凭印象。
+    词表未命中时兜底用玩家原话——有玩家行动就必查（同 _rule_query 的兜底逻辑）。"""
     if not events:
         return None
     query = _SAN_RULE_QUERY if _san_context(None, events) else _rule_keywords_from_events(events).strip()
+    query = query or _recent_player_text(events)
     if not query:
         return None
     return _retrieve_rules(db, module, query, game_session)

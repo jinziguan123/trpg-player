@@ -177,7 +177,7 @@ def _make_event(content, seq=1):
 
 def test_rule_excerpts_query_mapping_by_turn_kind(db_factory, monkeypatch):
     """turn_kind → 规则术语 query 的映射（动作无规则关键词时即纯 turn_kind 术语）；
-    roleplay/mixed 且无规则关键词 → 不检索不注入。"""
+    roleplay/mixed 无映射 → 兜底用玩家最近发言原文，仍然检索（每轮必查）。"""
     db = db_factory()
     module, char, session = _seed(db)
     events = session_service.get_session_events(db, session.id)
@@ -203,15 +203,15 @@ def test_rule_excerpts_query_mapping_by_turn_kind(db_factory, monkeypatch):
         hits = chat_service._rule_excerpts_for_context(db, module, plan, events)
         assert hits and hits[0]["text"] == "条文片段", kind
         assert captured["q"] == query, kind
-        assert captured["k"] == 2  # top-2 控制注入体量
+        assert captured["k"] == 3  # top-3 控制注入体量
 
-    # roleplay / mixed：无明确规则情境 → 不检索、不注入
-    captured.clear()
+    # roleplay / mixed：无术语映射 → 兜底用玩家最近发言原文检索（不再整轮跳过）
     for kind in ("roleplay", "mixed"):
-        assert chat_service._rule_excerpts_for_context(
+        captured.clear()
+        hits = chat_service._rule_excerpts_for_context(
             db, module, TurnPlan(turn_kind=kind), events,
-        ) is None
-    assert captured == {}
+        )
+        assert hits and captured["q"] == "我尝试搬开石板", kind
 
 
 def test_rule_excerpts_san_context_overrides_turn_kind(db_factory, monkeypatch):
@@ -243,8 +243,8 @@ def test_rule_excerpts_san_context_overrides_turn_kind(db_factory, monkeypatch):
 
 
 def test_rule_excerpts_gates_and_fail_open(db_factory, monkeypatch):
-    """组不出 query（此处种子动作无规则关键词，plan=None）/ 开场（无事件）/ 未挂规则书 /
-    检索抛错 → 一律 None（fail-open）。"""
+    """开场（无事件）/ 未挂规则书 / 检索抛错 → 一律 None（fail-open）。
+    注意：有玩家事件时兜底 query 总组得出来，「组不出 query」只剩无事件一种情形。"""
     db = db_factory()
     module, char, session = _seed(db)
     events = session_service.get_session_events(db, session.id)
@@ -258,12 +258,13 @@ def test_rule_excerpts_gates_and_fail_open(db_factory, monkeypatch):
 
     monkeypatch.setattr(rulebook_service, "retrieve", fake_retrieve)
 
-    # plan=None / 开场：连 has_rulebook 都不必查
-    assert chat_service._rule_excerpts_for_context(db, module, None, events) is None
+    # 开场（无事件）：连 has_rulebook 都不必查
     assert chat_service._rule_excerpts_for_context(db, module, plan, []) is None
+    assert chat_service._rule_excerpts_for_context(db, module, None, []) is None
 
-    # 未挂规则书 → None 且不发起检索
+    # 未挂规则书 → None 且不发起检索（即便兜底 query 组得出来）
     monkeypatch.setattr(rulebook_service, "has_rulebook", lambda *a, **k: False)
+    assert chat_service._rule_excerpts_for_context(db, module, None, events) is None
     assert chat_service._rule_excerpts_for_context(db, module, plan, events) is None
     assert called["n"] == 0
 
@@ -313,6 +314,30 @@ def test_rule_excerpts_fallback_to_action_when_no_plan(db_factory, monkeypatch):
     assert hits and "射击" in cap["q"]
 
 
+def test_rule_query_falls_back_to_player_text(db_factory, monkeypatch):
+    """词表/turn_kind 都没命中且 plan=None → 兜底用玩家最近发言原文——有玩家行动就必查。"""
+    db = db_factory()
+    module, char, session = _seed(db)
+    events = session_service.get_session_events(db, session.id)
+    cap = {}
+    _cap_retrieve(monkeypatch, cap)
+    hits = chat_service._rule_excerpts_for_context(db, module, None, events)
+    assert hits and cap["q"] == "我尝试搬开石板"
+
+
+def test_planner_rule_query_takes_priority(db_factory, monkeypatch):
+    """planner 显式点名的 plan.rule_query 是最高优先级 query——盖过 SAN 情境与词表组合。"""
+    db = db_factory()
+    module, char, session = _seed(db)
+    events = session_service.get_session_events(db, session.id)
+    san_events = events + [_make_event("调查员 理智检定（失败）：损失 4 SAN", seq=99)]
+    cap = {}
+    _cap_retrieve(monkeypatch, cap)
+    plan = TurnPlan(turn_kind="combat", rule_query="霰弹枪 抵近 伤害")
+    hits = chat_service._rule_excerpts_for_context(db, module, plan, san_events)
+    assert hits and cap["q"] == "霰弹枪 抵近 伤害"
+
+
 def test_rule_excerpts_for_planner_from_action(db_factory, monkeypatch):
     """给 planner 的规则片段据玩家动作关键词取（planner 尚无 plan），让裁定更贴规则。"""
     db = db_factory()
@@ -324,6 +349,17 @@ def test_rule_excerpts_for_planner_from_action(db_factory, monkeypatch):
     _cap_retrieve(monkeypatch, cap)
     hits = chat_service._rule_excerpts_for_planner(db, module, events)
     assert hits and "擒抱" in cap["q"]
+
+
+def test_rule_excerpts_for_planner_falls_back_to_player_text(db_factory, monkeypatch):
+    """planner 侧词表未命中时同样兜底玩家原话（种子动作「搬开石板」无规则关键词）。"""
+    db = db_factory()
+    module, char, session = _seed(db)
+    events = session_service.get_session_events(db, session.id)
+    cap = {}
+    _cap_retrieve(monkeypatch, cap)
+    hits = chat_service._rule_excerpts_for_planner(db, module, events)
+    assert hits and cap["q"] == "我尝试搬开石板"
 
 
 def test_kp_context_injects_rule_excerpts_section(db_factory):

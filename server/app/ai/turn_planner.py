@@ -278,6 +278,10 @@ class TurnPlan(BaseModel):
     items_gained: ItemDeltaList = Field(default_factory=list)  # 本轮玩家获得的物品 → 确定性入库
     items_lost: ItemDeltaList = Field(default_factory=list)     # 本轮确定性失去/消耗/损毁的物品
     direction: DirectionPolicy = Field(default_factory=DirectionPolicy)
+    # 本轮裁定涉及拿不准的具体规则时，planner 显式点名要查的规则关键词（如「霰弹枪 抵近 伤害」）。
+    # 系统据此检索规则书原文喂给 KP——把「主动查规则」的判断交给稳定的裁定器，
+    # 而非指望 KP 在叙事时自发喊 [RULE_LOOKUP]。空串 = 本轮无需专门查。
+    rule_query: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -544,6 +548,10 @@ def build_turn_plan_messages(
                 "名字（只能取运行时资料里的 current_scene / 可见场景，解析不到就别填）——后端据此确定性"
                 "把角色位置与大地图切过去，不靠 KP 记得。**仅讨论/打算/建议去某地（『我们该先去X』）"
                 "绝不填**：那只是商量，人没动；留空表示本轮仍在原场景。\n"
+                "rule_query：当本轮裁定涉及你**没有十足把握的具体规则**时（特殊检定的精确用法、"
+                "武器/法术数值、战斗细则、状态效果、疯狂症状表等），填一句要查的规则关键词"
+                "（如「霰弹枪 抵近 伤害」「潜行 对抗 侦查」）——系统会据此检索规则书原文供裁定与叙事；"
+                "对裁定有把握、或纯角色扮演回合则留空 \"\"。拿不准就填，宁可查一次也别凭印象编数值。\n"
                 "npc_policy.speakers 与 direction.nudge 里的 NPC **只能用 canonical_npcs 里的名字**；"
                 "improvised_npcs 是 KP 此前临场添加的龙套——**绝不安排他们携带线索、透露情报或推动剧情**，"
                 "最多作为氛围出现，追问时指回模组内容。\n"

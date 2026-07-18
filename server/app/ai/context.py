@@ -79,9 +79,9 @@ MAX_RECENT_EVENTS = 60
 # 被动注入的模组原文摘录：单块截断（摘录段计入 MAX_SYSTEM_TOKENS 预算）。系统预算放宽后
 # 可给更完整的原文片段，从 400 提到 600 字。
 MODULE_EXCERPT_MAX_CHARS = 600
-# 被动注入的规则书要点：单块截断更紧（top-2 × 260 字 ≈ 800 token）——条文密度高于叙事原文，
-# 截断到要点即够裁定用，省下的预算留给事件史。
-RULE_EXCERPT_MAX_CHARS = 260
+# 被动注入的规则书要点：单块截断（top-3 × 400 字 ≈ 1800 token）。260 字常把条文的数值表/
+# 分支砍在半截（伤害表、疯狂症状表都长），KP 拿半条规则等于没拿——放宽到 400 保住整条裁定链。
+RULE_EXCERPT_MAX_CHARS = 400
 # 「幕后动态」小节最多注入最近几条幕后事件（visibility=["kp"]，仅 KP 可见）
 MAX_BACKSTAGE_IN_CONTEXT = 5
 # 反 tic 反馈环阈值：最近历史旁白里「不是X，是Y」否定式对比句累计达此数，即在下一轮上下文
@@ -731,7 +731,7 @@ def build_kp_context(
             system_content += MODULE_EXCERPT_SECTION.format(excerpts=excerpt_body)
 
     # 规则要点（被动注入）：调用方按本轮回合类型检索好的规则书片段，裁定时优先遵此执行。
-    # 截断/编号复用模组摘录逻辑，单块上限更紧（RULE_EXCERPT_MAX_CHARS，top-2 合计 ≈800 token）。
+    # 截断/编号复用模组摘录逻辑，单块上限见 RULE_EXCERPT_MAX_CHARS（top-3 合计 ≈1800 token）。
     if rule_excerpts:
         rule_body = _format_module_excerpts(rule_excerpts, max_chars=RULE_EXCERPT_MAX_CHARS)
         if rule_body:
