@@ -30,6 +30,9 @@ class AIProfile(BaseModel):
     model_name: str = ""
     api_key: str = ""
     is_active: bool = False
+    # 快模型标记：planner/AI 队友/滚动摘要/幕后推演等结构化副任务改走该配置（省时提速）；
+    # KP 主叙事与 NPC 台词恒走激活配置。全部未标记 = 副任务也走激活配置（旧行为）。
+    is_fast: bool = False
     vision: bool = False  # 是否支持多模态（看图）。显式开关，覆盖按模型名的启发式判断
     # KP 生成走 agent loop（标准工具调用）新路径的开关。**默认开启**（tool_use 为治本方向，
     # 台词走 say() 结构化出口）；仅当 Provider 支持工具（supports_tools）时才实际生效，否则安全
@@ -179,6 +182,14 @@ def load_active_profile() -> AIProfile | None:
     return None
 
 
+def load_fast_profile() -> AIProfile | None:
+    """返回标记为「快模型」的配置；未标记或配置不完整（缺 key/model）返回 None（回落主模型）。"""
+    for p in _load_profiles():
+        if p.is_fast and p.api_key and p.model_name:
+            return p
+    return None
+
+
 # ---------- API 端点 ----------
 
 class AIStatus(BaseModel):
@@ -308,6 +319,23 @@ def activate_profile(profile_id: str):
         raise HTTPException(status_code=404, detail="配置不存在")
     _save_profiles(profiles)
     return {"status": "ok"}
+
+
+@router.post("/ai/profiles/{profile_id}/set-fast")
+def set_fast_profile(profile_id: str):
+    """把某配置标记为「快模型」（结构化副任务用）；再点同一个 = 取消标记（回落主模型）。"""
+    profiles = _load_profiles()
+    found = False
+    for p in profiles:
+        if p.id == profile_id:
+            p.is_fast = not p.is_fast   # 幂等开关：重复点击即取消
+            found = True
+        else:
+            p.is_fast = False
+    if not found:
+        raise HTTPException(status_code=404, detail="配置不存在")
+    _save_profiles(profiles)
+    return {"status": "ok", "is_fast": any(p.is_fast for p in profiles)}
 
 
 @router.post("/ai/profiles/{profile_id}/test", response_model=TestResult)

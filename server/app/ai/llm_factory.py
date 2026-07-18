@@ -7,24 +7,10 @@
 from app.ai.provider import LLMProvider
 from app.ai.providers.openai_compat import OpenAICompatProvider
 
-__all__ = ["get_llm", "OpenAICompatProvider"]
+__all__ = ["get_llm", "get_fast_llm", "OpenAICompatProvider"]
 
 
-def get_llm() -> LLMProvider:
-    """根据激活的配置创建对应的 LLM Provider。
-
-    - protocol="anthropic" -> AnthropicProvider
-    - protocol="openai"（默认）-> OpenAICompatProvider（兼容 OpenAI API）
-
-    AI 配置的唯一真源是设置页（ai_settings.json 的激活 profile）；不再有 .env 回退。
-    没有激活配置时抛出可读错误，由生成路径兜成「请到设置页配置 AI」的提示。
-    """
-    from app.api.ai_settings import load_active_profile
-
-    profile = load_active_profile()
-    if not profile:
-        raise ValueError("未配置可用的 AI 模型：请到设置页添加并激活一个 AI 配置。")
-
+def _provider_from_profile(profile) -> LLMProvider:
     if profile.protocol == "anthropic":
         from app.ai.providers.anthropic import AnthropicProvider
         return AnthropicProvider(
@@ -42,3 +28,34 @@ def get_llm() -> LLMProvider:
         image_base_url=getattr(profile, "image_base_url", ""),
         image_api_key=getattr(profile, "image_api_key", ""),
     )
+
+
+def get_llm() -> LLMProvider:
+    """根据激活的配置创建对应的 LLM Provider。
+
+    - protocol="anthropic" -> AnthropicProvider
+    - protocol="openai"（默认）-> OpenAICompatProvider（兼容 OpenAI API）
+
+    AI 配置的唯一真源是设置页（ai_settings.json 的激活 profile）；不再有 .env 回退。
+    没有激活配置时抛出可读错误，由生成路径兜成「请到设置页配置 AI」的提示。
+    """
+    from app.api.ai_settings import load_active_profile
+
+    profile = load_active_profile()
+    if not profile:
+        raise ValueError("未配置可用的 AI 模型：请到设置页添加并激活一个 AI 配置。")
+    return _provider_from_profile(profile)
+
+
+def get_fast_llm() -> LLMProvider:
+    """结构化副任务（planner / AI 队友 / 滚动摘要 / 幕后推演）用的「快模型」。
+
+    设置页可把某个配置标记为快模型（is_fast）；未标记时回落到主模型（行为与从前一致）。
+    KP 主叙事与 NPC 台词**永远走主模型**——快模型只接不直面玩家文笔的结构化任务。
+    """
+    from app.api.ai_settings import load_fast_profile
+
+    profile = load_fast_profile()
+    if not profile:
+        return get_llm()
+    return _provider_from_profile(profile)

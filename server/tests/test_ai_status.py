@@ -41,3 +41,25 @@ def test_classify_llm_error_maps_status_and_network():
     assert _classify_llm_error(_http_err(500))
     assert "连接" in _classify_llm_error(httpx.ConnectError("boom"))
     assert _classify_llm_error(ValueError("其它")) == ""  # 无法归类 → 空串回落通用文案
+
+
+def test_set_fast_profile_toggle(monkeypatch, tmp_path):
+    """快模型标记：单选（设 A 清 B）、重复点同一个即取消；load_fast_profile 读取一致。"""
+    c = TestClient(app)
+    monkeypatch.setattr(ai_settings, "SETTINGS_FILE", tmp_path / "ai_settings.json")
+
+    a = c.post("/api/settings/ai/profiles", json={"name": "A", "model_name": "m1", "api_key": "k1"}).json()
+    b = c.post("/api/settings/ai/profiles", json={"name": "B", "model_name": "m2", "api_key": "k2"}).json()
+
+    assert c.post(f"/api/settings/ai/profiles/{a['id']}/set-fast").json()["is_fast"] is True
+    assert ai_settings.load_fast_profile().name == "A"
+
+    # 换标 B → A 被清
+    c.post(f"/api/settings/ai/profiles/{b['id']}/set-fast")
+    assert ai_settings.load_fast_profile().name == "B"
+
+    # 重复点 B → 取消标记，回落主模型（load_fast_profile None）
+    resp = c.post(f"/api/settings/ai/profiles/{b['id']}/set-fast").json()
+    assert resp["is_fast"] is False and ai_settings.load_fast_profile() is None
+
+    assert c.post("/api/settings/ai/profiles/nonexistent/set-fast").status_code == 404

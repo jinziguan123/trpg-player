@@ -33,6 +33,31 @@ def test_get_llm_raises_without_active_profile(monkeypatch):
         llm_factory.get_llm()
 
 
+def test_get_fast_llm_uses_fast_profile_or_falls_back(monkeypatch):
+    """标记了快模型 → 副任务走它；未标记 → 回落激活配置（旧行为）。"""
+    from app.api import ai_settings
+
+    monkeypatch.setattr(
+        ai_settings, "load_active_profile",
+        lambda: ai_settings.AIProfile(
+            name="主", protocol="openai", model_name="big-model",
+            base_url="https://x", api_key="sk-main",
+        ),
+    )
+    monkeypatch.setattr(
+        ai_settings, "load_fast_profile",
+        lambda: ai_settings.AIProfile(
+            name="快", protocol="openai", model_name="small-model",
+            base_url="https://y", api_key="sk-fast", is_fast=True,
+        ),
+    )
+    fast = llm_factory.get_fast_llm()
+    assert isinstance(fast, OpenAICompatProvider) and fast.model == "small-model"
+
+    monkeypatch.setattr(ai_settings, "load_fast_profile", lambda: None)
+    assert llm_factory.get_fast_llm().model == "big-model"   # 回落主模型
+
+
 class _FakeResp:
     def __init__(self, lines):
         self._lines = lines

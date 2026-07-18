@@ -22,6 +22,7 @@ interface AIProfile {
   model_name: string
   api_key: string
   is_active: boolean
+  is_fast?: boolean
   vision?: boolean
   context_window?: number
   reasoning_effort?: string
@@ -560,6 +561,17 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
     }
   }
 
+  /* 标记/取消快模型（结构化副任务：裁定 planner、AI 队友、滚动摘要走它，省时提速） */
+  const handleToggleFast = async (id: string) => {
+    try {
+      const res = await api.post<{ is_fast: boolean }>(`/settings/ai/profiles/${id}/set-fast`)
+      toast.success(res.data.is_fast ? '已设为快模型（裁定/队友/摘要将走它）' : '已取消快模型，副任务回落主模型')
+      await fetchProfiles()
+    } catch {
+      toast.error('设置快模型失败')
+    }
+  }
+
   /* 删除配置 */
   const handleDelete = async (id: string, name: string) => {
     if (!window.confirm(`确定要删除配置「${name}」吗？`)) return
@@ -695,6 +707,15 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
                       已激活
                     </span>
                   )}
+                  {p.is_fast && (
+                    <span
+                      className="badge"
+                      style={{ color: 'var(--color-text-accent)' }}
+                      title="裁定 planner、AI 队友、滚动摘要等结构化副任务走此配置；KP 叙事仍走激活配置"
+                    >
+                      快模型
+                    </span>
+                  )}
                 </div>
                 <div
                   style={{
@@ -721,6 +742,14 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
                     激活
                   </button>
                 )}
+                <button
+                  className="btn-secondary"
+                  style={{ padding: '0.25rem 0.6rem', fontSize: '0.8rem' }}
+                  onClick={() => handleToggleFast(p.id)}
+                  title="快模型：裁定 planner、AI 队友、滚动摘要等结构化副任务改走此配置（KP 叙事仍走激活配置）；再点一次取消"
+                >
+                  {p.is_fast ? '取消快模型' : '设为快模型'}
+                </button>
                 <button
                   className="btn-secondary"
                   style={{ padding: '0.25rem 0.6rem', fontSize: '0.8rem' }}
