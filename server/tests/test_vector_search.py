@@ -42,6 +42,19 @@ def test_nan与inf行被清理不崩():
     assert all(np.isfinite(score) for _, score in top)
 
 
+def test_超大有限坏行不告警不被选():
+    """损坏 BLOB 可能被重解读成超大**有限** float32（非 nan/inf，逃过 nan_to_num）——
+    也不得告警、不得产出 nan、不得盖过正常行。"""
+    q = [1.0, 0.0]
+    huge = 3.0e38  # 接近 float32 上限的有限值
+    embs = [_blob([huge, huge]), _blob([1.0, 0.0])]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        top = cosine_top_k(embs, q, k=2)
+    assert top[0][0] == 1  # 正常行在前
+    assert all(np.isfinite(score) for _, score in top)
+
+
 def test_查询零向量返回空():
     assert cosine_top_k([_blob([1.0, 0.0])], [0.0, 0.0], k=1) == []
 

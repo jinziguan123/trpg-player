@@ -40,8 +40,12 @@ def cosine_top_k(
     if mat.shape[1] != qn.shape[0]:
         return []  # 维度不一致（脏数据/换过嵌入模型）：宁可不检索也不给错误结果
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
-    safe = np.where(norms == 0, 1.0, norms)  # 零范数行除以 1 → 结果全 0（不触发除零告警）
-    sims = (mat / safe) @ qn
+    safe = np.where(norms > 0, norms, 1.0)  # 零范数行除以 1 → 结果全 0（不触发除零告警）
+    # 双保险：errstate 压掉除零/溢出/无效值告警，且把除法与 matmul 结果里任何残留的 inf·nan
+    # 统一清零——退化/损坏行相似度归 0、排到末尾不被选，绝不污染整批检索、也不刷日志告警。
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        unit = np.nan_to_num(mat / safe, nan=0.0, posinf=0.0, neginf=0.0)
+        sims = np.nan_to_num(unit @ qn, nan=0.0, posinf=0.0, neginf=0.0)
 
     if weights is not None:
         w = np.nan_to_num(np.asarray(weights, dtype=np.float64), nan=1.0)
