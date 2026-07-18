@@ -866,6 +866,151 @@ select.input option {
   100% { box-shadow: none; }
 }
 
+/* ===== 战斗 HUD 面板质感：双线描边 + 四角琥珀角饰（纯 CSS，不引资源文件） ===== */
+.combat-hud {
+  border: 1px solid var(--color-border-strong) !important;
+  box-shadow:
+    0 2px 8px var(--shadow-color),
+    inset 0 0 0 1px color-mix(in srgb, var(--color-border-strong) 45%, transparent),
+    inset 0 0 42px var(--card-inset);
+}
+/* 战斗面板是 HUD，不参与 .card:hover 的抬升动效 */
+.combat-hud:hover {
+  transform: none;
+  box-shadow:
+    0 2px 8px var(--shadow-color),
+    inset 0 0 0 1px color-mix(in srgb, var(--color-border-strong) 45%, transparent),
+    inset 0 0 42px var(--card-inset);
+}
+/* 四角 L 形角饰：8 条渐变短线拼四个角（.card::before 被噪声占用，走 ::after） */
+.combat-hud::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  pointer-events: none;
+  --hud-corner: color-mix(in srgb, var(--color-accent) 65%, transparent);
+  background:
+    linear-gradient(var(--hud-corner), var(--hud-corner)) left top / 14px 1.5px,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) left top / 1.5px 14px,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) right top / 14px 1.5px,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) right top / 1.5px 14px,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) left bottom / 14px 1.5px,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) left bottom / 1.5px 14px,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) right bottom / 14px 1.5px,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) right bottom / 1.5px 14px;
+  background-repeat: no-repeat;
+}
+
+/* 顶部条轮次徽章：衬线标题字 + 细描边 */
+.combat-round-badge {
+  font-family: var(--font-title);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 3px;
+  padding: 0.06rem 0.45rem;
+  background: var(--color-input-bg);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2rem;
+  box-shadow: inset 0 0 6px var(--card-inset);
+}
+.combat-round-badge-num {
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--color-text-accent);
+}
+
+/* ===== 战棋令牌 ===== */
+.combat-token { transition: border-color 0.2s, opacity 0.3s, filter 0.3s; }
+/* 当前行动者：呼吸式脉冲光环（颜色由令牌行内 --token-glow 提供，随阵营变） */
+.token-active { animation: tokenPulse 1.7s ease-in-out infinite; }
+@keyframes tokenPulse {
+  0%, 100% { box-shadow: 0 0 4px 1px color-mix(in srgb, var(--token-glow, var(--color-accent)) 50%, transparent); }
+  50% { box-shadow: 0 0 13px 4px color-mix(in srgb, var(--token-glow, var(--color-accent)) 85%, transparent); }
+}
+/* 令牌受击：短促抖动 + 红光一闪（挂在 fx 壳上，与定位补间的 transform 分层） */
+.token-hit { animation: tokenHit 0.45s ease-out both; }
+@keyframes tokenHit {
+  0% { transform: translateX(0); filter: none; }
+  15% { transform: translateX(-3px); filter: drop-shadow(0 0 6px rgba(192, 94, 102, 0.85)); }
+  35% { transform: translateX(3px); filter: drop-shadow(0 0 5px rgba(192, 94, 102, 0.7)); }
+  55% { transform: translateX(-2px); filter: drop-shadow(0 0 4px rgba(192, 94, 102, 0.5)); }
+  75% { transform: translateX(2px); }
+  100% { transform: translateX(0); filter: none; }
+}
+/* 令牌出局（死亡/逃离瞬间）：放大一拍 → 灰化缩小淡出，收在略小尺寸（灰化终态由令牌自身样式接管） */
+.token-die { animation: tokenDie 0.8s ease-out both; }
+@keyframes tokenDie {
+  0% { transform: scale(1.14); opacity: 1; filter: grayscale(0); }
+  55% { transform: scale(0.8); opacity: 0.35; filter: grayscale(1); }
+  100% { transform: scale(0.92); opacity: 1; filter: none; }
+}
+/* 棋盘飘字：令牌上方冒出伤害（红）/治疗（绿）数字，向上飘散一次 */
+.token-float {
+  position: absolute;
+  left: 50%;
+  top: -0.5rem;
+  z-index: 7;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 0.85rem;
+  pointer-events: none;
+  animation: tokenFloat 1s ease-out both;
+}
+.token-float--dmg { color: var(--color-danger); text-shadow: 0 0 6px rgba(192, 94, 102, 0.5); }
+.token-float--heal { color: var(--color-success); text-shadow: 0 0 6px rgba(125, 163, 107, 0.45); }
+@keyframes tokenFloat {
+  0% { opacity: 0; transform: translate(-50%, 4px); }
+  20% { opacity: 1; transform: translate(-50%, -2px); }
+  100% { opacity: 0; transform: translate(-50%, -16px); }
+}
+/* 选中目标准星：叠在敌方令牌正中，轻微脉冲 */
+.token-target {
+  transform: translate(-50%, -50%);
+  filter: drop-shadow(0 0 4px rgba(192, 94, 102, 0.7));
+  animation: targetPulse 1.2s ease-in-out infinite;
+}
+@keyframes targetPulse {
+  0%, 100% { opacity: 0.8; transform: translate(-50%, -50%) scale(1); }
+  50% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+}
+
+/* 回合/轮次横幅：覆盖战场区顶部，扫入停留后淡出（时长与 useTurnBanner 的 1.8s 对齐） */
+.turn-banner {
+  position: absolute;
+  top: 4px;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.75rem;
+  font-family: var(--font-title);
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+  animation: turnBannerIn 1.8s ease both;
+}
+@keyframes turnBannerIn {
+  0% { opacity: 0; transform: translateY(-6px) scaleX(0.9); }
+  12% { opacity: 1; transform: translateY(0) scaleX(1); }
+  78% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* reduced-motion：战斗新增动效全部关停（横幅退化为静态显示，仍由 JS 定时移除） */
+@media (prefers-reduced-motion: reduce) {
+  .token-active, .token-hit, .token-die, .token-target, .token-float, .turn-banner {
+    animation: none !important;
+  }
+}
+
 /* 场景切换转场：暗幕淡入淡出（翻页感，一次） */
 .scene-veil {
   position: fixed;

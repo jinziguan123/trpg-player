@@ -1,352 +1,24 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+// 战斗面板主容器：顶部条（轮次徽章/收起）+ 结算回显 + 先攻轨 + 方格战场 + 参战方卡片
+// + 反应/两段掷伤害/主动动作栏 + 战斗日志抽屉。子组件拆在 ./combat/ 目录。
+import { useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { api } from '../../api/client'
-import {
-  GiCrossedSwords, GiShield, GiRun, GiBrickWall, GiScrollUnfurled,
-  GiFirstAidKit, GiBinoculars, GiGrab, GiBrokenAxe, GiAmmoBox, GiCrosshair,
-  GiHandcuffs, GiDeathSkull, GiRollingDices, GiFlame, GiFireBottle,
-} from 'react-icons/gi'
+import { GiCrossedSwords, GiRollingDices, GiRun, GiScrollUnfurled } from 'react-icons/gi'
 import { ChevronDown, ChevronRight } from 'lucide-react'
+import type { CombatLogEntry, CombatResultView, CombatState, Combatant, PendingReaction } from './combat/types'
+import { ACTIONS, REACTION_META, UNARMED, WEAPON_OTHER, isOut, type ActionKey } from './combat/meta'
+import { useHpDiff } from './combat/useHpDiff'
+import { CombatantCard } from './combat/CombatantCard'
+import { CombatResultReveal } from './combat/CombatResultReveal'
+import { InitiativeTrack } from './combat/InitiativeTrack'
+import { CombatGrid } from './combat/CombatGrid'
+import { TurnBanner, useTurnBanner } from './combat/TurnBanner'
 
-// 参战方状态：与后端枚举对齐。
-type CombatStatus = 'ok' | 'major_wound' | 'dying' | 'unconscious' | 'dead' | 'fled'
-
-interface Combatant {
-  id: string
-  name: string
-  side: 'player' | 'ally' | 'enemy'
-  is_human: boolean
-  hp: number
-  max_hp: number
-  status: CombatStatus
-  weapon?: string         // 当前武器名（后端 order 投影透传）
-  armor?: number          // 护甲值（每次物理伤害先扣它）
-  conditions?: string[]   // 正交条件：grappled（被擒）/ disarmed（缴械）
-  aim?: boolean           // 瞄准态（下一击加奖励骰）
-  pos?: { x: number; y: number } | null   // 方格坐标
-  mov?: number            // 移动力（格/轮）
-  move_left?: number      // 本回合剩余移动预算
-}
-
-// 方格战场（尺寸 + 障碍/掩体）。MVP 只用 cols/rows/cell_m。
-export interface CombatGridInfo {
-  cols: number
-  rows: number
-  cell_m: number
-  blocked?: string[]
-  cover?: Record<string, string>
-}
-
-// 两段式投骰：真人攻击命中后，等该玩家亲自掷伤害。actor_id 为该掷骰的玩家。
-export interface PendingRoll {
-  actor_id: string
-  kind: string          // 目前为 'damage'
-  label: string         // 按钮/提示文案，如「投掷伤害（1D8+DB）」
-  victim_id?: string
-}
-
-export interface CombatState {
-  round: number
-  turn: string | null   // 当前轮到的参战方 id
-  order: Combatant[]
-  started_seq?: number  // 本场战斗日志起点 seq：日志抽屉只收本场（seq>started_seq）的结算行
-  pending_roll?: PendingRoll | null
-  grid?: CombatGridInfo | null   // 方格战场
-}
-
-// 反应提示：NPC 攻击某真人时后端暂停并广播 combat_reaction_prompt 的 metadata。
-// allowed 为 ['fight_back','dodge']（近战）或 ['dodge','cover']（火器）。
-export interface PendingReaction {
-  attacker_id: string
-  defender_id: string
-  weapon: string
-  ranged: boolean
-  allowed: string[]
-  attacker_name: string
-  defender_name: string
-}
-
-// 一条战斗日志（机械结算行）：由 GameSessionPage 从带 combat_log 的 chunk 分流而来。
-export interface CombatLogEntry {
-  id: string
-  kind: 'dice' | 'system'
-  content: string
-}
-
-// 本场最近一次结算的结构化视图：普通命中给 content+hit；对抗给双方数值/结果。
-export interface CombatResultView {
-  content: string
-  metadata: Record<string, unknown>
-}
-interface OppSide { name: string; roll: number; target: number; skill: string; outcome: string }
-interface OppData {
-  attacker: OppSide
-  defender: OppSide | null
-  winner: 'attacker' | 'defender' | null
-  result: string
-}
-
-// 检定成败取色（战斗面板本地版，避免跨文件耦合 GameSessionPage 的 diceAccent）。
-function outcomeAccent(outcome: string): string {
-  const s = (outcome || '').toLowerCase()
-  if (s.includes('critical') || s.includes('大成功')) return 'var(--color-dice-gold)'
-  if (s.includes('fumble') || s.includes('大失败')) return 'var(--color-dice-fumble)'
-  if (s.includes('hard_success') || s.includes('success') || s.includes('成功')) return 'var(--color-success)'
-  if (s.includes('fail') || s.includes('失败')) return 'var(--color-danger)'
-  return 'var(--color-text-secondary)'
-}
-function outcomeLabel(outcome: string): string {
-  const s = (outcome || '').toLowerCase()
-  if (s.includes('critical') || s === '大成功') return '大成功'
-  if (s.includes('fumble') || s === '大失败') return '大失败'
-  if (s.includes('hard_success')) return '困难成功'
-  if (s.includes('success') || s === '成功') return '成功'
-  if (s.includes('fail') || s.includes('失败')) return '失败'
-  return outcome || ''
-}
-
-// 反应按钮：图标全走 react-icons/gi（game-icons 风格），禁 emoji。
-const REACTION_META: Record<string, { label: string; Icon: typeof GiCrossedSwords }> = {
-  fight_back: { label: '反击', Icon: GiCrossedSwords },
-  dodge: { label: '闪避', Icon: GiShield },
-  cover: { label: '扑掩体', Icon: GiBrickWall },
-}
-
-// 状态徽标：正常（ok）不显示；其余各给中文标签与语义色。
-const STATUS_META: Record<Exclude<CombatStatus, 'ok'>, { label: string; color: string }> = {
-  major_wound: { label: '重伤', color: 'var(--color-danger)' },
-  dying: { label: '濒死', color: 'var(--color-danger-deep)' },
-  unconscious: { label: '昏迷', color: 'var(--color-text-secondary)' },
-  dead: { label: '死亡', color: 'var(--color-danger-deep)' },
-  fled: { label: '逃离', color: 'var(--color-text-secondary)' },
-}
-
-// 条件徽标：被擒 / 缴械（gi 图标 + 中文），叠加渲染于卡片。
-const CONDITION_META: Record<string, { label: string; Icon: typeof GiCrossedSwords }> = {
-  grappled: { label: '被擒', Icon: GiHandcuffs },
-  disarmed: { label: '缴械', Icon: GiBrokenAxe },
-  burning: { label: '着火', Icon: GiFlame },
-}
-
-// 武器：拳头（徒手格斗）永远可选并置顶；其余从角色卡武器栏（system_data.weapons）来；
-// 末尾「其它(手填)」切换成自由文本输入。UNARMED 与后端 resolve_weapon 的徒手口径一致。
-const UNARMED = '徒手格斗'
-const WEAPON_OTHER = '__other__'
-
-// 主动动作元数据：图标 + 标签 + 目标类型（敌方/己方/无）。全部 gi 图标，已确认存在。
-type ActionKey = 'attack' | 'first_aid' | 'observe' | 'grapple' | 'disarm' | 'reload' | 'aim' | 'extinguish' | 'flee'
-const ACTIONS: Record<ActionKey, { label: string; Icon: typeof GiCrossedSwords; target: 'enemy' | 'ally' | 'none' }> = {
-  attack: { label: '攻击', Icon: GiCrossedSwords, target: 'enemy' },
-  first_aid: { label: '急救', Icon: GiFirstAidKit, target: 'ally' },
-  observe: { label: '观察', Icon: GiBinoculars, target: 'none' },
-  grapple: { label: '擒抱', Icon: GiGrab, target: 'enemy' },
-  disarm: { label: '缴械', Icon: GiBrokenAxe, target: 'enemy' },
-  reload: { label: '装填', Icon: GiAmmoBox, target: 'none' },
-  aim: { label: '瞄准', Icon: GiCrosshair, target: 'none' },
-  extinguish: { label: '灭火', Icon: GiFireBottle, target: 'none' },
-  flee: { label: '逃跑', Icon: GiRun, target: 'none' },
-}
-
-// 死亡/逃离：该参战方已出局，格子灰掉、不可作为目标。
-function isOut(c: Combatant): boolean {
-  return c.status === 'dead' || c.status === 'fled'
-}
-
-function pctOf(c: Combatant): number {
-  return c.max_hp > 0 ? Math.max(0, Math.min(100, (c.hp / c.max_hp) * 100)) : 0
-}
-
-// —— HP 变化动画驱动：记住上一帧各 id 的 hp，新态到达时 diff ——
-// 返回每个 id 的 { delta, seq }：delta<0 掉血、>0 回血、0 无变化；seq 让同值连续变化也能重触发动画。
-// 首次见到某 id 时只建基准、不产出 delta（防重连把满血误判为回血）。
-function useHpDiff(order: Combatant[]): Record<string, { delta: number; seq: number }> {
-  const prevHp = useRef<Map<string, number>>(new Map())
-  const seqRef = useRef(0)
-  const [diffs, setDiffs] = useState<Record<string, { delta: number; seq: number }>>({})
-
-  useEffect(() => {
-    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
-    const next: Record<string, { delta: number; seq: number }> = {}
-    const seen = new Set<string>()
-    for (const c of order) {
-      seen.add(c.id)
-      const before = prevHp.current.get(c.id)
-      if (before === undefined) {
-        // 首次见到：只建基准，不动画（重连首帧不误判为回血）。
-        prevHp.current.set(c.id, c.hp)
-        continue
-      }
-      if (!reduced && c.hp !== before) {
-        seqRef.current += 1
-        next[c.id] = { delta: c.hp - before, seq: seqRef.current }
-      }
-      prevHp.current.set(c.id, c.hp)
-    }
-    // 清掉已离场 id 的基准（避免同 id 复用时错乱）。
-    for (const id of Array.from(prevHp.current.keys())) if (!seen.has(id)) prevHp.current.delete(id)
-    if (Object.keys(next).length > 0) setDiffs((prev) => ({ ...prev, ...next }))
-  }, [order])
-
-  return diffs
-}
-
-// 单张参战方卡片：图标位省略（用状态色点区分阵营），名字 + HP 条/数字 + 状态/条件徽标 + 武器。
-function CombatantCard({ c, mine, active, diff }: {
-  c: Combatant
-  mine: boolean
-  active: boolean
-  diff?: { delta: number; seq: number }
-}) {
-  const out = isOut(c)
-  const hpColor = c.side === 'enemy' ? 'var(--color-danger)' : 'var(--color-accent)'
-  const sm = c.status !== 'ok' ? STATUS_META[c.status] : null
-  const conds = (c.conditions || []).filter((k) => CONDITION_META[k])
-  // 动画类：delta<0 掉血（红闪+抖）、>0 回血（绿涨）。用 seq 做 key 让连续同向变化也重播。
-  const dmg = diff && diff.delta < 0
-  const heal = diff && diff.delta > 0
-
-  return (
-    <div
-      className={`relative rounded px-2.5 py-2 ${dmg ? 'hp-hit' : ''}`}
-      style={{
-        opacity: out ? 0.42 : 1,
-        filter: out ? 'grayscale(0.7)' : 'none',
-        background: active ? 'var(--color-bg-tertiary)' : 'var(--color-bg-secondary)',
-        border: active ? '1px solid var(--color-accent)' : '1px solid var(--color-border)',
-        boxShadow: active ? '0 0 10px color-mix(in srgb, var(--color-accent) 34%, transparent)' : 'none',
-      }}
-      title={`${c.name} · ${c.hp}/${c.max_hp}`}
-    >
-      {/* 浮动伤害/治疗数字（key=seq 触发一次动画） */}
-      {diff && (diff.delta !== 0) && (
-        <span key={diff.seq} className={`hp-float ${dmg ? 'hp-float--dmg' : 'hp-float--heal'}`}>
-          {diff.delta > 0 ? `+${diff.delta}` : diff.delta}
-        </span>
-      )}
-      <div className="flex items-center gap-1 mb-1 flex-wrap">
-        {out && c.status === 'dead' && <GiDeathSkull size={12} style={{ color: 'var(--color-danger-deep)', flexShrink: 0 }} />}
-        <span className="text-xs font-semibold truncate" style={{ color: mine ? 'var(--color-text-accent)' : 'var(--color-text-primary)' }}>
-          {c.name}{mine ? '（我）' : ''}
-        </span>
-        {sm && (
-          <span className="text-[10px] px-1 rounded flex-shrink-0" style={{ color: sm.color, border: `1px solid ${sm.color}` }}>
-            {sm.label}
-          </span>
-        )}
-      </div>
-      {/* 血条：底层填充始终平滑过渡宽度（不换 key，保住 transition:width）；
-          红闪/绿涨的颜色脉冲另起一层叠加，只有它带 seq key 重挂、播一次动画 → 宽度不瞬跳。 */}
-      <div className="relative h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--color-input-bg)' }}>
-        <div className="stat-bar-fill h-full" style={{ width: `${pctOf(c)}%`, background: hpColor }} />
-        {(dmg || heal) && (
-          <div
-            key={diff?.seq}
-            className={`stat-bar-fill absolute inset-y-0 left-0 h-full ${dmg ? 'hp-bar-dmg' : 'hp-bar-heal'}`}
-            style={{ width: `${pctOf(c)}%`, background: hpColor }}
-          />
-        )}
-      </div>
-      <div className="flex items-center justify-between gap-1 mt-0.5">
-        <span className="text-[10px] font-mono" style={{ color: 'var(--color-text-secondary)' }}>{c.hp}/{c.max_hp}</span>
-        <div className="flex items-center gap-1 flex-wrap justify-end">
-          {!!c.armor && c.armor > 0 && !out && (
-            <span className="text-[10px] px-1 rounded inline-flex items-center gap-0.5 flex-shrink-0"
-              style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border-strong)' }}
-              title={`护甲 ${c.armor}：每次物理伤害先扣 ${c.armor} 点`}>
-              <GiShield size={10} /> {c.armor}
-            </span>
-          )}
-          {c.aim && !out && (
-            <span className="text-[10px] px-1 rounded inline-flex items-center gap-0.5 flex-shrink-0"
-              style={{ color: 'var(--color-text-accent)', border: '1px solid var(--color-border-strong)' }}>
-              <GiCrosshair size={10} /> 瞄准
-            </span>
-          )}
-          {conds.map((k) => {
-            const { label, Icon } = CONDITION_META[k]
-            return (
-              <span key={k} className="text-[10px] px-1 rounded inline-flex items-center gap-0.5 flex-shrink-0"
-                style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}>
-                <Icon size={10} /> {label}
-              </span>
-            )
-          })}
-        </div>
-      </div>
-      <div className="text-[10px] mt-0.5 truncate" style={{ color: 'var(--color-text-secondary)', opacity: 0.75 }}>
-        {c.weapon || ''}
-      </div>
-    </div>
-  )
-}
-
-/** 结算回显：掷骰落定后钉在战斗面板顶部——对抗时「敌方 | 我方」左右并排（数值/技能/成败 + 高亮胜方），
- *  普通命中/单侧检定则一条带成败色的横幅。让玩家无需收起战斗面板即可看到本次结果。 */
-function CombatResultReveal({ result, order }: { result: CombatResultView; order: Combatant[] }) {
-  const meta = result.metadata
-  const opp = meta.opposed as OppData | undefined
-  const sideOf = (name: string): 'enemy' | 'mine' =>
-    (order.find((o) => o.name === name)?.side === 'enemy' ? 'enemy' : 'mine')
-
-  if (opp?.defender) {
-    const sides = [
-      { s: opp.attacker, who: 'attacker' as const },
-      { s: opp.defender, who: 'defender' as const },
-    ]
-    const enemyEntry = sides.find((e) => sideOf(e.s.name) === 'enemy') ?? sides[0]
-    const myEntry = enemyEntry === sides[0] ? sides[1] : sides[0]
-    const resultAccent = opp.result === '命中' || opp.result === '反击得手'
-      ? 'var(--color-danger)'
-      : opp.result === '被闪开/防住' ? 'var(--color-success)' : 'var(--color-text-secondary)'
-
-    const Cell = ({ label, s, won }: { label: string; s: OppSide; won: boolean }) => {
-      const accent = outcomeAccent(s.outcome)
-      return (
-        <div
-          className="flex-1 flex flex-col items-center px-2 py-1 rounded-md min-w-0"
-          style={{
-            background: won ? 'color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent)' : 'transparent',
-            border: won ? `1px solid ${accent}` : '1px solid transparent',
-            opacity: won || opp.winner === null ? 1 : 0.6,
-          }}
-        >
-          <span className="text-[10px]" style={{ color: 'var(--color-text-secondary)' }}>{label}</span>
-          <span className="text-xs font-semibold truncate max-w-full" style={{ color: 'var(--color-text-primary)' }}>{s.name}</span>
-          <span className="font-bold leading-none my-0.5" style={{ fontSize: '1.4rem', color: accent }}>{s.roll}</span>
-          <span style={{ fontSize: '0.6rem', color: 'var(--color-text-secondary)' }}>{s.skill} / {s.target}</span>
-          <span style={{ fontSize: '0.65rem', color: accent }}>{outcomeLabel(s.outcome)}</span>
-        </div>
-      )
-    }
-    return (
-      <div className="mb-2 rounded-md px-2 py-1.5" style={{ borderLeft: `3px solid ${resultAccent}`, background: 'var(--color-bg-secondary)' }}>
-        <div className="flex items-center gap-1.5 mb-1" style={{ color: 'var(--color-text-secondary)', fontSize: '0.62rem' }}>
-          <GiCrossedSwords style={{ fontSize: '0.75rem' }} /> <span>本轮对抗结算</span>
-          <span className="ml-auto font-semibold" style={{ color: resultAccent }}>{opp.result}</span>
-        </div>
-        <div className="flex items-stretch gap-1">
-          <Cell label="敌方" s={enemyEntry.s} won={opp.winner === enemyEntry.who} />
-          <div className="flex items-center px-0.5">
-            <span className="text-[0.7rem] font-bold italic" style={{ color: 'var(--color-text-secondary)', opacity: 0.7 }}>VS</span>
-          </div>
-          <Cell label="我方" s={myEntry.s} won={opp.winner === myEntry.who} />
-        </div>
-      </div>
-    )
-  }
-
-  // 普通结算（命中/未命中 或 单侧检定）：带成败色的一条横幅
-  const hit = meta.hit
-  const accent = typeof hit === 'boolean'
-    ? (hit ? 'var(--color-danger)' : 'var(--color-text-secondary)')
-    : outcomeAccent(String(meta.outcome ?? ''))
-  return (
-    <div className="mb-2 rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs" style={{ borderLeft: `3px solid ${accent}`, background: 'var(--color-bg-secondary)' }}>
-      <GiRollingDices style={{ color: accent, fontSize: '1rem', flexShrink: 0 }} />
-      <span className="whitespace-pre-wrap" style={{ color: 'var(--color-text-primary)' }}>{result.content.replace(/^🎲\s*/, '')}</span>
-    </div>
-  )
-}
+// 类型 re-export：GameSessionPage / liveState.ts 的类型 import 走这里，契约不变。
+export type {
+  CombatState, CombatGridInfo, PendingRoll, PendingReaction,
+  CombatLogEntry, CombatResultView, Combatant, CombatStatus,
+} from './combat/types'
 
 export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log, result, myWeapons = [] }: {
   combat: CombatState
@@ -359,6 +31,7 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
 }) {
   const order = combat.order
   const diffs = useHpDiff(order)
+  const banner = useTurnBanner(combat.round, combat.turn, order, myCharId)
 
   // 分栏：己方（player/ally）与敌方（enemy）。
   const allies = useMemo(() => order.filter((c) => c.side !== 'enemy'), [order])
@@ -534,12 +207,15 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
 
 
   return (
-    <div className="card mx-3 mb-2 !px-3 !py-2.5">
-      {/* 顶部：轮次 + 收起/展开 */}
+    <div className="card combat-hud mx-3 mb-2 !px-3 !py-2.5">
+      {/* 顶部：战斗标识 + 轮次徽章 + 收起/展开 */}
       <div className="flex items-center justify-between gap-2 mb-2">
         <div className="flex items-center gap-2 min-w-0">
           <GiCrossedSwords style={{ color: 'var(--color-danger)', fontSize: '1.05rem', flexShrink: 0 }} />
-          <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--color-text-accent)' }}>战斗 · 第 {combat.round} 轮</span>
+          <span className="text-sm font-semibold flex-shrink-0" style={{ color: 'var(--color-text-accent)' }}>战斗</span>
+          <span className="combat-round-badge flex-shrink-0" title={`当前第 ${combat.round} 轮`}>
+            第 <span className="combat-round-badge-num">{combat.round}</span> 轮
+          </span>
           {collapsed && (
             <span className="text-xs truncate" style={{ color: 'var(--color-text-secondary)' }}>· 轮到 {active?.name ?? '……'}</span>
           )}
@@ -562,74 +238,80 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
       {/* B1 先攻轨：横排，高亮当前、标下一个、走过者淡化 */}
       <InitiativeTrack order={order} turn={combat.turn} myCharId={myCharId} />
 
-      {/* B1.5 方格战场：棋子 + 移动。移动模式仅本人回合可用。 */}
-      {combat.grid && (
-        <div className="mt-2">
-          <div className="flex items-center justify-between mb-0.5">
-            <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--color-text-secondary)' }}>战场</span>
-            {myTurn && (
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setMoveMode((m) => (m === 'move' ? 'none' : 'move'))}
-                  disabled={submitting}
-                  title={`常规移动 ⌈mov/2⌉=${me?.move_left ?? 0} 格，移动后仍可攻击`}
-                  className="text-[11px] px-2 py-0.5 rounded inline-flex items-center gap-1"
-                  style={{
-                    border: `1px solid ${moveMode === 'move' ? 'var(--color-accent)' : 'var(--color-border-strong)'}`,
-                    color: moveMode === 'move' ? 'var(--color-text-accent)' : 'var(--color-text-secondary)',
-                    ...(submitting ? { opacity: 0.5 } : {}),
-                  }}
-                >
-                  <GiRun size={12} /> {moveMode === 'move' ? `移动中（${me?.move_left ?? 0} 格）` : '移动'}
-                </button>
-                <button
-                  onClick={() => setMoveMode((m) => (m === 'dash' ? 'none' : 'dash'))}
-                  disabled={submitting}
-                  title={`冲刺满 mov=${me?.mov ?? 0} 格，但独占本回合（不能再攻击）`}
-                  className="text-[11px] px-2 py-0.5 rounded inline-flex items-center gap-1"
-                  style={{
-                    border: `1px solid ${moveMode === 'dash' ? 'var(--color-danger)' : 'var(--color-border-strong)'}`,
-                    color: moveMode === 'dash' ? 'var(--color-danger)' : 'var(--color-text-secondary)',
-                    ...(submitting ? { opacity: 0.5 } : {}),
-                  }}
-                >
-                  <GiRun size={12} /> {moveMode === 'dash' ? `冲刺中（${me?.mov ?? 0} 格）` : '冲刺'}
-                </button>
-              </div>
-            )}
-          </div>
-          <CombatGrid
-            grid={combat.grid}
-            order={order}
-            turn={combat.turn}
-            myCharId={myCharId}
-            moveActive={moveMode !== 'none'}
-            budget={moveMode === 'dash' ? (me?.mov ?? 0) : (me?.move_left ?? 0)}
-            dash={moveMode === 'dash'}
-            targetId={effectiveTarget}
-            onCellMove={doMove}
-            onPieceClick={onPieceClick}
-          />
-        </div>
-      )}
+      {/* 战场区（相对定位承载回合/轮次横幅覆盖层） */}
+      <div className="relative">
+        <TurnBanner banner={banner} />
 
-      {/* B2 两栏参战方卡片（左己方 / 右敌方），带 HP 动画（B3） */}
-      <div className="grid grid-cols-2 gap-2 mt-2">
-        <div className="flex flex-col gap-1.5">
-          <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--color-text-secondary)' }}>我方</div>
-          {allies.length === 0
-            ? <div className="text-[11px]" style={{ color: 'var(--color-text-secondary)' }}>无</div>
-            : allies.map((c) => (
-              <CombatantCard key={c.id} c={c} mine={!!(myCharId && c.id === myCharId)} active={c.id === combat.turn} diff={diffs[c.id]} />
-            ))}
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <div className="text-[10px] uppercase tracking-wide text-right" style={{ color: 'var(--color-text-secondary)' }}>敌方</div>
-          {enemies.length === 0
-            ? <div className="text-[11px] text-right" style={{ color: 'var(--color-text-secondary)' }}>无</div>
-            : enemies.map((c) => (
-              <CombatantCard key={c.id} c={c} mine={false} active={c.id === combat.turn} diff={diffs[c.id]} />
-            ))}
+        {/* B1.5 方格战场：令牌 + 移动。移动模式仅本人回合可用。 */}
+        {combat.grid && (
+          <div className="mt-2">
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--color-text-secondary)' }}>战场</span>
+              {myTurn && (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setMoveMode((m) => (m === 'move' ? 'none' : 'move'))}
+                    disabled={submitting}
+                    title={`常规移动 ⌈mov/2⌉=${me?.move_left ?? 0} 格，移动后仍可攻击`}
+                    className="text-[11px] px-2 py-0.5 rounded inline-flex items-center gap-1"
+                    style={{
+                      border: `1px solid ${moveMode === 'move' ? 'var(--color-accent)' : 'var(--color-border-strong)'}`,
+                      color: moveMode === 'move' ? 'var(--color-text-accent)' : 'var(--color-text-secondary)',
+                      ...(submitting ? { opacity: 0.5 } : {}),
+                    }}
+                  >
+                    <GiRun size={12} /> {moveMode === 'move' ? `移动中（${me?.move_left ?? 0} 格）` : '移动'}
+                  </button>
+                  <button
+                    onClick={() => setMoveMode((m) => (m === 'dash' ? 'none' : 'dash'))}
+                    disabled={submitting}
+                    title={`冲刺满 mov=${me?.mov ?? 0} 格，但独占本回合（不能再攻击）`}
+                    className="text-[11px] px-2 py-0.5 rounded inline-flex items-center gap-1"
+                    style={{
+                      border: `1px solid ${moveMode === 'dash' ? 'var(--color-danger)' : 'var(--color-border-strong)'}`,
+                      color: moveMode === 'dash' ? 'var(--color-danger)' : 'var(--color-text-secondary)',
+                      ...(submitting ? { opacity: 0.5 } : {}),
+                    }}
+                  >
+                    <GiRun size={12} /> {moveMode === 'dash' ? `冲刺中（${me?.mov ?? 0} 格）` : '冲刺'}
+                  </button>
+                </div>
+              )}
+            </div>
+            <CombatGrid
+              grid={combat.grid}
+              order={order}
+              turn={combat.turn}
+              myCharId={myCharId}
+              moveActive={moveMode !== 'none'}
+              budget={moveMode === 'dash' ? (me?.mov ?? 0) : (me?.move_left ?? 0)}
+              dash={moveMode === 'dash'}
+              targetId={effectiveTarget}
+              fx={diffs}
+              onCellMove={doMove}
+              onPieceClick={onPieceClick}
+            />
+          </div>
+        )}
+
+        {/* B2 两栏参战方卡片（左己方 / 右敌方），带 HP 动画（B3） */}
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          <div className="flex flex-col gap-1.5">
+            <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--color-text-secondary)' }}>我方</div>
+            {allies.length === 0
+              ? <div className="text-[11px]" style={{ color: 'var(--color-text-secondary)' }}>无</div>
+              : allies.map((c) => (
+                <CombatantCard key={c.id} c={c} mine={!!(myCharId && c.id === myCharId)} active={c.id === combat.turn} diff={diffs[c.id]} />
+              ))}
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <div className="text-[10px] uppercase tracking-wide text-right" style={{ color: 'var(--color-text-secondary)' }}>敌方</div>
+            {enemies.length === 0
+              ? <div className="text-[11px] text-right" style={{ color: 'var(--color-text-secondary)' }}>无</div>
+              : enemies.map((c) => (
+                <CombatantCard key={c.id} c={c} mine={false} active={c.id === combat.turn} diff={diffs[c.id]} />
+              ))}
+          </div>
         </div>
       </div>
 
@@ -834,166 +516,6 @@ export function CombatStage({ combat, myCharId, sessionId, pendingReaction, log,
         </div>
       )}
       </>)}
-    </div>
-  )
-}
-
-// B1 先攻轨：横向排 order，高亮当前、标下一个、走过者淡化。
-function InitiativeTrack({ order, turn, myCharId }: { order: Combatant[]; turn: string | null; myCharId: string | null }) {
-  // 找出「下一个」：当前之后第一个未出局者（环形）。
-  const turnIdx = order.findIndex((c) => c.id === turn)
-  let nextIdx = -1
-  if (turnIdx >= 0) {
-    for (let k = 1; k <= order.length; k++) {
-      const i = (turnIdx + k) % order.length
-      if (!isOut(order[i])) { nextIdx = i; break }
-    }
-  }
-  return (
-    <div className="flex gap-1 overflow-x-auto pb-1">
-      {order.map((c, i) => {
-        const out = isOut(c)
-        const isActive = c.id === turn
-        const isNext = i === nextIdx
-        const passed = turnIdx >= 0 && i < turnIdx && !isActive   // 本轮已走过者淡化
-        const mine = !!(myCharId && c.id === myCharId)
-        const dot = c.side === 'enemy' ? 'var(--color-danger)' : 'var(--color-accent)'
-        return (
-          <div
-            key={c.id}
-            className="flex-shrink-0 rounded px-2 py-1 inline-flex items-center gap-1"
-            style={{
-              opacity: out ? 0.4 : passed ? 0.5 : 1,
-              background: isActive ? 'var(--color-bg-tertiary)' : 'transparent',
-              border: isActive ? '1px solid var(--color-accent)' : '1px solid var(--color-border)',
-              boxShadow: isActive ? '0 0 8px color-mix(in srgb, var(--color-accent) 30%, transparent)' : 'none',
-            }}
-            title={isActive ? '当前行动' : isNext ? '下一个' : c.name}
-          >
-            <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: dot, flexShrink: 0 }} />
-            <span className="text-[11px] whitespace-nowrap" style={{
-              color: mine ? 'var(--color-text-accent)' : isActive ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-              fontWeight: isActive ? 600 : 400,
-            }}>
-              {c.name}{mine ? '（我）' : ''}
-            </span>
-            {isNext && (
-              <span className="text-[9px] px-1 rounded flex-shrink-0" style={{ color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}>
-                下一个
-              </span>
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-// 方格战场：CSS-grid 棋盘 + 棋子（阵营色/当前行动者外发光/出局灰化/选中目标描边）。
-// 移动模式下高亮可达格（Chebyshev ≤ 剩余移动力、避开占用/障碍），点格移动；点敌方棋子选目标。
-// 纯 --color-* 变量，gothic/parchment 两主题自适应，不引第三方战棋库。
-function CombatGrid({ grid, order, turn, myCharId, moveActive, budget, dash, targetId, onCellMove, onPieceClick }: {
-  grid: CombatGridInfo
-  order: Combatant[]
-  turn: string | null
-  myCharId: string | null
-  moveActive: boolean
-  budget: number
-  dash: boolean
-  targetId: string
-  onCellMove: (x: number, y: number) => void
-  onPieceClick: (c: Combatant) => void
-}) {
-  const CELL = 30
-  const me = myCharId ? order.find((c) => c.id === myCharId) : null
-  const occupied = new Set(order.filter((c) => c.pos && !isOut(c)).map((c) => `${c.pos!.x},${c.pos!.y}`))
-  const blocked = new Set(grid.blocked || [])
-  const reach = new Set<string>()
-  const threat = new Set<string>()   // 与存活敌方相邻的格：移动到此会进入近战/被夹击
-  if (moveActive && me?.pos && budget > 0) {
-    const b = budget
-    for (let y = 0; y < grid.rows; y++) {
-      for (let x = 0; x < grid.cols; x++) {
-        const k = `${x},${y}`
-        if (k === `${me.pos.x},${me.pos.y}` || occupied.has(k) || blocked.has(k)) continue
-        if (Math.max(Math.abs(x - me.pos.x), Math.abs(y - me.pos.y)) <= b) reach.add(k)
-      }
-    }
-    const meEnemyCamp = me.side === 'enemy'
-    for (const f of order) {
-      if (!f.pos || isOut(f) || (f.side === 'enemy') === meEnemyCamp) continue
-      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
-        const nx = f.pos.x + dx, ny = f.pos.y + dy
-        if (nx >= 0 && nx < grid.cols && ny >= 0 && ny < grid.rows) threat.add(`${nx},${ny}`)
-      }
-    }
-  }
-  return (
-    <div className="overflow-x-auto py-1">
-      <div className="relative mx-auto" style={{
-        width: grid.cols * CELL, height: grid.rows * CELL,
-        display: 'grid',
-        gridTemplateColumns: `repeat(${grid.cols}, ${CELL}px)`,
-        gridTemplateRows: `repeat(${grid.rows}, ${CELL}px)`,
-        backgroundImage: 'linear-gradient(var(--color-border) 1px, transparent 1px), linear-gradient(90deg, var(--color-border) 1px, transparent 1px)',
-        backgroundSize: `${CELL}px ${CELL}px`,
-        border: '1px solid var(--color-border-strong)',
-        background: 'var(--color-bg-secondary)',
-      }}>
-        {(grid.blocked || []).map((k) => {
-          const [x, y] = k.split(',').map(Number)
-          return (
-            <div key={`b${k}`} title="障碍（阻挡移动与视线）"
-              style={{ gridColumn: x + 1, gridRow: y + 1, background: 'var(--color-bg-tertiary)',
-                boxShadow: 'inset 0 0 0 1px var(--color-border-strong)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <GiBrickWall style={{ color: 'var(--color-text-secondary)', fontSize: CELL * 0.6 }} />
-            </div>
-          )
-        })}
-        {Object.entries(grid.cover || {}).map(([k, kind]) => {
-          const [x, y] = k.split(',').map(Number)
-          const full = kind === 'full'
-          return (
-            <div key={`c${k}`} title={full ? '全掩体（阻挡视线）' : '半掩体（射击 -1）'}
-              style={{ gridColumn: x + 1, gridRow: y + 1,
-                background: `repeating-linear-gradient(45deg, color-mix(in srgb, var(--color-text-secondary) ${full ? 40 : 22}%, transparent) 0 3px, transparent 3px 6px)`,
-                boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--color-border-strong) 60%, transparent)' }} />
-          )
-        })}
-        {[...reach].map((k) => {
-          const [x, y] = k.split(',').map(Number)
-          return (
-            <button key={`r${k}`} onClick={() => onCellMove(x, y)}
-              title={threat.has(k) ? (dash ? '冲刺到此格（进入敌方近战范围、独占本回合）' : '移动到此格（进入敌方近战范围）')
-                : (dash ? '冲刺到此格（独占本回合）' : '移动到此格')}
-              style={{ gridColumn: x + 1, gridRow: y + 1, border: 'none', cursor: 'pointer',
-                background: threat.has(k)
-                  ? 'color-mix(in srgb, var(--color-danger) 26%, transparent)'
-                  : dash
-                    ? 'color-mix(in srgb, var(--color-danger) 13%, transparent)'
-                    : 'color-mix(in srgb, var(--color-accent) 22%, transparent)' }} />
-          )
-        })}
-        {order.filter((c) => c.pos).map((c) => {
-          const out = isOut(c)
-          const col = c.side === 'enemy' ? 'var(--color-danger)' : 'var(--color-accent)'
-          const isTurn = c.id === turn
-          const isTarget = c.id === targetId
-          return (
-            <button key={c.id} onClick={() => onPieceClick(c)} title={`${c.name} ${c.hp}/${c.max_hp}`}
-              style={{ position: 'absolute', left: c.pos!.x * CELL + 3, top: c.pos!.y * CELL + 3,
-                width: CELL - 6, height: CELL - 6, borderRadius: '50%', padding: 0,
-                background: 'var(--color-bg-tertiary)', color: 'var(--color-text-primary)',
-                border: `2px solid ${col}`, opacity: out ? 0.4 : 1, filter: out ? 'grayscale(1)' : 'none',
-                boxShadow: isTurn ? `0 0 7px ${col}` : isTarget ? '0 0 0 2px var(--color-danger)' : 'none',
-                cursor: 'pointer', fontSize: '0.68rem', lineHeight: 1,
-                display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {c.name.slice(0, 1)}
-            </button>
-          )
-        })}
-      </div>
     </div>
   )
 }
