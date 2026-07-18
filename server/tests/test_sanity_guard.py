@@ -116,6 +116,7 @@ def test_check_continuation_fires_san_via_run_kp_turn(db_factory, monkeypatch):
 
     monkeypatch.setattr(cs, "KPAgent", lambda llm: object())
     monkeypatch.setattr(cs, "get_llm", lambda: object())
+    monkeypatch.setattr(cs, "get_fast_llm", lambda: object())
     monkeypatch.setattr(cs, "_stream_narration_filtered", _fake_stream)
     monkeypatch.setattr(cs, "build_kp_context", lambda *a, **k: [{"role": "system", "content": "x"}])
     monkeypatch.setattr(cs, "_module_excerpts_for_context", lambda *a, **k: [])
@@ -148,6 +149,7 @@ def test_check_continuation_no_guard_when_flag_off(db_factory, monkeypatch):
 
     monkeypatch.setattr(cs, "KPAgent", lambda llm: object())
     monkeypatch.setattr(cs, "get_llm", lambda: object())
+    monkeypatch.setattr(cs, "get_fast_llm", lambda: object())
     monkeypatch.setattr(cs, "_stream_narration_filtered", _fake_stream)
     monkeypatch.setattr(cs, "build_kp_context", lambda *a, **k: [{"role": "system", "content": "x"}])
     monkeypatch.setattr(cs, "_module_excerpts_for_context", lambda *a, **k: [])

@@ -170,6 +170,7 @@ def test_roll_generation_rolls_pending_check(db_factory, monkeypatch):
 
     monkeypatch.setattr(database, "SessionLocal", db_factory)
     monkeypatch.setattr(chat_service, "get_llm", lambda: None)
+    monkeypatch.setattr(chat_service, "get_fast_llm", lambda: None)
     monkeypatch.setattr(room_hub, "broadcast", lambda *a, **k: None)
 
     async def fake_stream(kp, messages, result, npcs=None):
@@ -230,6 +231,7 @@ def test_dice_continuation_sanity_guard_only_on_success(db_factory, monkeypatch)
         })
         monkeypatch.setattr(database, "SessionLocal", db_factory)
         monkeypatch.setattr(chat_service, "get_llm", lambda: None)
+        monkeypatch.setattr(chat_service, "get_fast_llm", lambda: None)
         monkeypatch.setattr(chat_service, "KPAgent", lambda llm: object())
         monkeypatch.setattr(room_hub, "broadcast", lambda *a, **k: None)
         monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)

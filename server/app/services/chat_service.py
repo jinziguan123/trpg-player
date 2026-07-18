@@ -5,6 +5,7 @@ import json
 import logging
 import random
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator
 
@@ -17,7 +18,8 @@ from app.ai.agents.kp_agent import _CHECK_TURN_TEMPERATURE, KPAgent
 from app.ai.agents.npc_agent import NPCAgent
 from app.ai.agents.team_agent import TeamAgent
 from app.ai.context import build_kp_context, build_npc_context, build_team_context
-from app.ai.llm_factory import get_llm
+from app.ai import usage_tracker
+from app.ai.llm_factory import get_fast_llm, get_llm
 from app.ai.prompts.kp_system import (
     CHECK_REQUEST_PROMPT,
     COMBAT_AFTERMATH_PROMPT,
@@ -1081,9 +1083,10 @@ async def _run_team_turn(
 ) -> AsyncIterator[str]:
     """玩家输入后的一轮 AI 队友自动响应。
 
-    每个队友只决策一次；结果写入事件流，并依次让后续队友 / KP 看到。
-    本函数只由 ``run_chat_generation`` / ``run_travel_generation`` 调用，不会自触发，
-    故不存在递归链式生成。
+    每个队友只决策一次；决策**并发执行**（同一份事件快照，N 次串行调用变 1 次墙钟时间——
+    代价是同轮队友互相看不到彼此这轮刚说的话，撞话题的偶发风险换整体延迟），结果按席位
+    顺序写入事件流。本函数只由 ``run_chat_generation`` / ``run_travel_generation`` 调用，
+    不会自触发，故不存在递归链式生成。
 
     分头判定：队友所在场景 ≠ 主队锚点场景（主角所在）即视为「分头独处」，据此让
     ``build_team_context`` 下达「主动推进本场景」指引；同处一地仍是克制补位。
@@ -1091,12 +1094,17 @@ async def _run_team_turn(
     ``blind_results``：队友做「始终暗投」技能（如心理学）检定时，真实成败只 append 到这里、
     由调用方注入当轮 KP 上下文，绝不落库/广播——否则玩家能从事件或网络看到结果而元游戏。
     """
+    roster = teammates[:MAX_TEAMMATES_PER_TURN]
+    if not roster:
+        return
+    yield _make_chunk("housekeeping", "队友们正在思考…")
     anchor_scene = (
         session_service.get_char_location(game_session, player_char.id)
         or game_session.current_scene_id
     )
-    for teammate in teammates[:MAX_TEAMMATES_PER_TURN]:
-        events = session_service.get_session_events(db, session_id)
+    events = session_service.get_session_events(db, session_id)
+
+    async def _decide(teammate: Character) -> str | None:
         tm_scene = (
             session_service.get_char_location(game_session, teammate.id)
             or game_session.current_scene_id
@@ -1107,13 +1115,23 @@ async def _run_team_turn(
             all_teammates=teammates, separated=separated,
             team_guidance=team_guidance,
         )
-        agent = TeamAgent(llm, teammate.id)
+        t0 = time.monotonic()
         try:
-            raw = await agent.decide(messages)
+            raw = await TeamAgent(llm, teammate.id).decide(messages)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("队友决策失败: char=%s", teammate.id)
+            return None
+        logger.info(
+            "耗时|队友决策 %.1fs char=%s(%s)",
+            time.monotonic() - t0, teammate.name, teammate.id,
+        )
+        return raw
+
+    raws = await asyncio.gather(*(_decide(t) for t in roster))
+    for teammate, raw in zip(roster, raws):
+        if raw is None:
             continue
         decision = _parse_team_decision(raw)
         if not decision:
@@ -1723,18 +1741,54 @@ async def _maybe_run_backstage(db: Session, session_id: str, llm) -> None:
         logger.exception("幕后推演失败（忽略）: session=%s", session_id)
 
 
-async def _finish_generation(db: Session, session_id: str, llm) -> None:
-    """生成收尾：先跑完会话级 housekeeping（滚动摘要 + 幕后推演，二者都写 world_state 且仍
-    持有本次生成锁 is_generating=True），**再**广播 done。
+# 各房间在跑的收尾任务（滚动摘要 + 幕后推演）。收尾已移出生成锁：done 先广播、玩家立即可
+# 操作；收尾转后台任务，下一次生成开始时先 _drain_housekeeping 排干——world_state 的
+# 读-改-写仍然互斥，只是互斥点从「玩家等收尾」挪到了「下次生成等收尾」（通常早已完成）。
+_housekeeping_tasks: dict[str, asyncio.Task] = {}
 
-    顺序很关键：若把 done 放在 housekeeping 之前，玩家会看到「KP 已不再吐字」（done 到达、
-    streaming 置 false）却因 is_generating 仍为 True（housekeeping 的 LLM 调用还在跑）而投骰/
-    申请检定被后端 409「KP 正在叙事」——这正是线上「明明不吐字了还显示 KP 叙事中」的成因。
-    housekeeping 通常是零调用（未达摘要阈值 / 模组无幕后主体），此时 done 与今日一样即时。"""
-    await _maybe_roll_story_summary(db, session_id, llm)
-    # 幕后推演：KP 回合收尾处评估（不阻塞叙事主流程；条件不满足零调用）
-    await _maybe_run_backstage(db, session_id, llm)
+
+async def _drain_housekeeping(session_id: str) -> None:
+    """等上一轮的后台收尾结束（若仍在跑）。所有 run_* 生成入口起步时调用，
+    保证收尾与生成对 world_state 的读-改-写不并发。异常已在任务内部消化。"""
+    task = _housekeeping_tasks.pop(session_id, None)
+    if task is not None and not task.done():
+        try:
+            await task
+        except BaseException:  # noqa: BLE001 — 收尾失败不得连累新一轮生成
+            pass
+
+
+def _spawn_housekeeping(session_id: str, llm) -> None:
+    """把会话级 housekeeping（滚动摘要 + 幕后推演）作为后台任务发出（自带独立 DB 会话）。
+
+    包一层 usage_tracker：收尾里的 LLM 调用照常计入本局用量。"""
+    async def _run() -> None:
+        from app.database import SessionLocal
+
+        hdb = SessionLocal()
+        t0 = time.monotonic()
+        try:
+            await _maybe_roll_story_summary(hdb, session_id, llm)
+            await _maybe_run_backstage(hdb, session_id, llm)
+        finally:
+            hdb.close()
+            elapsed = time.monotonic() - t0
+            if elapsed > 0.1:
+                logger.info("耗时|收尾（后台）%.1fs session=%s", elapsed, session_id)
+
+    _housekeeping_tasks[session_id] = asyncio.create_task(
+        usage_tracker.tracked(session_id, _run()),
+    )
+
+
+async def _finish_generation(db: Session, session_id: str, llm) -> None:
+    """生成收尾：**先**广播 done（玩家立即可继续操作），再把 housekeeping（滚动摘要 +
+    幕后推演）作为后台任务发出——不再占着生成锁让玩家干等「明明不吐字了还转圈」。
+
+    与 world_state 的写并发由 _drain_housekeeping 保证：下一次生成起步时先排干未完的收尾。
+    housekeeping 通常是零调用（未达摘要阈值 / 模组无幕后主体），此时后台任务瞬时结束。"""
     room_hub.broadcast(session_id, _make_chunk("done"))
+    _spawn_housekeeping(session_id, llm)
 
 
 def _augment_plan_with_backstage(plan: turn_planner.TurnPlan | None, events: list) -> None:
@@ -2538,7 +2592,7 @@ async def _run_generation(
             rules_lookup_enabled=rules_enabled,
             rule_excerpts=_rule_excerpts_for_planner(db, module, events, game_session),
         )
-        plan = await turn_planner.run_turn_planner(llm, plan_messages)
+        plan = await turn_planner.run_turn_planner(get_fast_llm(), plan_messages)
         # 世界记忆钩子 a：本轮裁定要揭示线索 → 写入线索台账（纯确定性，零额外 LLM 调用）
         if plan is not None:
             _record_clue_ledger_from_plan(
@@ -2860,7 +2914,6 @@ def _skill_names(char: Character) -> list[str]:
     return sorted(names)
 
 
-_CHECK_INTENT_SYS = "你是 TRPG 意图分诊器，只输出 JSON，不要解释。"
 _COMBAT_DECLARATION_RE = re.compile(
     r"攻击|袭击|开枪|射击|开火|砍向|劈向|刺向|捅向|挥(?:刀|剑|斧)|"
     r"(?:冲|扑)上去.{0,16}(?:打|揍|攻击|砍|劈|刺)|(?:一拳|一脚|踢向|拳打)"
@@ -2872,53 +2925,6 @@ def _looks_like_combat_declaration(text: str) -> bool:
     if re.search(r"(?:不要|别|停止|阻止).{0,6}(?:攻击|袭击|开枪|射击|开火)", text or ""):
         return False
     return bool(_COMBAT_DECLARATION_RE.search(text or ""))
-
-
-async def _detect_check_request(llm, text: str, char: Character) -> str | None:
-    """轻量意图分诊：玩家本轮是否在【主动申请一次技能/属性检定】。是→返回技能名，否→None。
-
-    单个模型包揽叙事+裁定时，容易把玩家夹带的检定请求当普通叙事顺过去；先分诊出来，直接走
-    确定性的检定裁定流程，避免「说了要检定却被无视」。判不准/出错则回退常规叙事（返回 None）。
-    """
-    skills = _skill_names(char)
-    user = (
-        f"玩家这轮的输入：\n{text}\n\n"
-        + (f"该角色可用技能：{'、'.join(skills)}\n" if skills else "")
-        + "此外九维属性也可申请检定（返回其中文名即可）：力量、体质、体型、敏捷、外貌、"
-        "智力、意志、教育、幸运；「灵感」=智力、「知识」=教育。\n"
-        "判断玩家是否在【主动要求做一次技能/属性检定】"
-        "（如「我用心理学看看他说的真假」「我要过一个侦查检定」「掷个聆听」"
-        "「我想过个教育检定回忆一下」「过一个力量把门撞开」）。\n"
-        "攻击、射击、格斗、躲避等交战宣言不是普通检定申请，必须返回 check=false，"
-        "交给战斗规划器与结构化战斗处理。\n"
-        '是 → {"check": true, "skill": "技能名或属性中文名（尽量用上面列出的原名）"}\n'
-        '否（只是普通说话/行动/移动/环境互动）→ {"check": false}\n只输出 JSON。'
-    )
-    try:
-        raw = await llm.complete(
-            [{"role": "system", "content": _CHECK_INTENT_SYS}, {"role": "user", "content": user}],
-            temperature=0,
-        )
-    except Exception:
-        logger.exception("意图分诊失败，回退常规流程")
-        return None
-    data = None
-    if isinstance(raw, dict):
-        data = raw
-    elif isinstance(raw, str):
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            m = re.search(r"\{.*\}", raw, re.S)
-            if m:
-                try:
-                    data = json.loads(m.group(0))
-                except json.JSONDecodeError:
-                    data = None
-    if isinstance(data, dict) and data.get("check"):
-        skill = str(data.get("skill") or "").strip()
-        return skill or "（未指明技能）"
-    return None
 
 
 def _team_guidance_from_plan(plan: turn_planner.TurnPlan | None) -> str:
@@ -2936,6 +2942,7 @@ def _team_guidance_from_plan(plan: turn_planner.TurnPlan | None) -> str:
 
 
 async def run_chat_generation(session_id: str) -> None:
+    await _drain_housekeeping(session_id)
     from app.database import SessionLocal
 
     db = SessionLocal()
@@ -2948,14 +2955,14 @@ async def run_chat_generation(session_id: str) -> None:
         party_others = session_service.get_party_members(
             db, session_id, exclude_id=game_session.player_character_id,
         )
-        llm = get_llm()
+        get_llm()   # fail-fast：未配置 AI 时在此就近报「请到设置页配置」，不深入半截流程
 
         # 一阵疯狂计时：本回合开始给在场角色的临时疯狂发作各减 1 回合，到期自动解除并广播恢复。
         for chunk in _tick_madness_recovery(db, session_id, [player_char, *party_others]):
             room_hub.broadcast(session_id, chunk)
 
-        # 意图分诊：玩家本轮是否在申请技能检定？是 → 直接走确定性检定裁定（避免被 KP 当叙事顺过去），
-        # 不再跑队友回合与常规叙事。取本轮该玩家的行动/台词文本做判断。
+        # 取本轮玩家文本（意图分诊已并入 planner 的 player_check_request 字段，
+        # 不再单独跑一次分诊 LLM 调用——省一段串行延迟）。
         turn = _current_turn_events(session_service.get_session_events(db, session_id))
         # 本轮暂存的「前往」动作（大地图前往加入本回合）已随推进转正 → 在建 KP 上下文前
         # 确定性同步该角色所在场景，随后 KP 会以正确位置叙述抵达见闻（无需再单独走一次生成）。
@@ -2968,49 +2975,73 @@ async def run_chat_generation(session_id: str) -> None:
             (e.content or "") for e in turn
             if e.event_type in ("action", "dialogue") and e.actor_id == acting.id and (e.content or "").strip()
         )
-        if player_text and not _looks_like_combat_declaration(player_text):
-            skill = await _detect_check_request(llm, player_text, acting)
-            if skill:
-                await _run_kp_turn(
-                    db, session_id, game_session, module, player_char, party_others,
-                    CHECK_REQUEST_PROMPT.format(actor=acting.name, skill=skill, intent=player_text),
-                )
-                return
 
         # planner 前移：在队友回合之前先跑一次裁定计划，作为本回合的共享契约——队友据
         # plan.direction 派生的导演提示行动（如把话头递给冷场玩家），KP 叙事时再以队友实际
         # 行动 + plan 为准。plan 是「裁定意图」不是「剧本」，队友行动后语义不变；开场不跑。
+        # 结构化副任务走快模型（get_fast_llm，未配置时即主模型）。
         pre_events = session_service.get_session_events(db, session_id)
         plan = None
+        fast_llm = get_fast_llm()
         if pre_events:
+            room_hub.broadcast(session_id, _make_chunk("housekeeping", "守秘人正在判读局势…"))
+            t_plan = time.monotonic()
             rules_enabled = rulebook_service.has_rulebook(db, module.rule_system)
             plan_messages = turn_planner.build_turn_plan_messages(
                 game_session, module, player_char, pre_events,
                 teammates=party_others, rules_lookup_enabled=rules_enabled,
                 rule_excerpts=_rule_excerpts_for_planner(db, module, pre_events, game_session),
             )
-            plan = await turn_planner.run_turn_planner(llm, plan_messages)
+            plan = await turn_planner.run_turn_planner(fast_llm, plan_messages)
+            logger.info(
+                "耗时|planner %.1fs session=%s", time.monotonic() - t_plan, session_id,
+            )
             # 世界记忆钩子 a：本轮裁定要揭示线索 → 写入线索台账（前移后在此统一记账）
             if plan is not None:
                 _record_clue_ledger_from_plan(
                     db, game_session, plan, pre_events, player_char, party_others,
                 )
 
+        # 玩家明确申请检定（plan.player_check_request）→ 直接走确定性检定裁定
+        # （避免被 KP 当叙事顺过去），不再跑队友回合与常规叙事。战斗宣言不走此路。
+        requested_skill = (plan.player_check_request if plan else "").strip()
+        if (
+            requested_skill and player_text
+            and not _looks_like_combat_declaration(player_text)
+            and not (plan and plan.combat.should_start)
+        ):
+            await _run_kp_turn(
+                db, session_id, game_session, module, player_char, party_others,
+                CHECK_REQUEST_PROMPT.format(
+                    actor=acting.name, skill=requested_skill, intent=player_text,
+                ),
+            )
+            return
+
         # 玩家输入后：先跑一轮 AI 队友自动响应（仅 AI 席、仅一轮、不自触发），再交 KP 收束。
         # 队友暗骰（心理学等）的真实结果收集到 team_blind，注入本回合 KP 上下文而不落库/广播。
         team_blind: list[str] = []
         if ai_teammates:
+            t_team = time.monotonic()
             async for chunk in _run_team_turn(
-                db, session_id, game_session, module, player_char, ai_teammates, llm,
+                db, session_id, game_session, module, player_char, ai_teammates, fast_llm,
                 blind_results=team_blind,
                 team_guidance=_team_guidance_from_plan(plan),
             ):
                 room_hub.broadcast(session_id, chunk)
+            logger.info(
+                "耗时|队友回合 %.1fs（%d 人）session=%s",
+                time.monotonic() - t_team, len(ai_teammates), session_id,
+            )
 
         events = session_service.get_session_events(db, session_id)
+        t_kp = time.monotonic()
         await _run_generation(
             db, session_id, game_session, module, player_char, events,
             teammates=party_others, blind_results=team_blind, plan=plan,
+        )
+        logger.info(
+            "耗时|KP 叙事 %.1fs session=%s", time.monotonic() - t_kp, session_id,
         )
     except asyncio.CancelledError:
         logger.info("生成被取消: session=%s", session_id)
@@ -3090,7 +3121,7 @@ async def _run_kp_turn(
             rules_lookup_enabled=rules_enabled,
             rule_excerpts=_rule_excerpts_for_planner(db, module, post_events, game_session),
         )
-        plan = await turn_planner.run_turn_planner(llm, plan_messages)
+        plan = await turn_planner.run_turn_planner(get_fast_llm(), plan_messages)
         if need_sanity:
             async for chunk in _ensure_planned_sanity(
                 db, session_id, game_session, player_char, party_others, plan, pre_gen_seq,
@@ -3105,7 +3136,7 @@ async def _run_kp_turn(
     if then_team_turn:
         db.refresh(game_session)  # 叙事里可能有 [SCENE_CHANGE]/[MOVE] 改了位置，重取再判分头
         async for chunk in _run_team_turn(
-            db, session_id, game_session, module, player_char, then_team_turn, llm,
+            db, session_id, game_session, module, player_char, then_team_turn, get_fast_llm(),
         ):
             room_hub.broadcast(session_id, chunk)
 
@@ -3121,6 +3152,7 @@ async def run_check_request_generation(
     可疑点时，光报技能名 KP 猜不出具体针对什么，必须带上这句话才能裁定到位。
     KP 若判定需要，会输出 [DICE_CHECK]，经 _process_commands 挂成「待玩家投骰」；
     若判定无需检定，则直接简短叙述。"""
+    await _drain_housekeeping(session_id)
     from app.database import SessionLocal
 
     db = SessionLocal()
@@ -3156,6 +3188,7 @@ async def run_combat_aftermath_generation(session_id: str) -> None:
     KP 承接直接后果、交代在场者状态、把主动权交还调查员。读一次即清 combat_result，
     避免玩家下一次行动时 _run_generation 再注入一遍余波。无结果摘要 / 无 LLM 则安静收场。
     """
+    await _drain_housekeeping(session_id)
     from app.database import SessionLocal
 
     db = SessionLocal()
@@ -3192,6 +3225,7 @@ async def run_combat_aftermath_generation(session_id: str) -> None:
 
 async def run_roll_generation(session_id: str, check_id: str) -> None:
     """玩家点『投骰』：取出待定检定 → 按 KP 定的难度掷骰 → 广播达成等级 → KP 据等级续写。"""
+    await _drain_housekeeping(session_id)
     from app.database import SessionLocal
 
     db = SessionLocal()
@@ -3303,6 +3337,7 @@ def _persist_module_intro(db: Session, session_id: str, module: Module) -> str |
 
 
 async def run_opening_generation(session_id: str) -> None:
+    await _drain_housekeeping(session_id)
     from app.database import SessionLocal
 
     db = SessionLocal()
@@ -3354,6 +3389,7 @@ async def run_travel_generation(session_id: str, actor_id: str, scene_id: str) -
 
     场景切换是后端据玩家显式选择执行的（非 KP 臆测），从根上杜绝「说句话就被自动搬走」。
     """
+    await _drain_housekeeping(session_id)
     from app.database import SessionLocal
 
     db = SessionLocal()
@@ -3405,6 +3441,7 @@ async def run_regenerate_generation(session_id: str) -> None:
     调用前应已由端点：①取消卡住的旧生成 task；②回滚上一轮 KP 叙事产物
     （session_service.rollback_last_kp_output）。本函数只负责用清理后的事件流重跑 KP。
     """
+    await _drain_housekeeping(session_id)
     from app.database import SessionLocal
 
     db = SessionLocal()

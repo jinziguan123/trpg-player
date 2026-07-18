@@ -191,12 +191,11 @@ def test_duplicate_dice_check_deduped(db_factory):
     assert len(pending) == 1  # 只挂了一个待投检定
 
 
-def test_finish_generation_broadcasts_done_after_housekeeping(monkeypatch):
-    """done 必须在 housekeeping（滚动摘要 + 幕后推演）之后广播。
+def test_finish_generation_detaches_housekeeping(monkeypatch, db_factory):
+    """done 先广播（玩家立即可操作），housekeeping（滚动摘要 + 幕后推演）转后台任务；
+    下一次生成起步时 _drain_housekeeping 排干未完的收尾——world_state 写不并发。"""
+    import app.database as database
 
-    否则玩家会在「KP 已不吐字」（done 到达、streaming 置 false）时，因 is_generating 仍为
-    True（housekeeping 的 LLM 调用还占着生成锁）而投骰/申请检定被后端 409「KP 正在叙事」——
-    即线上「明明不吐字了还显示 KP 叙事中」的成因。"""
     order: list[str] = []
 
     async def fake_summary(db, sid, llm):
@@ -209,12 +208,19 @@ def test_finish_generation_broadcasts_done_after_housekeeping(monkeypatch):
         if '"type": "done"' in chunk:
             order.append("done")
 
+    monkeypatch.setattr(database, "SessionLocal", db_factory)
     monkeypatch.setattr(chat_service, "_maybe_roll_story_summary", fake_summary)
     monkeypatch.setattr(chat_service, "_maybe_run_backstage", fake_backstage)
     monkeypatch.setattr(chat_service.room_hub, "broadcast", fake_broadcast)
 
-    asyncio.run(chat_service._finish_generation(None, "sid", None))
-    assert order == ["summary", "backstage", "done"]  # done 收尾，绝不抢在 housekeeping 前
+    async def main():
+        await chat_service._finish_generation(None, "sid", None)
+        assert order[0] == "done"          # done 不等收尾、立即广播
+        await chat_service._drain_housekeeping("sid")
+        assert order == ["done", "summary", "backstage"]  # 排干后收尾已完整执行
+        assert "sid" not in chat_service._housekeeping_tasks  # 排干即清位，不泄漏
+
+    asyncio.run(main())
 
 
 def test_progressive_verb_phrase_not_split_into_speaker():
@@ -715,24 +721,6 @@ def test_skill_names_from_dict_and_system_data():
     assert "侦查" in chat_service._skill_names(c2)
 
 
-def test_detect_check_request_routes_only_real_requests():
-    """意图分诊：玩家主动申请检定 → 返回技能名；普通行动 → None（走常规叙事）。"""
-    class _LLM:
-        def __init__(self, resp):
-            self.resp = resp
-
-        async def complete(self, messages, temperature=0.7, **kw):
-            return self.resp
-
-    char = Character(name="莫妮卡", rule_system="coc", skills={"心理学": 65, "侦查": 60})
-    got = asyncio.run(chat_service._detect_check_request(
-        _LLM('{"check": true, "skill": "心理学"}'), "我用心理学看看他说的是真是假", char))
-    assert got == "心理学"
-    none = asyncio.run(chat_service._detect_check_request(
-        _LLM('{"check": false}'), "我走进房间四处看看", char))
-    assert none is None
-
-
 def test_combat_declaration_bypasses_check_request_router():
     """截图中的明确攻击宣言必须进入 TurnPlan，不能被普通技能检定分诊提前截走。"""
     assert chat_service._looks_like_combat_declaration("我冲上去捏紧指虎攻击那只循声者")
@@ -782,18 +770,18 @@ def test_check_request_generation_without_intent_prompts_kp_to_infer(db_factory,
 
 
 def test_generation_check_intent_detection_forwards_player_text(db_factory, monkeypatch):
-    """自由文本触发的检定申请（如「我用侦查看看书桌暗格」）同样要把这句话带进裁定提示词，
-    这条路径此前和 /check 端点一样漏了这一环。"""
+    """自由文本触发的检定申请（如「我用侦查看看书桌暗格」）同样要把这句话带进裁定提示词。
+    意图分诊已并入 planner：plan.player_check_request 非空 → 直接走确定性检定裁定路径。"""
     _patch_runtime(monkeypatch, db_factory)
     captured = {}
 
-    async def fake_detect(llm, text, char):
-        return "侦查"
+    async def fake_planner(llm, messages):
+        return chat_service.turn_planner.TurnPlan(player_check_request="侦查")
 
     async def fake_run_kp_turn(db, session_id, game_session, module, player_char, party_others, user_prompt):
         captured["prompt"] = user_prompt
 
-    monkeypatch.setattr(chat_service, "_detect_check_request", fake_detect)
+    monkeypatch.setattr(chat_service.turn_planner, "run_turn_planner", fake_planner)
     monkeypatch.setattr(chat_service, "_run_kp_turn", fake_run_kp_turn)
 
     db = db_factory()
@@ -892,6 +880,7 @@ def _patch_runtime(monkeypatch, db_factory):
 
     monkeypatch.setattr(database, "SessionLocal", db_factory)
     monkeypatch.setattr(chat_service, "get_llm", lambda: None)
+    monkeypatch.setattr(chat_service, "get_fast_llm", lambda: None)
     monkeypatch.setattr(room_hub, "broadcast", lambda *a, **k: None)
 
 

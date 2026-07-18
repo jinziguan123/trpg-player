@@ -369,6 +369,7 @@ def _patch_runtime(monkeypatch, db_factory, llm):
 
     monkeypatch.setattr(database, "SessionLocal", db_factory)
     monkeypatch.setattr(chat_service, "get_llm", lambda: llm)
+    monkeypatch.setattr(chat_service, "get_fast_llm", lambda: llm)
     monkeypatch.setattr(room_hub, "broadcast", lambda *a, **k: None)
 
 
