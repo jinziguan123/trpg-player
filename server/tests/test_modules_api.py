@@ -41,6 +41,55 @@ def test_parse_module_images(monkeypatch):
         asyncio.run(ms.parse_module_images([(b"x", "image/png")], "coc"))
 
 
+def test_parse_module_text_resumes_truncated_json(monkeypatch):
+    """长模组输出撞 max_tokens 被截断 → 自动断点续写拼接后解析成功；
+    续写调用不得带 response_format=json_object（那会迫使模型重开新 JSON 而非接着写）。"""
+    import asyncio
+    import json as _json
+    from app.services import module_service as ms
+
+    full = _json.dumps(
+        {"title": "常暗之箱", "scenes": [{"id": "scene_1", "title": "6号车厢"}],
+         "npcs": [], "clues": []},
+        ensure_ascii=False,
+    )
+    cut = len(full) // 2
+    calls: list[dict] = []
+
+    class LLM:
+        async def complete(self, messages, **kw):
+            calls.append(kw)
+            if len(calls) == 1:
+                return full[:cut]          # 首次：截断的半截 JSON
+            assert messages[-2]["content"] == full[:cut]   # 半截输出作为 assistant 上文回灌
+            return full[cut:]              # 续写：从断点接着写
+
+    monkeypatch.setattr(ms, "get_llm", lambda: LLM())
+    parsed = asyncio.run(ms.parse_module_text("模组正文", "coc"))
+    assert parsed["title"] == "常暗之箱" and parsed["scenes"][0]["id"] == "scene_1"
+    assert calls[0].get("response_format") == {"type": "json_object"}
+    assert "response_format" not in calls[1]   # 续写不带 json_object
+
+
+def test_parse_module_text_falls_back_to_restarted_json(monkeypatch):
+    """个别模型不接续而是整个重出一份完整 JSON → 拼接解析失败后，退而解析续写单独成篇。"""
+    import asyncio
+    import json as _json
+    from app.services import module_service as ms
+
+    full = _json.dumps({"title": "重出模组", "scenes": [], "npcs": [], "clues": []}, ensure_ascii=False)
+    calls = {"n": 0}
+
+    class LLM:
+        async def complete(self, messages, **kw):
+            calls["n"] += 1
+            return full[: len(full) // 2] if calls["n"] == 1 else full  # 续写=整份重出
+
+    monkeypatch.setattr(ms, "get_llm", lambda: LLM())
+    parsed = asyncio.run(ms.parse_module_text("模组正文", "coc"))
+    assert parsed["title"] == "重出模组"
+
+
 def _png_bytes(w: int, h: int) -> bytes:
     """生成一张带渐变纹理的真实 PNG（够大、可被 Pillow 解码）。"""
     import io

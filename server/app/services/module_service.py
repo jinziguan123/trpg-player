@@ -135,20 +135,56 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
 
 
 async def parse_module_text(raw_text: str, rule_system: str) -> dict:
-    """用 AI 解析模组文本为结构化数据"""
+    """用 AI 解析模组文本为结构化数据。
+
+    大模组的输出 JSON 很长（场景 keywords/connections/states + NPC 技能 + 手书逐字正文），
+    单次 completion 撞到 max_tokens 会被拦腰截断成坏 JSON。检测到截断时**自动续写一次**：
+    把半截输出作为 assistant 上文让模型从断点接着写，拼接后再解析——输出预算等效翻倍，
+    且不依赖任何供应商的超大 max_tokens。仍失败才抛给上层（upload 端点回 502 可读提示）。
+    """
     llm = get_llm()
     prompt = PARSE_PROMPT_TEMPLATE.format(
         rule_system=rule_system.upper(), content=raw_text
     )
+    messages = [{"role": "user", "content": prompt}]
 
     result = await llm.complete(
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
         response_format={"type": "json_object"},
         temperature=0.3,
         max_tokens=8192,
     )
+    try:
+        return _extract_json(result)
+    except json.JSONDecodeError:
+        logger.warning(
+            "模组解析 JSON 不完整（长度 %d，尾部 %r），尝试断点续写",
+            len(result or ""), (result or "")[-120:],
+        )
 
-    return json.loads(result)
+    # 续写不带 response_format=json_object：那会迫使模型重开一个全新 JSON，而不是接着写
+    continuation = await llm.complete(
+        messages=messages + [
+            {"role": "assistant", "content": result},
+            {"role": "user", "content": (
+                "你的 JSON 输出到上面为止被截断了。请**从断点处直接继续**：接着上文的"
+                "最后一个字符往下写，补完整个 JSON。不要重复任何已输出的内容、"
+                "不要解释、不要 markdown 围栏。"
+            )},
+        ],
+        temperature=0.3,
+        max_tokens=8192,
+    )
+    combined = (result or "") + (continuation or "")
+    # 优先按「断点拼接」解析；个别模型不接续而是整个重output——退而解析续写单独成篇的情形
+    for candidate in (combined, continuation or ""):
+        try:
+            parsed = _extract_json(candidate)
+            logger.info("模组解析断点续写成功（总长 %d）", len(candidate))
+            return parsed
+        except json.JSONDecodeError:
+            continue
+    return _extract_json(combined)  # 仍不完整：抛 JSONDecodeError，由上层回可读 502
 
 
 def _extract_json(raw: str) -> dict:
