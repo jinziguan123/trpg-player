@@ -1430,6 +1430,9 @@ def _persist_narration(
         for off, npc_name, dialogue_text in marks:
             dialogue_at.setdefault(off, []).append((npc_name, dialogue_text))
 
+    # 本次落库的 NPC 对话事件：收尾统一挂立绘（缓存秒挂/后台生成，fail-open 不影响落库）
+    dialogue_evs: list = []
+
     if marks is not None or loop_cuts:
         cuts = sorted(set(dialogue_at) | loop_cuts)
         pos = 0
@@ -1444,8 +1447,10 @@ def _persist_narration(
                         group=_group_at(off),
                     )
                     _record(ev, off)
+                    dialogue_evs.append(ev)
             pos = off
         _add_narr(narration[pos:], pos)
+        _attach_npc_portraits(db, session_id, dialogue_evs)
         return
 
     # 回退：无交错信息
@@ -1455,6 +1460,8 @@ def _persist_narration(
             db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
         )
         _record(ev, len(narration))
+        dialogue_evs.append(ev)
+    _attach_npc_portraits(db, session_id, dialogue_evs)
 
 
 def _record_chunk_event(event_order: list, chunk: str, offset: int) -> None:
@@ -1884,11 +1891,13 @@ def _record_clue_ledger_from_plan(
     events: list,
     player_char: Character,
     teammates: list[Character] | None,
+    module: Module | None = None,
 ) -> None:
     """世界记忆钩子 a：planner 裁定本轮揭示线索（reveal_level != none 且有 candidate）
     即写入台账（partial ← hint，known ← direct）。
 
     discovered_by 取「与主角同场景」的玩家角色——分头行动下另一队并不知情，信息不共享。
+    ``module`` 给定时，对**首次进台账**的线索追加一张发现配图卡（增强件，缺省不出卡）。
     """
     policy = plan.clue_policy
     if not policy.candidate_clue_ids:
@@ -1905,10 +1914,17 @@ def _record_clue_ledger_from_plan(
         if getattr(e, "sequence_num", None):
             seq = e.sequence_num
             break
+    # 记账前先取台账快照：新旧对比才知道哪些线索是**本轮首次**触碰（配图卡只出一次）
+    before = set((game_session.world_state or {}).get("clue_ledger") or {})
     _apply_world_memory(db, game_session, lambda ws: world_memory.record_clue_reveal(
         ws, policy.candidate_clue_ids, policy.reveal_level, present, seq,
         note=policy.notes,
     ))
+    if module is not None:
+        for cid in policy.candidate_clue_ids:
+            cid = str(cid or "").strip()
+            if cid and cid not in before:
+                _maybe_clue_illustration(db, game_session.id, module, cid)
 
 
 def _record_npc_say_memory(
@@ -2600,7 +2616,7 @@ async def _run_generation(
         # 世界记忆钩子 a：本轮裁定要揭示线索 → 写入线索台账（纯确定性，零额外 LLM 调用）
         if plan is not None:
             _record_clue_ledger_from_plan(
-                db, game_session, plan, events, player_char, teammates,
+                db, game_session, plan, events, player_char, teammates, module=module,
             )
 
     # 幕后推演 → validator 预筛：最近幕后事件文本挂进 plan.safety.do_not_reveal，
@@ -3004,6 +3020,7 @@ async def run_chat_generation(session_id: str) -> None:
             if plan is not None:
                 _record_clue_ledger_from_plan(
                     db, game_session, plan, pre_events, player_char, party_others,
+                    module=module,
                 )
 
         # 玩家明确申请检定（plan.player_check_request）→ 直接走确定性检定裁定
@@ -3366,6 +3383,11 @@ async def run_opening_generation(session_id: str) -> None:
         for c in [player_char, *party_others]:
             if c:
                 inventory_service.seed_from_equipment(db, c)
+        # 开场场景配图卡（首入防重靠 scene_cards，开场生成失败重试也只出一张）
+        for chunk in _maybe_scene_illustration(
+            db, session_id, module, game_session.current_scene_id,
+        ):
+            room_hub.broadcast(session_id, chunk)
         # 开场不跑队友回合（尚无玩家行动），但把队伍信息带进 KP 上下文让其知道谁在场
         await _run_generation(
             db, session_id, game_session, module, player_char, [],
@@ -3420,6 +3442,9 @@ async def run_travel_generation(
             actor_id=actor.id, actor_name=actor.name,
         )
         room_hub.broadcast(session_id, event_to_chunk(ev))
+        # 首次抵达该场景 → 场景配图卡（先出卡，KP 叙述随后跟上；图片异步补挂）
+        for chunk in _maybe_scene_illustration(db, session_id, module, scene_id):
+            room_hub.broadcast(session_id, chunk)
 
         if via:
             passage = "、".join(f"【{v}】" for v in via)
@@ -4075,7 +4100,10 @@ async def _exec_scene_change(
             if session_service.get_char_location(game_session, t.id) == old:
                 session_service.set_char_location(db, session_id, t.id, sid)
         db.refresh(game_session)
-        return [_make_chunk("system", f"场景切换至：{_scene_name(module, sid)}")], sid, ""
+        # 首次抵达新场景 → 追加一张场景配图卡（chunk 随本次切换一并广播/重排）
+        chunks = [_make_chunk("system", f"场景切换至：{_scene_name(module, sid)}")]
+        chunks += _maybe_scene_illustration(db, session_id, module, sid)
+        return chunks, sid, ""
     if not sid:
         logger.warning("SCENE_CHANGE 无法解析场景引用：%r（保持当前场景）", ref)
         return [], None, "场景引用无法解析（保持当前场景）。"
@@ -4152,11 +4180,19 @@ _HANDOUT_PROMPT_SYS = (
 )
 
 
-async def _illustrate_handout(
-    session_id: str, event_id: str, title: str, kind: str, content: str,
+async def _illustrate_event(
+    session_id: str,
+    event_id: str,
+    prompt_sys: str,
+    prompt_user: str,
+    cache_write=None,
+    patch_key: str = "image",
 ) -> None:
-    """手书配图（后台）：快模型写英文提示词 → 图片后端出图 → 落盘 → 补挂事件 metadata 并广播增量。
+    """通用配图管线（后台）：快模型写英文提示词 → 图片后端出图 → 落盘 →
+    补挂事件 metadata[patch_key] 并广播 event_patch 增量。
 
+    ``cache_write(url)``：生成成功后回写缓存（如模组 scenes[].image / npcs[].portrait），
+    同一素材下次直接秒出、不再重复烧卡；回写失败只弃缓存，不影响本次补挂。
     任何环节失败一律静默放弃（卡片保持纯文字），绝不影响跑团主流程。
     """
     from app.database import SessionLocal
@@ -4165,8 +4201,8 @@ async def _illustrate_handout(
     try:
         raw = await get_fast_llm().complete(
             [
-                {"role": "system", "content": _HANDOUT_PROMPT_SYS},
-                {"role": "user", "content": f"标题：{title}\n类型：{kind}\n正文：\n{content[:600]}"},
+                {"role": "system", "content": prompt_sys},
+                {"role": "user", "content": prompt_user},
             ],
             temperature=0.7,
         )
@@ -4179,25 +4215,355 @@ async def _illustrate_handout(
         url = save_image_b64(b64)
         if not url:
             return
+        if cache_write is not None:
+            try:
+                cache_write(url)
+            except Exception:  # noqa: BLE001 — 缓存是增强件，回写失败不影响本次出图
+                logger.exception("配图缓存回写失败（本次仍补挂事件）：event=%s", event_id)
         db = SessionLocal()
         try:
             ev = db.get(EventLog, event_id)
             if ev is None:
                 return
             meta = dict(ev.metadata_ or {})
-            meta["image"] = url
+            meta[patch_key] = url
             ev.metadata_ = meta
             db.commit()
         finally:
             db.close()
         room_hub.broadcast(session_id, _make_chunk(
-            "event_patch", metadata={"event_id": event_id, "patch": {"image": url}},
+            "event_patch", metadata={"event_id": event_id, "patch": {patch_key: url}},
         ))
-        logger.info("手书配图完成：event=%s url=%s", event_id, url)
+        logger.info("配图完成：event=%s key=%s url=%s", event_id, patch_key, url)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001
-        logger.exception("手书配图失败（卡片保持纯文字）：event=%s", event_id)
+        logger.exception("配图失败（卡片保持纯文字）：event=%s", event_id)
+
+
+async def _illustrate_handout(
+    session_id: str, event_id: str, title: str, kind: str, content: str,
+) -> None:
+    """手书配图：通用管线的薄封装（保持既有调用方与测试的签名/行为不变）。"""
+    await _illustrate_event(
+        session_id, event_id, _HANDOUT_PROMPT_SYS,
+        f"标题：{title}\n类型：{kind}\n正文：\n{content[:600]}",
+    )
+
+
+def _spawn_illustration(
+    session_id: str,
+    event_id: str,
+    prompt_sys: str,
+    prompt_user: str,
+    cache_write=None,
+    patch_key: str = "image",
+    on_done=None,
+) -> bool:
+    """照 ``_exec_handout`` 的模式起后台配图任务（fail-open）：先判定生图能力、整体 try/except，
+    无能力或起任务失败都静默返回 False（卡片保持纯文字），绝不阻塞主流程。
+
+    ``on_done``：任务收尾（无论成败）时调用——供调用方清理「生成中」防重标记；
+    没能起任务时也会调用，保证标记不残留。
+    """
+    spawned = False
+    try:
+        if get_llm().supports_image_gen():
+
+            async def _run() -> None:
+                try:
+                    await _illustrate_event(
+                        session_id, event_id, prompt_sys, prompt_user,
+                        cache_write=cache_write, patch_key=patch_key,
+                    )
+                finally:
+                    if on_done is not None:
+                        on_done()
+
+            asyncio.create_task(_run())
+            spawned = True
+    except Exception:  # noqa: BLE001 — 配图判定/起任务失败不影响主流程
+        logger.exception("配图任务启动失败（忽略）：event=%s", event_id)
+    if not spawned and on_done is not None:
+        on_done()
+    return spawned
+
+
+def _module_list_cache_writer(module_id: str, list_field: str, item_id: str, key: str):
+    """返回一个缓存回写回调：把生成的图片 URL 写进模组 JSON 列表字段（scenes/npcs/clues）
+    中指定 id 条目的 ``key`` 上。
+
+    在后台任务里执行 → 用独立 DB 会话；JSON 列必须整列表重赋值才会被 SQLAlchemy 追踪落库。
+    """
+    def _write(url: str) -> None:
+        from app.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            m = db.get(Module, module_id)
+            if m is None:
+                return
+            items = [dict(it) if isinstance(it, dict) else it for it in (getattr(m, list_field, None) or [])]
+            for it in items:
+                if isinstance(it, dict) and str(it.get("id") or "") == item_id:
+                    it[key] = url
+                    break
+            setattr(m, list_field, items)
+            db.commit()
+        finally:
+            db.close()
+    return _write
+
+
+def _module_era(module: Module) -> str:
+    """模组年代标签（1920s/现代/维多利亚…），生图提示词素材；缺省沿用全站惯例 1920s。"""
+    return str((module.world_setting or {}).get("era") or "1920s")
+
+
+_SCENE_ILLUST_PROMPT_SYS = (
+    "你是文生图提示词工程师。把给定的 TRPG 场景转成一行**英文** Stable Diffusion 提示词："
+    "描绘该地点的空镜氛围画面——环境/建筑、光影、天气与年代质感，按给定年代取材"
+    "（atmospheric horror scene, moody lighting, photorealistic）。危险度越高画面越阴沉压抑。"
+    "不要出现人物面孔与真实人名，不要引号，只输出提示词本身。"
+)
+
+_NPC_PORTRAIT_PROMPT_SYS = (
+    "你是文生图提示词工程师。把给定的 TRPG NPC 转成一行**英文** Stable Diffusion 提示词："
+    "该人物的半身肖像（character portrait, bust, 按给定年代取服饰与质感，如 1920s attire, "
+    "muted tones, painterly）。据外貌/身份/性格描绘气质与神态，不要出现真实人名，"
+    "不要引号，只输出提示词本身。"
+)
+
+_CLUE_ILLUST_PROMPT_SYS = (
+    "你是文生图提示词工程师。把给定的 TRPG 线索转成一行**英文** Stable Diffusion 提示词："
+    "描绘这件线索物证本身的特写画面——材质、细节、陈放环境与年代质感（evidence close-up, "
+    "dim lighting, photorealistic）。不要出现人物面孔与真实人名，不要引号，只输出提示词本身。"
+)
+
+_ENCOUNTER_ILLUST_PROMPT_SYS = (
+    "你是文生图提示词工程师。把给定的 TRPG 遭遇战敌人转成一行**英文** Stable Diffusion 提示词："
+    "描绘紧张的遭遇场面（horror creature encounter, dramatic lighting, cinematic），按敌方"
+    "描述刻画其形貌与压迫感，按给定年代取环境质感。不要出现真实人名，不要引号，只输出提示词本身。"
+)
+
+
+def _maybe_scene_illustration(
+    db: Session, session_id: str, module: Module, scene_id: str | None,
+) -> list[str]:
+    """场景首入配图卡：本会话**首次**抵达某场景时落一条 illustration 系统事件并返回待广播 chunks。
+
+    防重用自记的 ``world_state.scene_cards``（不用 visited_scenes——它在位置更新时已被追加，
+    到这里已无法区分「首次」）。模组 ``scenes[].image`` 有缓存则 metadata 直接带图秒出；
+    无缓存起后台生图，成功回写模组缓存（跨会话复用）并 patch 事件。整体 fail-open。
+    """
+    try:
+        if not scene_id:
+            return []
+        game_session = db.get(GameSession, session_id)
+        if game_session is None:
+            return []
+        if scene_id in set((game_session.world_state or {}).get("scene_cards") or []):
+            return []
+        scene = next(
+            (s for s in (module.scenes or []) if isinstance(s, dict) and s.get("id") == scene_id),
+            None,
+        )
+        if scene is None:
+            return []
+        title = str(scene.get("title") or scene.get("name") or "").strip() or scene_id
+        meta: dict = {"kind": "illustration", "icat": "scene", "title": title}
+        cached = str(scene.get("image") or "").strip()
+        if cached:
+            meta["image"] = cached
+        ev = session_service.add_event(
+            db, session_id, "system", f"—— 抵达 {title} ——", actor_name="系统", metadata=meta,
+        )
+        # 先记防重再起任务：即使生图失败，同场景也不再反复出卡（卡片本身只该有一张）。
+        _apply_world_memory(
+            db, game_session,
+            lambda ws, _sid=scene_id: {
+                **ws, "scene_cards": [*(ws.get("scene_cards") or []), _sid],
+            },
+        )
+        if not cached:
+            _spawn_illustration(
+                session_id, ev.id, _SCENE_ILLUST_PROMPT_SYS,
+                (
+                    f"场景：{title}\n年代：{_module_era(module)}\n"
+                    f"危险度：{scene.get('danger') or ''}\n氛围：{scene.get('atmosphere') or ''}\n"
+                    f"描述：{str(scene.get('description') or '')[:600]}"
+                ),
+                cache_write=_module_list_cache_writer(module.id, "scenes", scene_id, "image"),
+            )
+        return [_make_chunk("system", ev.content, metadata=ev.metadata_, event_id=ev.id)]
+    except Exception:  # noqa: BLE001 — 配图卡是增强件，任何失败都不许影响场景切换
+        logger.exception("场景配图卡落卡失败（忽略）：session=%s scene=%s", session_id, scene_id)
+        return []
+
+
+def _maybe_clue_illustration(
+    db: Session, session_id: str, module: Module, clue_id: str,
+) -> None:
+    """线索发现配图卡：某线索**首次**进台账时落一条 illustration 系统事件并直接广播
+    （调用点在世界记忆钩子里，不在 chunk 流水线上，故直接 room_hub.broadcast）。
+
+    模组 ``clues[].image`` 有缓存秒出，否则后台生图并回写缓存。匹配不到模组线索
+    （素材缺失）则不出卡。整体 fail-open。
+    """
+    try:
+        clue = next(
+            (
+                c for c in (module.clues or [])
+                if isinstance(c, dict) and str(c.get("id") or "") == clue_id
+            ),
+            None,
+        )
+        if clue is None:
+            return
+        name = str(clue.get("name") or "").strip() or clue_id
+        meta: dict = {"kind": "illustration", "icat": "clue", "title": name}
+        cached = str(clue.get("image") or "").strip()
+        if cached:
+            meta["image"] = cached
+        ev = session_service.add_event(
+            db, session_id, "system", f"—— 发现线索：{name} ——", actor_name="系统", metadata=meta,
+        )
+        room_hub.broadcast(
+            session_id, _make_chunk("system", ev.content, metadata=ev.metadata_, event_id=ev.id),
+        )
+        if not cached:
+            _spawn_illustration(
+                session_id, ev.id, _CLUE_ILLUST_PROMPT_SYS,
+                (
+                    f"线索：{name}\n年代：{_module_era(module)}\n"
+                    f"内容：{str(clue.get('description') or '')[:600]}"
+                ),
+                cache_write=_module_list_cache_writer(module.id, "clues", clue_id, "image"),
+            )
+    except Exception:  # noqa: BLE001 — 配图卡是增强件，任何失败都不许影响线索记账
+        logger.exception("线索配图卡落卡失败（忽略）：session=%s clue=%s", session_id, clue_id)
+
+
+def _maybe_encounter_illustration(
+    db: Session, session_id: str, module: Module, enemies: list[dict],
+) -> list[str]:
+    """遭遇战配图卡：结构化开战时落一条 illustration 系统事件，返回待广播 chunks。
+
+    首个能匹配到模组 NPC 的敌人若带 ``encounter_image`` 缓存则秒出并不再生图；
+    否则后台生图，成功回写该 NPC 的 ``encounter_image``（临场杂兵无模组条目，不回写）。
+    """
+    try:
+        names = [str(e.get("name") or "").strip() for e in (enemies or []) if e.get("name")]
+        if not names:
+            return []
+        # 敌方里首个模组正牌 NPC：它的缓存与回写位（杂兵没有归宿，只借它的档案存图）
+        npc_ids = {str(n.get("id") or "") for n in (module.npcs or []) if isinstance(n, dict)}
+        anchor = next(
+            (e for e in enemies if str(e.get("id") or "") in npc_ids and e.get("id")), None,
+        )
+        meta: dict = {"kind": "illustration", "icat": "encounter", "title": "遭遇战"}
+        cached = str((anchor or {}).get("encounter_image") or "").strip()
+        if cached:
+            meta["image"] = cached
+        ev = session_service.add_event(
+            db, session_id, "system", f"—— 遭遇：{'、'.join(names)} ——",
+            actor_name="系统", metadata=meta,
+        )
+        if not cached:
+            desc = "；".join(
+                f"{str(e.get('name') or '')}：{str(e.get('description') or '')[:200]}"
+                for e in enemies if e.get("name")
+            )
+            _spawn_illustration(
+                session_id, ev.id, _ENCOUNTER_ILLUST_PROMPT_SYS,
+                f"敌方：{desc}\n年代：{_module_era(module)}",
+                cache_write=(
+                    _module_list_cache_writer(
+                        module.id, "npcs", str(anchor.get("id")), "encounter_image",
+                    ) if anchor is not None else None
+                ),
+            )
+        return [_make_chunk("system", ev.content, metadata=ev.metadata_, event_id=ev.id)]
+    except Exception:  # noqa: BLE001 — 配图卡是增强件，任何失败都不许影响开战
+        logger.exception("遭遇配图卡落卡失败（忽略）：session=%s", session_id)
+        return []
+
+
+# NPC 立绘「生成中」防重：同一 (module_id, npc_id) 同时只跑一张（进程级，会话间共享缓存目标）。
+_PORTRAIT_INFLIGHT: set[tuple[str, str]] = set()
+
+
+def _attach_npc_portrait(db: Session, session_id: str, module: Module, ev) -> None:
+    """NPC 立绘钩子：一条 NPC 对话事件落库后，说话人匹配到模组 NPC 时——
+    有 ``portrait`` 缓存 → 事件 metadata 直接补 portrait（并广播 event_patch，live 侧即时上头像）；
+    无缓存且未在生成中 → 起后台生图，成功回写 ``module.npcs[].portrait`` 并 patch 该事件。
+
+    整体 fail-open：这是纯装饰增强，任何失败都不许影响对话落库。
+    """
+    try:
+        if getattr(ev, "event_type", "") != "dialogue":
+            return
+        name = (getattr(ev, "actor_name", "") or "").strip()
+        actor_id = getattr(ev, "actor_id", None)
+        npc = next(
+            (
+                n for n in (module.npcs or [])
+                if isinstance(n, dict)
+                and (n.get("name") == name or n.get("id") == name or (actor_id and n.get("id") == actor_id))
+            ),
+            None,
+        )
+        if npc is None:
+            return
+        cached = str(npc.get("portrait") or "").strip()
+        if cached:
+            meta = dict(ev.metadata_ or {})
+            if meta.get("portrait") == cached:
+                return
+            meta["portrait"] = cached
+            ev.metadata_ = meta
+            db.add(ev)
+            db.commit()
+            room_hub.broadcast(session_id, _make_chunk(
+                "event_patch", metadata={"event_id": ev.id, "patch": {"portrait": cached}},
+            ))
+            return
+        key = (str(module.id), str(npc.get("id") or name))
+        if key in _PORTRAIT_INFLIGHT:
+            return
+        _PORTRAIT_INFLIGHT.add(key)
+        _spawn_illustration(
+            session_id, ev.id, _NPC_PORTRAIT_PROMPT_SYS,
+            (
+                f"NPC：{npc.get('name') or name}\n年代：{_module_era(module)}\n"
+                f"外貌与身份：{str(npc.get('description') or '')[:400]}\n"
+                f"性格：{str(npc.get('personality') or '')[:200]}"
+            ),
+            cache_write=(
+                _module_list_cache_writer(module.id, "npcs", str(npc.get("id")), "portrait")
+                if npc.get("id") else None
+            ),
+            patch_key="portrait",
+            on_done=lambda _key=key: _PORTRAIT_INFLIGHT.discard(_key),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("NPC 立绘钩子失败（忽略）：session=%s actor=%s", session_id, getattr(ev, "actor_name", "?"))
+
+
+def _attach_npc_portraits(db: Session, session_id: str, evs: list) -> None:
+    """批量版立绘钩子：供 ``_persist_narration`` 这类拿不到 module 的落库收尾处调用，
+    只在确有对话事件时才查一次模组。"""
+    if not evs:
+        return
+    try:
+        gs = db.get(GameSession, session_id)
+        module = db.get(Module, gs.module_id) if gs else None
+    except Exception:  # noqa: BLE001
+        return
+    if module is None:
+        return
+    for ev in evs:
+        _attach_npc_portrait(db, session_id, module, ev)
 
 
 
@@ -4226,9 +4592,13 @@ async def _exec_npc_act(
         actor_id=npc_id, actor_name=npc_name,
         visibility=[npc_id, player_char.id],
     )
+    # 立绘钩子：缓存命中会直接写进事件 metadata → 随对话 chunk 一并带上（气泡即时出头像）
+    _attach_npc_portrait(db, session_id, module, ev)
+    portrait = (ev.metadata_ or {}).get("portrait")
     chunks = [_make_chunk(
         "dialogue", npc_response, actor_name=npc_name,
         event_id=ev.id, actor_id=npc_id,
+        metadata={"portrait": portrait} if portrait else None,
     )]
     # 世界记忆钩子 b：NPC 被触发行动后记入其互动史（trigger 原文截断，不调 LLM）
     _apply_world_memory(
@@ -4277,11 +4647,13 @@ async def _exec_start_combat(
     party = [player_char] + list(teammates or [])
     human_ids = session_service.human_character_ids(db, session_id) or {player_char.id}
     scene_hint = _scene_title(module, game_session.current_scene_id)
+    # 遭遇配图卡先落先播（战斗态 chunks 紧随其后）：卡先出、图异步补挂，不阻塞开战
+    illust_chunks = _maybe_encounter_illustration(db, session_id, module, enemies)
     _state, chunks = await combat_service.start(
         db, session_id, party, enemies, human_ids, trigger,
         agent=CombatAgent(llm), scene_hint=scene_hint,
     )
-    return chunks
+    return illust_chunks + chunks
 
 
 def _exec_say(result: list, module: Module, who: str, text: str) -> list[str]:
@@ -4851,9 +5223,10 @@ async def _process_commands(
                     db, session_id, "narration", cont_narration, actor_name="KP",
                 )
             for npc_name, dialogue_text in cont_result[2]:
-                session_service.add_event(
+                ev = session_service.add_event(
                     db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
                 )
+                _attach_npc_portrait(db, session_id, module, ev)
         # 世界记忆钩子 c：续写里的 NPC 台词同样记入其互动史
         _record_npc_say_memory(
             db, session_id, game_session, module, cont_result[2],
@@ -4947,9 +5320,10 @@ async def _handle_rule_lookup(
                 db, session_id, "narration", cont_narration, actor_name="KP",
             )
         for npc_name, dialogue_text in cont_result[2]:
-            session_service.add_event(
+            ev = session_service.add_event(
                 db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
             )
+            _attach_npc_portrait(db, session_id, module, ev)
 
     # 世界记忆钩子 c：续写里的 NPC 台词同样记入其互动史
     _record_npc_say_memory(
@@ -5007,9 +5381,10 @@ async def _handle_module_lookup(
                 db, session_id, "narration", cont_narration, actor_name="KP",
             )
         for npc_name, dialogue_text in cont_result[2]:
-            session_service.add_event(
+            ev = session_service.add_event(
                 db, session_id, "dialogue", dialogue_text, actor_name=npc_name,
             )
+            _attach_npc_portrait(db, session_id, module, ev)
 
     # 续写里可能含查完原文后发起的检定/场景切换等，照常处理（但禁止再次查阅）
     async for chunk in _process_commands(

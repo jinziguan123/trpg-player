@@ -198,3 +198,192 @@ def test_illustrate_handout_patches_event_and_broadcasts(db_factory, monkeypatch
     asyncio.run(chat_service._illustrate_handout(session.id, ev_b.id, "x", "letter", "y"))
     assert not sent
     assert "image" not in (db_factory().get(EventLog, ev_b.id).metadata_ or {})
+
+
+# ── 场景/NPC/线索配图接入点 ──────────────────────────────────
+
+
+class _CountingImageLLM:
+    """计数生图桩：断言「缓存命中时不再烧卡」的唯一真源是 calls 长度。"""
+
+    def __init__(self, calls: list):
+        self.calls = calls
+
+    def supports_image_gen(self):
+        return True
+
+    async def generate_image(self, prompt, size="1024x1024"):
+        self.calls.append(prompt)
+        return _png_b64()
+
+
+class _StubPromptLLM:
+    def __init__(self, prompt: str):
+        self.prompt = prompt
+
+    async def complete(self, messages, **kw):
+        assert "提示词工程师" in messages[0]["content"]
+        return self.prompt
+
+
+def _wire_image_stubs(monkeypatch, db_factory, tmp_path, prompt: str):
+    """接线通用桩：独立 DB 会话工厂 / 图片目录 / 快模型提示词 / 计数生图 / 广播收集。"""
+    import app.database as database
+    from app.services import chat_service, image_store
+
+    calls: list = []
+    sent: list = []
+    monkeypatch.setattr(database, "SessionLocal", db_factory)
+    monkeypatch.setattr(image_store, "IMAGES_DIR", tmp_path)
+    monkeypatch.setattr(chat_service, "get_fast_llm", lambda: _StubPromptLLM(prompt))
+    monkeypatch.setattr(chat_service, "get_llm", lambda: _CountingImageLLM(calls))
+    monkeypatch.setattr(chat_service.room_hub, "broadcast", lambda sid, chunk: sent.append(chunk))
+    return calls, sent
+
+
+async def _drain_bg_tasks():
+    """等待 _spawn_illustration 起的后台配图任务全部收尾。"""
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        await asyncio.gather(*pending)
+
+
+def test_scene_illustration_first_entry_generates_and_caches(db_factory, monkeypatch, tmp_path):
+    """场景首入：落卡→后台生图→回写 scenes[].image→patch 事件；同会话防重；新会话缓存秒出。"""
+    from app.services import chat_service
+
+    calls, sent = _wire_image_stubs(monkeypatch, db_factory, tmp_path, "abandoned chapel, fog")
+    db = db_factory()
+    module = Module(
+        title="m", rule_system="coc", npcs=[], world_setting={"era": "1920s"},
+        scenes=[{"id": "s1", "title": "废弃教堂", "description": "塌了一半的教堂",
+                 "danger": "uneasy", "atmosphere": "霉味与烛泪"}],
+    )
+    hero = Character(name="主角", rule_system="coc")
+    db.add_all([module, hero]); db.commit()
+    session = GameSession(module_id=module.id, player_character_id=hero.id, status="active")
+    db.add(session); db.commit()
+
+    async def first_entry():
+        chunks = chat_service._maybe_scene_illustration(db, session.id, module, "s1")
+        assert len(chunks) == 1 and "抵达" in chunks[0] and "废弃教堂" in chunks[0]
+        # 同会话再次进入：scene_cards 防重 → 不再落卡、不再生图
+        assert chat_service._maybe_scene_illustration(db, session.id, module, "s1") == []
+        await _drain_bg_tasks()
+
+    asyncio.run(first_entry())
+
+    db2 = db_factory()
+    cards = [
+        e for e in session_service.get_session_events(db2, session.id)
+        if (e.metadata_ or {}).get("kind") == "illustration"
+    ]
+    assert len(cards) == 1
+    meta = cards[0].metadata_
+    assert meta["icat"] == "scene" and meta["title"] == "废弃教堂"
+    url = meta.get("image")
+    assert url and url.startswith("/api/images/")
+    assert any('"event_patch"' in c and url in c for c in sent)
+    assert db2.get(Module, module.id).scenes[0]["image"] == url    # 缓存已回写模组
+    assert len(calls) == 1
+
+    # 新会话（缓存已在）：卡片 metadata 直接带图秒出，不再起生图任务
+    hero2 = Character(name="主角乙", rule_system="coc")
+    db2.add(hero2); db2.commit()
+    session2 = GameSession(module_id=module.id, player_character_id=hero2.id, status="active")
+    db2.add(session2); db2.commit()
+    m2 = db2.get(Module, module.id)
+
+    async def second_session():
+        chunks = chat_service._maybe_scene_illustration(db2, session2.id, m2, "s1")
+        assert len(chunks) == 1 and url in chunks[0]
+        await _drain_bg_tasks()
+
+    asyncio.run(second_session())
+    assert len(calls) == 1                                          # 未再生图
+
+
+def test_npc_portrait_generates_then_hits_cache(db_factory, monkeypatch, tmp_path):
+    """NPC 立绘：首次对话生成+回写 npcs[].portrait+patch；再次对话缓存直挂 metadata、不再生图。"""
+    from app.services import chat_service
+
+    calls, sent = _wire_image_stubs(monkeypatch, db_factory, tmp_path, "old keeper, bust portrait")
+    monkeypatch.setattr(chat_service, "_PORTRAIT_INFLIGHT", set())
+    db = db_factory()
+    module = Module(
+        title="m", rule_system="coc", scenes=[],
+        npcs=[{"id": "npc_1", "name": "老守墓人", "description": "佝偻老者", "personality": "寡言"}],
+    )
+    hero = Character(name="主角", rule_system="coc")
+    db.add_all([module, hero]); db.commit()
+    session = GameSession(module_id=module.id, player_character_id=hero.id, status="active")
+    db.add(session); db.commit()
+
+    ev1 = session_service.add_event(db, session.id, "dialogue", "别在夜里来。", actor_name="老守墓人")
+
+    async def first_dialogue():
+        chat_service._attach_npc_portrait(db, session.id, module, ev1)
+        await _drain_bg_tasks()
+
+    asyncio.run(first_dialogue())
+
+    db2 = db_factory()
+    url = (db2.get(EventLog, ev1.id).metadata_ or {}).get("portrait")
+    assert url and url.startswith("/api/images/")
+    assert db2.get(Module, module.id).npcs[0]["portrait"] == url    # 缓存已回写模组
+    assert any('"event_patch"' in c and '"portrait"' in c and url in c for c in sent)
+    assert len(calls) == 1
+    assert chat_service._PORTRAIT_INFLIGHT == set()                 # 防重标记已清
+
+    # 再次对话：缓存命中 → metadata 直挂立绘并广播增量，不再生图（无后台任务，直接同步走完）
+    m2 = db2.get(Module, module.id)
+    ev2 = session_service.add_event(db2, session.id, "dialogue", "……走吧。", actor_name="老守墓人")
+    chat_service._attach_npc_portrait(db2, session.id, m2, ev2)
+    assert (db_factory().get(EventLog, ev2.id).metadata_ or {}).get("portrait") == url
+    assert len(calls) == 1
+
+
+def test_clue_illustration_card_only_on_first_reveal(db_factory, monkeypatch, tmp_path):
+    """线索卡：planner 首次把线索记入台账时落一张发现卡（生图+回写 clues[].image）；
+    同一线索后续再被裁定揭示不重复出卡。"""
+    from app.ai import turn_planner
+    from app.services import chat_service
+
+    calls, sent = _wire_image_stubs(monkeypatch, db_factory, tmp_path, "bloodstained diary close-up")
+    db = db_factory()
+    module = Module(
+        title="m", rule_system="coc", scenes=[], npcs=[],
+        clues=[{"id": "clue_1", "name": "血字日记", "description": "以血写就的日记残页"}],
+    )
+    hero = Character(name="主角", rule_system="coc")
+    db.add_all([module, hero]); db.commit()
+    session = GameSession(module_id=module.id, player_character_id=hero.id, status="active")
+    db.add(session); db.commit()
+
+    plan = turn_planner.TurnPlan(clue_policy=turn_planner.CluePolicy(
+        candidate_clue_ids=["clue_1"], reveal_level="direct",
+    ))
+
+    async def reveal_twice():
+        chat_service._record_clue_ledger_from_plan(db, session, plan, [], hero, None, module=module)
+        # 第二轮同线索再揭示：已在台账 → 不再出第二张卡
+        chat_service._record_clue_ledger_from_plan(db, session, plan, [], hero, None, module=module)
+        await _drain_bg_tasks()
+
+    asyncio.run(reveal_twice())
+
+    db2 = db_factory()
+    cards = [
+        e for e in session_service.get_session_events(db2, session.id)
+        if (e.metadata_ or {}).get("kind") == "illustration"
+    ]
+    assert len(cards) == 1
+    meta = cards[0].metadata_
+    assert meta["icat"] == "clue" and meta["title"] == "血字日记"
+    assert "发现线索" in cards[0].content
+    url = meta.get("image")
+    assert url and url.startswith("/api/images/")
+    assert db2.get(Module, module.id).clues[0]["image"] == url      # 缓存已回写模组
+    assert len(calls) == 1
+    # 台账本身照常记账（配图是增强件，不改变世界记忆行为）
+    assert "clue_1" in (db2.get(GameSession, session.id).world_state or {}).get("clue_ledger", {})

@@ -18,7 +18,7 @@ import { ImprovisedNpcModal } from '../components/game/ImprovisedNpcModal'
 import { CombatStage, type CombatState, type PendingReaction, type CombatLogEntry, type CombatResultView } from '../components/game/CombatStage'
 import { ChasePanel, type ChaseState } from '../components/game/ChasePanel'
 import { Modal } from '../components/ui/modal'
-import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter, GiCrossedSwords, GiLaurelCrown } from 'react-icons/gi'
+import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter, GiCrossedSwords, GiLaurelCrown, GiAncientRuins, GiMagnifyingGlass } from 'react-icons/gi'
 import { Copy, Bot, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { parseChaseState, parseCombatState, parsePendingReaction } from '../lib/liveState'
@@ -71,6 +71,34 @@ function HandoutImage({ src }: { src: string }) {
       onLoad={() => setLoaded(true)}
       onError={() => setFailed(true)}
     />
+  )
+}
+
+// 配图卡（metadata.kind === 'illustration'）：按 icat 选矢量图标与类别标签
+const ILLUST_ICONS: Record<string, typeof GiScrollUnfurled> = {
+  scene: GiAncientRuins,
+  clue: GiMagnifyingGlass,
+  encounter: GiCrossedSwords,
+}
+const ILLUST_LABELS: Record<string, string> = {
+  scene: '场景',
+  clue: '线索',
+  encounter: '遭遇',
+}
+
+// NPC 对话气泡旁的小圆立绘（metadata.portrait）：加载失败整体隐藏；点击放大查看
+function NpcAvatar({ src, name, onClick }: { src: string; name?: string; onClick: () => void }) {
+  const [failed, setFailed] = useState(false)
+  if (failed) return null
+  return (
+    <button
+      onClick={onClick}
+      title={name ? `${name}（点击查看立绘）` : '查看立绘'}
+      className="flex-shrink-0 rounded-full overflow-hidden cursor-pointer p-0"
+      style={{ width: 30, height: 30, border: '1px solid var(--color-border-strong)', background: 'var(--color-bg-tertiary)' }}
+    >
+      <img src={src} alt="" className="w-full h-full object-cover" onError={() => setFailed(true)} />
+    </button>
   )
 }
 
@@ -314,6 +342,8 @@ export function GameSessionPage() {
   const [showBigMap, setShowBigMap] = useState(false)         // 大地图（已知地点前往）
   const [showRecap, setShowRecap] = useState(false)           // 战报 / 章节小结弹窗
   const [showGrowth, setShowGrowth] = useState(false)         // 成长结算弹窗
+  const [portraitView, setPortraitView] = useState<string | null>(null)  // NPC 立绘放大查看
+
   const [showImprov, setShowImprov] = useState(false)         // 临场角色收编（房主专用）
   const [locations, setLocations] = useState<KnownLocation[]>([])
   // 乐观 pending：check_request 刚到时 world_state.pending_checks 还没刷新（要等 done→refetch），
@@ -1279,6 +1309,12 @@ export function GameSessionPage() {
           <GrowthModal sessionId={currentSession.id} characterId={myCharId} onClose={() => setShowGrowth(false)} />
         )}
         {showImprov && <ImprovisedNpcModal sessionId={currentSession.id} onClose={() => setShowImprov(false)} />}
+        {portraitView && (
+          // NPC 立绘放大查看：复用通用 Modal（Esc / 点遮罩关闭），点图本身也可关闭
+          <Modal onClose={() => setPortraitView(null)} widthClass="max-w-md">
+            <img src={portraitView} alt="" className="block w-full cursor-pointer" onClick={() => setPortraitView(null)} />
+          </Modal>
+        )}
         {showSearch && (
           // 历史检索悬浮窗（portal 到 body，遮罩盖全屏含侧栏、居中于聊天区、Esc 关闭）
           <Modal onClose={() => { setShowSearch(false); setSearchQ(''); setSearchResults([]) }} widthClass="max-w-xl" align="top">
@@ -1588,6 +1624,36 @@ export function GameSessionPage() {
                   </div>
                 )
               }
+              // 配图卡：场景首入 / 线索发现 / 遭遇战的插画卡片——卡先出，图生成完经 event_patch 补挂淡入
+              if (msg.metadata?.kind === 'illustration') {
+                const icat = String(msg.metadata?.icat || '')
+                const title = String(msg.metadata?.title || '')
+                const illustImg = String(msg.metadata?.image || '')
+                const IllustIcon = ILLUST_ICONS[icat] || GiScrollUnfurled
+                return (
+                  <div key={msg.id} className="chat-msg py-2 flex justify-center">
+                    <div className="rounded-md px-4 py-3 max-w-2xl w-full"
+                      style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
+                      <div className="flex items-center gap-2 mb-2" style={{ color: 'var(--color-text-accent)' }}>
+                        <IllustIcon style={{ fontSize: '1.1rem', flexShrink: 0 }} />
+                        <span className="font-semibold text-sm">{title || msg.content}</span>
+                        {ILLUST_LABELS[icat] && (
+                          <span className="text-xs ml-auto flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }}>{ILLUST_LABELS[icat]}</span>
+                        )}
+                      </div>
+                      {msg.content && title && (
+                        <div className="text-xs mb-2" style={{ color: 'var(--color-text-secondary)' }}>{msg.content}</div>
+                      )}
+                      {illustImg ? (
+                        <HandoutImage src={`${getServerUrl()}${illustImg}`} />
+                      ) : isFresh(msg) ? (
+                        // 图片尚未生成完：低调一行小字占位（若最终没图，这行也只在新鲜卡片上出现）
+                        <div className="text-xs" style={{ color: 'var(--color-text-secondary)', opacity: 0.6 }}>配图生成中…</div>
+                      ) : null}
+                    </div>
+                  </div>
+                )
+              }
               // 背景导语卡：开场前展示模组类型/年代/难度等公开元信息 + 一句话前提，给玩家定位
               if (msg.metadata?.kind === 'module_intro') {
                 const title = String(msg.metadata?.title || '模组')
@@ -1662,7 +1728,15 @@ export function GameSessionPage() {
                     <span className="chat-bubble-player">{msg.content}</span>
                   </div>
                 ) : !isPlayer && msg.type === 'dialogue' ? (
-                  <div>
+                  // NPC 气泡：有立绘（metadata.portrait，缓存秒挂或生成后 event_patch 补挂）时在气泡旁放小圆头像
+                  <div className="flex items-end gap-2">
+                    {msg.metadata?.portrait ? (
+                      <NpcAvatar
+                        src={`${getServerUrl()}${String(msg.metadata.portrait)}`}
+                        name={msg.actor_name}
+                        onClick={() => setPortraitView(`${getServerUrl()}${String(msg.metadata?.portrait)}`)}
+                      />
+                    ) : null}
                     <span className="chat-bubble-npc" style={{ '--npc-hue': npcHue(msg.actor_name) } as CSSProperties}><InlineMd text={msg.content} /></span>
                   </div>
                 ) : msg.type === 'action' ? (
