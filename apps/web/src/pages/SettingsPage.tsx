@@ -1059,7 +1059,7 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
                     <div className="mt-2 flex flex-col gap-2">
                       <input
                         className="input w-full"
-                        placeholder="ComfyUI 地址，如 http://172.30.18.236:8188"
+                        placeholder="ComfyUI 地址，如 http://127.0.0.1:8188"
                         value={form.comfyui_base_url}
                         onChange={(e) => setForm({ ...form, comfyui_base_url: e.target.value })}
                       />
