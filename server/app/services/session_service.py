@@ -1035,6 +1035,66 @@ def known_scene_ids(module, session: GameSession, events: list | None = None) ->
     return {sid for sid in known if sid in by_id}
 
 
+def _scene_adjacency(module) -> dict[str, set[str]]:
+    """场景连通图（``connections`` 的无向闭包）：作者单向填写也按双向通行。"""
+    adj: dict[str, set[str]] = {}
+    ids = {s.get("id") for s in (module.scenes or []) if s.get("id")}
+    for s in (module.scenes or []):
+        sid = s.get("id")
+        if not sid:
+            continue
+        adj.setdefault(sid, set())
+        for c in s.get("connections") or []:
+            c = str(c or "").strip()
+            if c and c != sid and c in ids:
+                adj.setdefault(c, set())
+                adj[sid].add(c)
+                adj[c].add(sid)
+    return adj
+
+
+def scene_neighbors(module, scene_id: str | None) -> list[str]:
+    """当前场景可直达的相邻场景 id（升序）。无图/无该场景返回空列表。"""
+    if not scene_id:
+        return []
+    return sorted(_scene_adjacency(module).get(scene_id, ()))
+
+
+def find_scene_path(module, start: str | None, dest: str) -> list[str] | None:
+    """沿场景连通图找 ``start → dest`` 的最短路径（BFS，路径含两端点）。
+
+    返回场景 id 列表；**确实不连通**返回 None（调用方据此拒绝切换）。
+    保守把关——以下情形一律视为可直达（返回平凡路径，行为与没有连通图时一致）：
+    - 模组任何场景都没填 connections（旧/手工模组，没建图，不能把它们走死）；
+    - start 缺失（无当前位置可依据）；
+    - start 或 dest 自身没有任何边（作者没为该地点建边，无拓扑可循）。
+    """
+    dest = (dest or "").strip()
+    if not dest:
+        return None
+    if not start:
+        return [dest]
+    if start == dest:
+        return [start]
+    adj = _scene_adjacency(module)
+    if not any(adj.values()):
+        return [start, dest]
+    if not adj.get(start) or not adj.get(dest):
+        return [start, dest]
+    seen = {start}
+    queue: list[list[str]] = [[start]]
+    while queue:
+        path = queue.pop(0)
+        for nxt in sorted(adj.get(path[-1], ())):
+            if nxt in seen:
+                continue
+            if nxt == dest:
+                return path + [nxt]
+            seen.add(nxt)
+            queue.append(path + [nxt])
+    return None
+
+
 def list_known_locations(
     module, session: GameSession, char_id: str | None = None, events: list | None = None,
     char_names: dict[str, str] | None = None,

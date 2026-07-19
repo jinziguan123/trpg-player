@@ -228,6 +228,48 @@ def test_team_context_injects_full_persona_and_party_briefs(db_factory):
     assert "队友：主角（记者，好奇心旺盛）" in system  # 队伍简介：职业 + 特点第一句
 
 
+def test_team_travel_rejects_disconnected_scene(db_factory, monkeypatch):
+    """队友 travel 的连通校验：目标已知但与所在场景不连通 → 不搬、不落「前往」事件。"""
+    db = db_factory()
+    module = Module(
+        title="列车", rule_system="coc", npcs=[],
+        scenes=[
+            {"id": "car6", "name": "六号车厢", "connections": ["car5"]},
+            {"id": "car5", "name": "五号车厢"},
+            {"id": "platform", "name": "站台", "connections": ["hall"]},   # 与列车不连通
+            {"id": "hall", "name": "候车室", "connections": ["platform"]},
+        ],
+    )
+    hero = Character(name="主角", rule_system="coc", is_player=True)
+    a1 = Character(name="阿尔法", rule_system="coc", is_player=False)
+    db.add_all([module, hero, a1])
+    db.commit()
+    session = session_service.create_session(
+        db, module.id,
+        [{"character_id": hero.id, "is_primary": True},
+         {"character_id": a1.id, "role": "ai"}],
+    )
+    session.current_scene_id = "car6"
+    ws = dict(session.world_state or {})
+    ws["visited_scenes"] = ["car6", "platform"]   # 站台已知（去过）但已回到车上
+    session.world_state = ws
+    db.commit()
+    session = db.get(GameSession, session.id)
+
+    async def fake_decide(self, messages):
+        return '{"action":"travel","content":"我去站台看看","target":"站台"}'
+
+    monkeypatch.setattr(chat_service.TeamAgent, "decide", fake_decide)
+    asyncio.run(_collect(chat_service._run_team_turn(
+        db, session.id, session, module, hero, [a1], llm=None,
+    )))
+
+    session = db.get(GameSession, session.id)
+    assert session_service.get_char_location(session, a1.id) != "platform"   # 没被搬走
+    evs = session_service.get_session_events(db, session.id)
+    assert not any("前往" in (e.content or "") for e in evs)                 # 未落前往事件
+
+
 def test_team_context_injects_private_memory(db_factory):
     """有私有记忆（goals/notes/deeds）时注入「你的私人记忆」小节；无记忆不注入。"""
     from app.services import world_memory

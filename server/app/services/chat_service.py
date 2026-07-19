@@ -1144,7 +1144,11 @@ async def _run_team_turn(
             sid = _resolve_scene_ref(module, decision.get("target") or content)
             known = session_service.known_scene_ids(module, game_session, events)
             cur = session_service.get_char_location(game_session, teammate.id)
-            if sid and sid in known and sid != cur:
+            # 连通校验与玩家 travel 同规则：不连通的目标不搬（模组没建图时恒可达）
+            if (
+                sid and sid in known and sid != cur
+                and session_service.find_scene_path(module, cur, sid) is not None
+            ):
                 session_service.set_char_location(db, session_id, teammate.id, sid)
                 db.refresh(game_session)
                 label = _scene_name(module, sid)
@@ -2554,7 +2558,7 @@ async def _ensure_planned_scene(
     if not ref:
         return
     db.refresh(game_session)
-    chunks, _sid = await _exec_scene_change(
+    chunks, _sid, _note = await _exec_scene_change(
         db, session_id, game_session, module, ref, player_char, teammates,
     )
     for chunk in chunks:
@@ -3384,10 +3388,13 @@ async def run_opening_generation(session_id: str) -> None:
         db.close()
 
 
-async def run_travel_generation(session_id: str, actor_id: str, scene_id: str) -> None:
+async def run_travel_generation(
+    session_id: str, actor_id: str, scene_id: str, via: list[str] | None = None,
+) -> None:
     """玩家经大地图『前往』某地：确定性切换该角色所在场景，落「前往」行动，再由 KP 叙述抵达。
 
     场景切换是后端据玩家显式选择执行的（非 KP 臆测），从根上杜绝「说句话就被自动搬走」。
+    ``via``：连通图算出的途经场景名（目标不相邻但连通时非空）——KP 据此叙述穿行而非瞬移。
     """
     await _drain_housekeeping(session_id)
     from app.database import SessionLocal
@@ -3414,10 +3421,19 @@ async def run_travel_generation(session_id: str, actor_id: str, scene_id: str) -
         )
         room_hub.broadcast(session_id, event_to_chunk(ev))
 
-        prompt = (
-            f"{actor.name} 抵达了【{scene_name}】。请描述此地此刻的见闻与气氛，自然承接前文；"
-            "不要触发任何检定，也不要替其他玩家角色行动或代言。"
-        )
+        if via:
+            passage = "、".join(f"【{v}】" for v in via)
+            prompt = (
+                f"{actor.name} 从原处出发，途经{passage}，抵达了【{scene_name}】。"
+                "途经之处一笔带过（至多点缀一两句沿途见闻，不停留、不触发事件），"
+                "再描述抵达地此刻的见闻与气氛，自然承接前文；"
+                "不要触发任何检定，也不要替其他玩家角色行动或代言。"
+            )
+        else:
+            prompt = (
+                f"{actor.name} 抵达了【{scene_name}】。请描述此地此刻的见闻与气氛，自然承接前文；"
+                "不要触发任何检定，也不要替其他玩家角色行动或代言。"
+            )
         # 前往后紧接一轮 AI 队友回合：留在原地/另处的队友据「分头」处境各自推进本场景，
         # 不再因为这条路不经 run_chat_generation 而全程哑火。
         await _run_kp_turn(
@@ -4030,13 +4046,28 @@ async def _auto_roll_check(
 async def _exec_scene_change(
     db: Session, session_id: str, game_session: GameSession, module: Module,
     ref: str, player_char: Character, teammates: list[Character] | None,
-) -> tuple[list[str], str | None]:
-    """执行一次场景切换。返回 (chunks, 解析成功且发生切换的 scene_id 或 None)。"""
+) -> tuple[list[str], str | None, str]:
+    """执行一次场景切换。返回 (chunks, 发生切换的 scene_id 或 None, 未切换的原因说明)。
+
+    确定性连通校验：目标须沿 connections 连通图从当前场景可达（模组没建图时不启用，
+    行为与从前一致）——KP/planner 说「玩家到了X」也搬不动不连通的场景，杜绝叙事瞬移。
+    """
     sid = _resolve_scene_ref(module, ref)
     # 只接受能对应到真实场景的 id/名字；解析不到就不动，
     # 避免写入脏值后地图回退到「第一个场景」造成「玩家换图了地图却没切」。
     old = session_service.get_char_location(game_session, player_char.id)
     if sid and sid != old:
+        if session_service.find_scene_path(module, old, sid) is None:
+            reachable = "、".join(
+                _scene_name(module, n) for n in session_service.scene_neighbors(module, old)
+            )
+            note = (
+                f"{_scene_name(module, sid)} 与当前场景不连通，无法直接前往"
+                + (f"（由此可直达：{reachable}）" if reachable else "")
+                + "。请让玩家分步移动或说明为何到不了，不要叙述其已抵达。"
+            )
+            logger.warning("SCENE_CHANGE 目标不连通，拒绝切换：%s -> %s", old, sid)
+            return [], None, note
         # 主角明确移动到新场景：更新其位置（→ current_scene_id、已访问、地图跟随）；
         # 同处一地的队友一同前往，分头在别处的队友留在原地。
         session_service.set_char_location(db, session_id, player_char.id, sid)
@@ -4044,10 +4075,11 @@ async def _exec_scene_change(
             if session_service.get_char_location(game_session, t.id) == old:
                 session_service.set_char_location(db, session_id, t.id, sid)
         db.refresh(game_session)
-        return [_make_chunk("system", f"场景切换至：{_scene_name(module, sid)}")], sid
+        return [_make_chunk("system", f"场景切换至：{_scene_name(module, sid)}")], sid, ""
     if not sid:
         logger.warning("SCENE_CHANGE 无法解析场景引用：%r（保持当前场景）", ref)
-    return [], None
+        return [], None, "场景引用无法解析（保持当前场景）。"
+    return [], None, "已身处该场景，未发生切换。"
 
 
 def _exec_flag(
@@ -4451,13 +4483,13 @@ def _build_kp_tool_executor(
         )
 
     async def _h_scene_change(name, kv):
-        chunks, sid = await _exec_scene_change(
+        chunks, sid, note = await _exec_scene_change(
             db, session_id, game_session, module,
             kv.get("scene_id", "").strip(), player_char, teammates,
         )
         if sid:
             return kp_tools.ToolOutcome(f"ok：场景已切换至 {_scene_name(module, sid)}", chunks=chunks)
-        return kp_tools.ToolOutcome("场景引用无法解析或未变化（保持当前场景）。", chunks=chunks)
+        return kp_tools.ToolOutcome(note or "场景引用无法解析或未变化（保持当前场景）。", chunks=chunks)
 
     async def _h_flag(name, kv):
         flag = kv.get("flag", "").strip()
@@ -4771,7 +4803,7 @@ async def _process_commands(
                 yield chunk
 
     for match in SCENE_CHANGE_RE.finditer(kp_text):
-        scene_chunks, _sid = await _exec_scene_change(
+        scene_chunks, _sid, _note = await _exec_scene_change(
             db, session_id, game_session, module, match.group(1).strip(),
             player_char, teammates,
         )

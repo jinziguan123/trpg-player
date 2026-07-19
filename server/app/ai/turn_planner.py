@@ -407,6 +407,11 @@ def build_turn_plan_messages(
         (scene for scene in resolved_scenes if scene.get("id") == session.current_scene_id),
         None,
     )
+    # 场景连通：当前场景可直达的邻居（模组建了 connections 图才非空）。
+    # scene_change 的确定性校验以同一张图为准——planner 别裁定不连通的切换。
+    from app.services import session_service  # 局部导入避免顶层循环依赖
+
+    scene_neighbors = session_service.scene_neighbors(module, session.current_scene_id)
     teammates = teammates or []
     # 线索台账：已发现的线索不再是 candidate——known 的直接标记 discovered，
     # 并把台账整体给 planner 做 clue_policy 判断输入（partial 的可升级为完整揭示）。
@@ -423,6 +428,7 @@ def build_turn_plan_messages(
             "rules_lookup_enabled": rules_lookup_enabled,
         },
         "current_scene": current_scene,
+        "scene_neighbors": scene_neighbors,
         "player": _compact_player(player_char),
         "teammates": [_compact_player(teammate) for teammate in teammates],
         "recent_events": _compact_events(events),
@@ -551,7 +557,9 @@ def build_turn_plan_messages(
                 "scene_policy.scene_change：本轮玩家**确实移动并到达了别的场景**时，填目标场景的 id 或"
                 "名字（只能取运行时资料里的 current_scene / 可见场景，解析不到就别填）——后端据此确定性"
                 "把角色位置与大地图切过去，不靠 KP 记得。**仅讨论/打算/建议去某地（『我们该先去X』）"
-                "绝不填**：那只是商量，人没动；留空表示本轮仍在原场景。\n"
+                "绝不填**：那只是商量，人没动；留空表示本轮仍在原场景。"
+                "scene_neighbors 非空时目标还须与当前场景**连通**（相邻可直达；更远的连通地点须玩家"
+                "实际走过去、叙事途经）——与之不连通的场景绝不填，系统也会拒绝这样的切换。\n"
                 "player_check_request：玩家本轮是否在**明确申请**做某个技能/属性检定"
                 "（如「我要投侦查」「让我用心理学看看他说的是真是假」）？是 → 填技能名"
                 "（没点名技能就按其意图选最贴切的）；只是普通说话/行动/移动，或战斗攻击宣言"

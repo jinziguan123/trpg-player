@@ -566,7 +566,7 @@ def test_check_endpoint_intent_optional(client, monkeypatch):
     assert resp.status_code == 200, resp.text
 
 
-def _client_with_scenes(tmp_path):
+def _client_with_scenes(tmp_path, scenes=None, visited=None):
     """自带带场景的模组 + 已访问两处的会话 + 无归属真人主席位——用于大地图前往。"""
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -588,13 +588,13 @@ def _client_with_scenes(tmp_path):
 
     app.dependency_overrides[get_db] = override_get_db
     db = TS()
-    scenes = [{"id": "a", "title": "门厅"}, {"id": "b", "title": "图书馆"}]
+    scenes = scenes or [{"id": "a", "title": "门厅"}, {"id": "b", "title": "图书馆"}]
     module = Module(title="M", rule_system="coc", npcs=[], scenes=scenes)
     hero = Character(name="主角", rule_system="coc", is_player=True)
     db.add_all([module, hero]); db.flush()
     session = GameSession(
         module_id=module.id, player_character_id=hero.id, status="active",
-        current_scene_id="a", world_state={"visited_scenes": ["a", "b"]},
+        current_scene_id="a", world_state={"visited_scenes": visited or ["a", "b"]},
     )
     db.add(session); db.flush()
     db.add(SessionParticipant(
@@ -647,5 +647,39 @@ def test_travel_stash_adds_pending_turn_and_commits_location(tmp_path, monkeypat
             assert session_service.get_char_location(sess.get(GameSession, sid), hid) == "b"
         finally:
             sess.close()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_travel_connectivity_gate(tmp_path, monkeypatch):
+    """大地图前往的连通校验：不连通的已知地点 → 400 并提示可直达邻居；
+    不相邻但连通（多跳）→ 放行（KP 会叙述途经）；模组没建图时行为不变（另有既有测试覆盖）。"""
+    import app.api.chat as chat_module
+
+    scenes = [
+        {"id": "a", "title": "六号车厢", "connections": ["b"]},
+        {"id": "b", "title": "四号车厢", "connections": ["c"]},
+        {"id": "c", "title": "二号车厢"},
+        {"id": "d", "title": "站台", "connections": ["e"]},   # 与列车不连通的孤岛
+        {"id": "e", "title": "候车室", "connections": ["d"]},
+    ]
+    c, sid, _hid = _client_with_scenes(tmp_path, scenes=scenes, visited=["a", "c", "d"])
+    try:
+        started = {"n": 0}
+        monkeypatch.setattr(
+            chat_module.generation_manager, "start",
+            lambda session_id, coro, prelude=None: (started.__setitem__("n", started["n"] + 1), coro.close()),
+        )
+
+        # 已知但不连通（六号车厢 → 站台）→ 400，且提示由此可直达的已知邻居
+        r = c.post(f"/api/sessions/{sid}/travel", json={"scene_id": "d"})
+        assert r.status_code == 400
+        assert "不连通" in r.json()["detail"]
+        assert started["n"] == 0
+
+        # 不相邻但沿车厢连通（六号 → 二号，途经四号）→ 放行
+        r2 = c.post(f"/api/sessions/{sid}/travel", json={"scene_id": "c"})
+        assert r2.status_code == 200, r2.text
+        assert started["n"] == 1
     finally:
         app.dependency_overrides.clear()

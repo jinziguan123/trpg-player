@@ -416,11 +416,26 @@ async def travel(
     known = session_service.known_scene_ids(module, game_session, events) if module else set()
     if scene_id not in known:
         raise HTTPException(400, "该地点尚未知晓或不可前往")
-    if session_service.get_char_location(game_session, actor.id) == scene_id:
+    cur = session_service.get_char_location(game_session, actor.id)
+    if cur == scene_id:
         raise HTTPException(400, "你已身处该地点")
 
-    scene = next((s for s in (module.scenes or []) if s.get("id") == scene_id), None)
-    scene_name = (scene or {}).get("title") or (scene or {}).get("name") or scene_id
+    def _sname(sid: str) -> str:
+        s = next((x for x in (module.scenes or []) if x.get("id") == sid), None)
+        return (s or {}).get("title") or (s or {}).get("name") or sid
+
+    # 场景连通校验：目标须沿 connections 连通图可达（不相邻但连通 → 允许，KP 叙述途经；
+    # 确实不连通 → 拒绝）。模组没建图时 find_scene_path 返回平凡路径，行为与从前一致。
+    path = session_service.find_scene_path(module, cur, scene_id)
+    if path is None:
+        reachable = [
+            _sname(n) for n in session_service.scene_neighbors(module, cur) if n in known
+        ]
+        hint = f"（由此可直达：{'、'.join(reachable)}）" if reachable else ""
+        raise HTTPException(400, f"该地点与当前位置不连通，无法直接前往{hint}")
+    via = [_sname(sid) for sid in path[1:-1]]
+
+    scene_name = _sname(scene_id)
 
     if data.stash:
         # 暂存模式：把「前往」作为本回合暂存动作加入（与发言同批）。位置的确定性同步 + 抵达叙述
@@ -439,6 +454,6 @@ async def travel(
         return {"ok": True, "stashed": True}
 
     generation_manager.start(
-        session_id, run_travel_generation(session_id, actor.id, scene_id),
+        session_id, run_travel_generation(session_id, actor.id, scene_id, via=via),
     )
     return {"ok": True}

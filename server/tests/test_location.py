@@ -228,6 +228,56 @@ def test_scene_change_moves_player_and_colocated_party(db_factory):
     assert "c" in session_service.known_scene_ids(module, session, [])  # 已访问即可见
 
 
+def test_find_scene_path_graph(db_factory):
+    """连通图：邻居/多跳 BFS/无向闭包；不连通 → None；无图或孤点保守放行。"""
+    db = db_factory()
+    _sid, _pc, _ally, mod_id = _seed(db)
+    module = db.get(Module, mod_id)
+    assert session_service.scene_neighbors(module, "a") == ["b", "c"]
+    assert session_service.find_scene_path(module, "a", "a") == ["a"]
+    assert session_service.find_scene_path(module, "a", "d") == ["a", "c", "d"]       # 多跳
+    assert session_service.find_scene_path(module, "d", "b") == ["d", "c", "a", "b"]  # 单向填写按双向走
+
+    # 不连通的孤岛群 → None；完全无边的孤点 → 保守放行（作者没建边，无拓扑可循）
+    m2 = Module(title="M2", rule_system="coc", npcs=[], scenes=_SCENES + [
+        {"id": "e", "title": "梦境", "connections": ["f"]},
+        {"id": "f", "title": "深渊", "connections": ["e"]},
+        {"id": "z", "title": "无边孤点"},
+    ])
+    db.add(m2); db.commit()
+    assert session_service.find_scene_path(m2, "a", "e") is None
+    assert session_service.find_scene_path(m2, "a", "z") == ["a", "z"]
+
+    # 整个模组没建图 → 平凡路径（旧行为，不把旧模组走死）
+    m3 = Module(title="M3", rule_system="coc", npcs=[], scenes=[{"id": "x"}, {"id": "y"}])
+    db.add(m3); db.commit()
+    assert session_service.find_scene_path(m3, "x", "y") == ["x", "y"]
+
+
+def test_scene_change_rejects_disconnected(db_factory):
+    """确定性连通校验：KP 的 scene_change 指到不连通场景 → 拒绝落位并给出可读原因。"""
+    import asyncio
+    from app.services import chat_service
+
+    db = db_factory()
+    sid, pc_id, _ally_id, mod_id = _seed(db)
+    module = db.get(Module, mod_id)
+    module.scenes = _SCENES + [
+        {"id": "e", "title": "月面", "connections": ["f"]},
+        {"id": "f", "title": "环形山", "connections": ["e"]},
+    ]
+    db.commit()
+    game_session = db.get(GameSession, sid)
+    player = db.get(Character, pc_id)
+
+    chunks, moved, note = asyncio.run(chat_service._exec_scene_change(
+        db, sid, game_session, module, "e", player, None,
+    ))
+    assert moved is None and not chunks
+    assert "不连通" in note                                   # 拒绝原因回灌 KP
+    assert session_service.get_char_location(db.get(GameSession, sid), pc_id) == "a"  # 没被搬走
+
+
 def test_set_char_location_moves_player(db_factory):
     db = db_factory()
     sid, pc_id, _, mod_id = _seed(db)

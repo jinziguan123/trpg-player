@@ -758,13 +758,33 @@ def build_kp_context(
         npcs_info = _compact_npcs(npcs, visible_scene_ids=visible_scene_ids)
         clues_info = _compact_clues(module.clues, visible_scene_ids=visible_scene_ids)
 
+    # 场景连通：当前场景可直达的邻居（connections 无向闭包）。模组建了图才注入——
+    # KP 据此叙述移动（去更远的连通地点须途经），scene_change 的确定性校验也以同一张图为准。
+    current_scene_text = _format_json(current_scene) if current_scene else "初始场景"
+    if current_scene:
+        from app.services import session_service  # 局部导入避免顶层循环依赖
+
+        neighbor_ids = session_service.scene_neighbors(module, scene_id)
+        if neighbor_ids:
+            names = "、".join(
+                next(
+                    (s.get("title") or s.get("name") or n for s in scenes if s.get("id") == n),
+                    n,
+                )
+                for n in neighbor_ids
+            )
+            current_scene_text += (
+                f"\n【场景连通】由此可直达：{names}。玩家前往更远的连通地点必须叙述途经；"
+                "与此不连通的地点无法前往（系统会拒绝这样的 scene_change，别叙述其已抵达）。"
+            )
+
     system_content = KP_SYSTEM_PROMPT.format(
         rule_system=module.rule_system.upper(),
         module_title=module.title,
         module_description=module.description,
         world_setting=_format_json_compact(module.world_setting),
         scenes_info=_compact_scenes(scenes, scene_id),
-        current_scene=_format_json(current_scene) if current_scene else "初始场景",
+        current_scene=current_scene_text,
         plot_state=_format_plot_state(flags, module.triggers),
         npcs_info=npcs_info,
         clues_info=clues_info,
@@ -1099,9 +1119,14 @@ def build_team_context(
     ]
     party_info = "\n".join(_party_member_brief(m) for m in party_members) or "无"
 
-    # 可前往的已知地点（对话提及/已访问；排除当前所在），供 travel 选 target
+    # 可前往的已知地点（对话提及/已访问；排除当前所在与**不连通**的地点），供 travel 选 target。
+    # 连通过滤与 travel 的确定性校验同一张图：不让队友「想去」一个系统必然拒绝的地方。
     known = session_service.list_known_locations(module, session, char_id=teammate.id, events=events)
-    known_locations = "、".join(loc["name"] for loc in known if not loc["current"]) or "（暂无其他已知地点）"
+    known_locations = "、".join(
+        loc["name"] for loc in known
+        if not loc["current"]
+        and session_service.find_scene_path(module, viewer_scene_id, loc["id"]) is not None
+    ) or "（暂无其他已知地点）"
 
     mode_guidance = (
         TEAM_MODE_SEPARATED.format(current_location=current_location)
