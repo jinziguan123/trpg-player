@@ -33,7 +33,10 @@ GENERATE_TIMEOUT_S = 180
 POLL_INTERVAL_S = 1.5
 
 # 默认负面提示词：占位符留空时的兜底（通用画质负面）
-DEFAULT_NEGATIVE = "text, watermark, lowres, blurry, deformed, bad anatomy"
+DEFAULT_NEGATIVE = (
+    "photo, photorealistic, 3d render, realistic skin texture, "
+    "text, watermark, lowres, blurry, deformed, bad anatomy, extra fingers"
+)
 
 # 未配置工作流时的内置默认文生图模板（SDXL 通用；ckpt 名须与目标机上的模型一致，
 # 建议用户直接粘贴自己导出的工作流，这个模板只是兜底）

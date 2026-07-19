@@ -1486,19 +1486,42 @@ def _reorder_turn_events(
     """
     if not event_order:
         return
-    # 稳定按偏移排序；同偏移保持捕获顺序（loop 内事件先于收尾旁白追加，≈广播先后）
+    # 稳定按偏移排序；同偏移保持捕获顺序（loop 内事件先于收尾旁白追加，≈广播先后）。
+    # event_order 只记录带广播 id 的事件；把本轮其余事件按原 sequence 追加，避免唯一约束下
+    # 出现「部分事件被重排、另一部分占据目标序号」的隐性冲突。
     order: list[str] = []
     seen: set[str] = set()
     for _off, eid in sorted(event_order, key=lambda m: m[0]):
         if eid not in seen:
             seen.add(eid)
             order.append(eid)
-    seq = base_seq
-    for eid in order:
-        ev = db.get(EventLog, eid)
-        if ev is not None and (ev.sequence_num or 0) > base_seq:
-            seq += 1
-            ev.sequence_num = seq
+
+    candidates = (
+        db.query(EventLog)
+        .filter(
+            EventLog.session_id == session_id,
+            EventLog.sequence_num > base_seq,
+        )
+        .order_by(EventLog.sequence_num.asc(), EventLog.id.asc())
+        .all()
+    )
+    by_id = {ev.id: ev for ev in candidates}
+    ordered = [by_id[eid] for eid in order if eid in by_id]
+    ordered_ids = {ev.id for ev in ordered}
+    ordered.extend(ev for ev in candidates if ev.id not in ordered_ids)
+    if not ordered:
+        return
+
+    # 交换序号时直接写最终值会触发 UNIQUE(session_id, sequence_num) 的瞬时冲突。
+    # 先把本批事件移到当前会话最小序号以下的临时区间，再写连续最终序号。
+    min_seq = min((ev.sequence_num for ev in candidates), default=0)
+    temp_start = min_seq - len(ordered) - 1
+    for offset, ev in enumerate(ordered):
+        ev.sequence_num = temp_start + offset
+    db.flush()
+
+    for offset, ev in enumerate(ordered, start=1):
+        ev.sequence_num = base_seq + offset
     db.commit()
 
 
@@ -4172,10 +4195,17 @@ async def _exec_handout(
     return chunks, f"手书 {hid} 已发放（正文已由系统以卡片呈现给玩家，续写时不要复述正文）。"
 
 
+# 全部配图的统一画风后缀（确定性追加在快模型产出的提示词之后，保证风格一致）：
+# 非全彩漫画——墨线 + 网点/排线阴影，单色为主、少量低饱和点缀色，阴郁美漫质感。
+_ILLUST_STYLE_SUFFIX = (
+    "monochrome manga illustration, bold ink lineart, cross-hatching and screentone shading, "
+    "mostly black and white with sparse desaturated color accent, gritty dark comic style"
+)
+
 _HANDOUT_PROMPT_SYS = (
     "你是文生图提示词工程师。把给定的 TRPG 手书（信件/报纸/日记/便条）转成一行**英文**"
-    " Stable Diffusion 提示词：描绘这份实体文书本身的画面——纸张质感、字迹/排版、年代感、"
-    "光线氛围（如 1920s cosmic horror prop, aged paper, dim candlelight, photorealistic）。"
+    " Stable Diffusion 提示词：只描绘这份实体文书本身的画面内容——纸张、字迹/排版、年代感、"
+    "光线氛围（如 aged paper, ink handwriting, dim candlelight）。画风词不用写，系统会统一追加。"
     "不要出现人物面孔与真实人名，不要引号，只输出提示词本身。"
 )
 
@@ -4209,6 +4239,7 @@ async def _illustrate_event(
         sd_prompt = (raw or "").strip().splitlines()[0].strip()[:500] if isinstance(raw, str) and raw.strip() else ""
         if not sd_prompt:
             return
+        sd_prompt = f"{sd_prompt}, {_ILLUST_STYLE_SUFFIX}"
         b64 = await get_llm().generate_image(sd_prompt)
         if not b64:
             return
@@ -4322,27 +4353,27 @@ def _module_era(module: Module) -> str:
 
 _SCENE_ILLUST_PROMPT_SYS = (
     "你是文生图提示词工程师。把给定的 TRPG 场景转成一行**英文** Stable Diffusion 提示词："
-    "描绘该地点的空镜氛围画面——环境/建筑、光影、天气与年代质感，按给定年代取材"
-    "（atmospheric horror scene, moody lighting, photorealistic）。危险度越高画面越阴沉压抑。"
+    "只描绘该地点的空镜画面内容——环境/建筑、光影、天气与年代质感，按给定年代取材"
+    "（如 abandoned train car, flickering lights）。危险度越高画面越阴沉压抑。画风词不用写，系统会统一追加。"
     "不要出现人物面孔与真实人名，不要引号，只输出提示词本身。"
 )
 
 _NPC_PORTRAIT_PROMPT_SYS = (
     "你是文生图提示词工程师。把给定的 TRPG NPC 转成一行**英文** Stable Diffusion 提示词："
-    "该人物的半身肖像（character portrait, bust, 按给定年代取服饰与质感，如 1920s attire, "
-    "muted tones, painterly）。据外貌/身份/性格描绘气质与神态，不要出现真实人名，"
+    "该人物的半身肖像（character portrait, bust shot，按给定年代取服饰）。据外貌/身份/性格"
+    "描绘气质与神态。画风词不用写，系统会统一追加。不要出现真实人名，"
     "不要引号，只输出提示词本身。"
 )
 
 _CLUE_ILLUST_PROMPT_SYS = (
     "你是文生图提示词工程师。把给定的 TRPG 线索转成一行**英文** Stable Diffusion 提示词："
     "描绘这件线索物证本身的特写画面——材质、细节、陈放环境与年代质感（evidence close-up, "
-    "dim lighting, photorealistic）。不要出现人物面孔与真实人名，不要引号，只输出提示词本身。"
+    "dim lighting）。画风词不用写，系统会统一追加。不要出现人物面孔与真实人名，不要引号，只输出提示词本身。"
 )
 
 _ENCOUNTER_ILLUST_PROMPT_SYS = (
     "你是文生图提示词工程师。把给定的 TRPG 遭遇战敌人转成一行**英文** Stable Diffusion 提示词："
-    "描绘紧张的遭遇场面（horror creature encounter, dramatic lighting, cinematic），按敌方"
+    "描绘紧张的遭遇场面（horror creature encounter, dramatic composition），按敌方"
     "描述刻画其形貌与压迫感，按给定年代取环境质感。不要出现真实人名，不要引号，只输出提示词本身。"
 )
 
