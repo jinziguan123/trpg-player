@@ -317,3 +317,70 @@ def test_supplement_parse_merges_and_fails_open(monkeypatch):
     monkeypatch.setattr(ms, "get_llm", lambda: Never())
     assert asyncio.run(ms.supplement_parse("   ", parsed, "coc")) is parsed  # 无原文：零调用跳过
     assert called["n"] == 0
+
+
+def test_upload_job_runs_stages_to_done(tmp_path, monkeypatch):
+    """后台解析任务：逐段推进进度，完成时 status=done、percent=100、带结果摘要。"""
+    import asyncio
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import app.api.modules as mod
+    from app.services import module_service as ms
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'job.db'}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(mod, "SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_parse(raw_text, rule_system, on_progress=None):
+        return {"title": "异步模组", "scenes": [{"id": "s1", "title": "入口"}], "npcs": [], "clues": []}
+
+    async def fake_supplement(raw_text, parsed, rule_system):
+        return parsed
+
+    monkeypatch.setattr(ms, "parse_module_text", fake_parse)
+    monkeypatch.setattr(ms, "supplement_parse", fake_supplement)
+
+    job_id = mod._job_new()
+    asyncio.run(mod._run_upload_job(job_id, "原文", [], "coc"))
+
+    job = mod._upload_jobs[job_id]
+    assert job["status"] == "done" and job["percent"] == 100
+    assert job["result"]["title"] == "异步模组" and job["result"]["scenes_count"] == 1
+
+
+def test_upload_job_fails_with_readable_detail(monkeypatch):
+    """解析炸掉：任务落成 failed + 可读 detail（沿用旧同步端点的文案），绝不无声消失。"""
+    import asyncio
+    import json as _json
+
+    import app.api.modules as mod
+    from app.services import module_service as ms
+
+    async def boom(raw_text, rule_system, on_progress=None):
+        raise _json.JSONDecodeError("truncated", "{", 1)
+
+    monkeypatch.setattr(ms, "parse_module_text", boom)
+    job_id = mod._job_new()
+    asyncio.run(mod._run_upload_job(job_id, "原文", [], "coc"))
+    job = mod._upload_jobs[job_id]
+    assert job["status"] == "failed" and "截断" in job["detail"]
+
+
+def test_upload_endpoint_returns_job_id_and_status(client, monkeypatch):
+    """上传端点立即返回 job_id；状态端点可轮询；未知任务 404。"""
+    import app.api.modules as mod
+
+    async def noop_job(job_id, raw_text, images, rule_system):
+        return None
+
+    monkeypatch.setattr(mod, "_run_upload_job", noop_job)
+    r = client.post(
+        "/api/modules/upload?rule_system=coc",
+        files={"files": ("测试.txt", "模组正文".encode("utf-8"), "text/plain")},
+    )
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    s = client.get(f"/api/modules/upload/status/{job_id}").json()
+    assert s["status"] == "running" and "percent" in s
+    assert client.get("/api/modules/upload/status/nonexistent").status_code == 404

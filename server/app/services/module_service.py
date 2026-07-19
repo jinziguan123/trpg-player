@@ -149,13 +149,15 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
 {content}"""
 
 
-async def parse_module_text(raw_text: str, rule_system: str) -> dict:
+async def parse_module_text(raw_text: str, rule_system: str, on_progress=None) -> dict:
     """用 AI 解析模组文本为结构化数据。
 
     大模组的输出 JSON 很长（场景 keywords/connections/states + NPC 技能 + 手书逐字正文），
     单次 completion 撞到 max_tokens 会被拦腰截断成坏 JSON。检测到截断时**自动续写一次**：
     把半截输出作为 assistant 上文让模型从断点接着写，拼接后再解析——输出预算等效翻倍，
-    且不依赖任何供应商的超大 max_tokens。仍失败才抛给上层（upload 端点回 502 可读提示）。
+    且不依赖任何供应商的超大 max_tokens。仍失败才抛给上层（上传任务落成可读失败信息）。
+
+    ``on_progress``：可选进度回调（进入断点续写等子阶段时以一句话汇报，供上传进度条展示）。
     """
     llm = get_llm()
     prompt = PARSE_PROMPT_TEMPLATE.format(
@@ -175,6 +177,11 @@ async def parse_module_text(raw_text: str, rule_system: str) -> dict:
             "模组解析 JSON 不完整（长度 %d，尾部 %r），尝试断点续写",
             len(result or ""), (result or "")[-120:],
         )
+    if on_progress is not None:
+        try:
+            on_progress("输出超长被截断，正在断点续写恢复…")
+        except Exception:  # noqa: BLE001 — 进度汇报绝不影响解析
+            pass
 
     # 续写不带 response_format=json_object：那会迫使模型重开一个全新 JSON，而不是接着写
     continuation = await llm.complete(

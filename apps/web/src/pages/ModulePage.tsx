@@ -11,10 +11,11 @@ import { Loader2 } from 'lucide-react'
 const ALLOWED_EXTS = ['txt', 'md', 'pdf', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']
 
 export function ModulePage() {
-  const { modules, loading, fetchModules, uploadModule } = useModuleStore()
+  const { modules, loading, fetchModules, startUpload } = useModuleStore()
   const fileRef = useRef<HTMLInputElement>(null)
   const [ruleSystem, setRuleSystem] = useState('coc')
   const [uploading, setUploading] = useState(false)
+  const [uploadJob, setUploadJob] = useState<{ stage: string; percent: number } | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
 
@@ -60,13 +61,37 @@ export function ModulePage() {
     if (!selectedFiles.length) return
     setUploading(true)
     try {
-      await uploadModule(selectedFiles, ruleSystem)
+      const jobId = await startUpload(selectedFiles, ruleSystem)
       setSelectedFiles([])
       if (fileRef.current) fileRef.current.value = ''
-      toast.success('模组上传成功')
-    } catch {
-      toast.error('模组上传失败')
+      setUploadJob({ stage: '排队中', percent: 0 })
+      // 轮询后台解析任务进度，直到 done / failed
+      type JobStatus = {
+        status: 'running' | 'done' | 'failed'
+        stage: string
+        percent: number
+        detail: string
+        result: { title?: string } | null
+      }
+      for (;;) {
+        const s = await api.get<JobStatus>(`/modules/upload/status/${jobId}`)
+        if (s.status === 'running') {
+          setUploadJob({ stage: s.stage, percent: s.percent })
+          await new Promise((r) => setTimeout(r, 1200))
+          continue
+        }
+        if (s.status === 'done') {
+          toast.success(`模组「${s.result?.title ?? ''}」解析完成`)
+          await fetchModules()
+        } else {
+          toast.error(s.detail || '模组解析失败')
+        }
+        break
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '模组上传失败')
     } finally {
+      setUploadJob(null)
       setUploading(false)
     }
   }
@@ -191,6 +216,29 @@ export function ModulePage() {
           </button>
         </div>
       </div>
+
+      {uploadJob && (
+        <div className="card" style={{ padding: '0.75rem 1rem', marginBottom: '1rem' }}>
+          <div
+            style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              fontSize: '0.82rem', color: 'var(--color-text-secondary)', marginBottom: '0.4rem',
+            }}
+          >
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Loader2 size={13} className="animate-spin" />
+              {uploadJob.stage}
+            </span>
+            <span style={{ fontFamily: 'var(--font-mono)' }}>{uploadJob.percent}%</span>
+          </div>
+          <div className="upload-progress-track">
+            <div
+              className="upload-progress-fill"
+              style={{ width: `${Math.max(uploadJob.percent, 4)}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <p style={{ color: 'var(--color-text-secondary)' }}>加载中...</p>

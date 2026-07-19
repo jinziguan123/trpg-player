@@ -19,7 +19,8 @@ interface ModuleStore {
   currentModule: Module | null
   loading: boolean
   fetchModules: () => Promise<void>
-  uploadModule: (files: File[], ruleSystem: string) => Promise<void>
+  /** 提交上传并启动后台解析任务，立即返回 job_id（进度经 /modules/upload/status/{job_id} 轮询） */
+  startUpload: (files: File[], ruleSystem: string) => Promise<string>
   selectModule: (module: Module) => void
 }
 
@@ -34,13 +35,11 @@ export const useModuleStore = create<ModuleStore>((set) => ({
     set({ modules, loading: false })
   },
 
-  uploadModule: async (files, ruleSystem) => {
-    set({ loading: true })
+  startUpload: async (files, ruleSystem) => {
     const form = new FormData()
     for (const f of files) form.append('files', f)
-    await uploadFile(`/modules/upload?rule_system=${ruleSystem}`, form)
-    const modules = await api.get<Module[]>('/modules')
-    set({ modules, loading: false })
+    const res = await uploadFile<{ job_id: string }>(`/modules/upload?rule_system=${ruleSystem}`, form)
+    return res.job_id
   },
 
   selectModule: (module) => set({ currentModule: module }),

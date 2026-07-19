@@ -1,5 +1,7 @@
+import asyncio
 import json
 import logging
+import uuid
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
@@ -10,6 +12,28 @@ from app.schemas.module import ModuleRead, ModuleUploadResponse, ModuleWrite
 from app.services import module_rag_service, module_service
 
 logger = logging.getLogger(__name__)
+
+# 上传解析任务表（内存态；本地单进程部署够用）：job_id → 进度/结果。
+# 完成/失败的任务保留在表里供前端末轮轮询取结果，超量时按插入序淘汰最旧。
+_upload_jobs: dict[str, dict] = {}
+_MAX_UPLOAD_JOBS = 20
+
+
+def _job_new() -> str:
+    job_id = uuid.uuid4().hex
+    while len(_upload_jobs) >= _MAX_UPLOAD_JOBS:
+        _upload_jobs.pop(next(iter(_upload_jobs)), None)
+    _upload_jobs[job_id] = {
+        "status": "running", "stage": "排队中", "percent": 0,
+        "detail": "", "result": None,
+    }
+    return job_id
+
+
+def _job_update(job_id: str, **fields) -> None:
+    job = _upload_jobs.get(job_id)
+    if job is not None:
+        job.update({k: v for k, v in fields.items() if v is not None})
 
 
 def _rag_index_bg(module_id: str) -> None:
@@ -198,13 +222,66 @@ def _extract_doc_text(content: bytes, filename: str) -> str:
         raise HTTPException(e.status_code, f"「{filename}」{e.detail}")
 
 
-@router.post("/upload", response_model=ModuleUploadResponse)
+async def _run_upload_job(
+    job_id: str, raw_text: str, images: list[tuple[bytes, str]], rule_system: str,
+) -> None:
+    """后台执行模组解析全流程（首轮解析 → 查漏自检 → 入库 → 触发原文索引），逐段汇报进度。
+
+    异常不外抛：一律落成 job 的 failed 状态 + 可读 detail（沿用旧同步端点的错误文案）。
+    """
+    try:
+        _job_update(job_id, stage="AI 解析模组结构（大模组需数分钟）", percent=15)
+        if images:
+            # 图文/扫描件模组：用视觉模型据图片（+ 任何文字）识别提取
+            parsed = await module_service.parse_module_images(images, rule_system, raw_text)
+        else:
+            parsed = await module_service.parse_module_text(
+                raw_text, rule_system,
+                on_progress=lambda note: _job_update(job_id, stage=note, percent=45),
+            )
+        _job_update(job_id, stage="查漏自检（对照原文补遗漏）", percent=60)
+        parsed = await module_service.supplement_parse(raw_text, parsed, rule_system)
+        parsed["rule_system"] = rule_system
+
+        _job_update(job_id, stage="入库", percent=90)
+        db = SessionLocal()
+        try:
+            module = module_service.create_module(db, parsed, raw_content=raw_text)
+            # 解析成功后在后台自动建原文 RAG 索引（线程池执行，失败只落 rag_status）
+            if (module.raw_content or "").strip():
+                module.rag_status = "indexing"
+                db.commit()
+                asyncio.get_running_loop().run_in_executor(None, _rag_index_bg, module.id)
+            result = ModuleUploadResponse(
+                id=module.id, title=module.title, rule_system=module.rule_system,
+                description=module.description, scenes_count=len(module.scenes),
+                npcs_count=len(module.npcs), clues_count=len(module.clues),
+            ).model_dump()
+        finally:
+            db.close()
+        _job_update(job_id, status="done", stage="完成", percent=100, result=result)
+    except json.JSONDecodeError:
+        _job_update(job_id, status="failed",
+                    detail="模型解析返回不完整（可能被截断），请重试；若反复失败可换更稳定的模型")
+    except httpx.HTTPError as e:
+        logger.warning("模组解析与模型连接失败：%s", e)
+        _job_update(job_id, status="failed", detail="与模型的连接中断，模组解析未完成，请重试")
+    except (ValueError, RuntimeError) as e:
+        _job_update(job_id, status="failed", detail=f"模型解析失败：{e}")
+    except Exception:
+        logger.exception("模组解析任务失败: job=%s", job_id)
+        _job_update(job_id, status="failed", detail="解析失败，请重试")
+
+
+@router.post("/upload")
 async def upload_module(
-    background: BackgroundTasks,
     files: list[UploadFile],
     rule_system: str = "coc",
-    db: Session = Depends(get_db),
 ):
+    """上传模组：同步做文件抽取与格式校验（错误立即可见），解析转后台任务。
+
+    返回 {job_id}；前端轮询 GET /upload/status/{job_id} 展示进度并取最终结果。
+    """
     if not files:
         raise HTTPException(400, "请至少上传一个文件")
 
@@ -242,42 +319,18 @@ async def upload_module(
 
     raw_text = "\n\n".join(parts)
 
-    try:
-        if images:
-            # 图文/扫描件模组：用视觉模型据图片（+ 任何文字）识别提取
-            parsed = await module_service.parse_module_images(images, rule_system, raw_text)
-        else:
-            parsed = await module_service.parse_module_text(raw_text, rule_system)
-    except json.JSONDecodeError:
-        # 模型返回被截断/非 JSON（常伴随连接中断）：回可读信息而非裸 500
-        raise HTTPException(502, "模型解析返回不完整（可能被截断），请重试；若反复失败可换更稳定的模型")
-    except httpx.HTTPError as e:
-        # 与模型的连接被中途掐断/超时/5xx（provider 已重试仍失败）：回可读信息而非裸 500
-        logger.warning("模组解析与模型连接失败：%s", e)
-        raise HTTPException(502, "与模型的连接中断，模组解析未完成，请重试")
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except RuntimeError as e:
-        # 视觉/文本接口报错（如图片被拒、超限）：回可读信息而非裸 500
-        raise HTTPException(502, f"模型解析失败：{e}")
-    # 查漏自检（P4）：原文回喂对照，补遗漏的真相/机制点/怪物资料/场景（fail-open，内部兜异常）
-    parsed = await module_service.supplement_parse(raw_text, parsed, rule_system)
-    parsed["rule_system"] = rule_system
+    job_id = _job_new()
+    asyncio.create_task(_run_upload_job(job_id, raw_text, images, rule_system))
+    return {"job_id": job_id}
 
-    module = module_service.create_module(db, parsed, raw_content=raw_text)
 
-    # 解析成功后在后台自动建原文 RAG 索引（非阻塞；失败只落 rag_status，不影响模组可用）
-    _kick_rag_index(background, db, module)
-
-    return ModuleUploadResponse(
-        id=module.id,
-        title=module.title,
-        rule_system=module.rule_system,
-        description=module.description,
-        scenes_count=len(module.scenes),
-        npcs_count=len(module.npcs),
-        clues_count=len(module.clues),
-    )
+@router.get("/upload/status/{job_id}")
+def upload_status(job_id: str):
+    """轮询上传解析任务：{status: running|done|failed, stage, percent, detail, result}。"""
+    job = _upload_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "任务不存在或已过期")
+    return job
 
 
 @router.get("", response_model=list[ModuleRead])
