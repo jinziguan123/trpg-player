@@ -338,6 +338,41 @@ def set_fast_profile(profile_id: str):
     return {"status": "ok", "is_fast": any(p.is_fast for p in profiles)}
 
 
+@router.get("/ai/profiles/{profile_id}/key")
+def reveal_profile_key(profile_id: str):
+    """返回该配置的完整 API Key（明文），供设置页「显示/复制」用。
+
+    本应用为全本地部署，密钥本就存于本地 ai_settings.json——此端点只是把「打开文件看」
+    变成界面操作，不扩大密钥的暴露面。"""
+    for p in _load_profiles():
+        if p.id == profile_id:
+            return {"api_key": p.api_key, "image_api_key": p.image_api_key}
+    raise HTTPException(status_code=404, detail="配置不存在")
+
+
+@router.post("/ai/profiles/{profile_id}/duplicate", response_model=AIProfile)
+def duplicate_profile(profile_id: str):
+    """一键复制配置：完整拷贝（含真实 key），命名「X 副本」，不激活、不标快模型。
+
+    典型用途：复制主配置后只改模型名，做成「快模型」变体，免得重填地址和密钥。"""
+    profiles = _load_profiles()
+    src = next((p for p in profiles if p.id == profile_id), None)
+    if not src:
+        raise HTTPException(status_code=404, detail="配置不存在")
+    dup = src.model_copy(update={
+        "id": str(uuid.uuid4()),
+        "name": f"{src.name} 副本",
+        "is_active": False,
+        "is_fast": False,
+    })
+    profiles.append(dup)
+    _save_profiles(profiles)
+    resp = dup.model_copy()
+    resp.api_key = _mask_key(resp.api_key)
+    resp.image_api_key = _mask_key(resp.image_api_key)
+    return resp
+
+
 @router.post("/ai/profiles/{profile_id}/test", response_model=TestResult)
 async def test_profile(profile_id: str):
     """测试配置连接"""

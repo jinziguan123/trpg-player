@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react'
+import { Copy, Eye, EyeOff } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '../api/client'
+import { Modal } from '../components/ui/modal'
 import {
   Select,
   SelectContent,
@@ -49,6 +51,17 @@ type FormData = {
   image_model: string
   image_base_url: string
   image_api_key: string
+}
+
+// API Key 输入框内嵌的图标小按钮（显示/隐藏、复制）
+const KEY_ICON_BTN: CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  padding: '0.25rem',
+  cursor: 'pointer',
+  color: 'var(--color-text-secondary)',
+  display: 'flex',
+  alignItems: 'center',
 }
 
 const EMPTY_FORM: FormData = {
@@ -495,15 +508,20 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
 
   const activeProfile = profiles.find((p) => p.is_active)
 
+  // API Key 是否明文显示（每次打开编辑窗都回到隐藏态）
+  const [showKey, setShowKey] = useState(false)
+
   /* 开始新建 */
   const startCreate = () => {
     setEditingId('new')
     setForm(EMPTY_FORM)
+    setShowKey(false)
   }
 
   /* 开始编辑 */
   const startEdit = (p: AIProfile) => {
     setEditingId(p.id)
+    setShowKey(false)
     setForm({
       name: p.name,
       protocol: p.protocol,
@@ -523,6 +541,54 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
   const cancelEdit = () => {
     setEditingId(null)
     setForm(EMPTY_FORM)
+    setShowKey(false)
+  }
+
+  /* 取表单里 key 的明文：列表接口恒掩码，显示/复制前先向后端要真实值（仅编辑已有配置时需要） */
+  const ensureRealKey = async (): Promise<string> => {
+    if (editingId && editingId !== 'new' && form.api_key.includes('****')) {
+      const res = await api.get<{ api_key: string }>(`/settings/ai/profiles/${editingId}/key`)
+      setForm((f) => ({ ...f, api_key: res.api_key }))
+      return res.api_key
+    }
+    return form.api_key
+  }
+
+  const toggleShowKey = async () => {
+    if (!showKey) {
+      try {
+        await ensureRealKey()
+      } catch {
+        toast.error('获取 API Key 失败')
+        return
+      }
+    }
+    setShowKey((v) => !v)
+  }
+
+  const copyKey = async () => {
+    try {
+      const key = await ensureRealKey()
+      if (!key) {
+        toast.error('该配置未填 API Key')
+        return
+      }
+      await navigator.clipboard.writeText(key)
+      toast.success('API Key 已复制到剪贴板')
+    } catch {
+      toast.error('复制失败')
+    }
+  }
+
+  /* 一键复制整个配置（后端完整拷贝，含真实 key；典型用途：改个模型名做快模型变体） */
+  const handleDuplicate = async (id: string) => {
+    try {
+      await api.post(`/settings/ai/profiles/${id}/duplicate`)
+      toast.success('已复制配置（名称加「副本」，含密钥）')
+      await fetchProfiles()
+    } catch {
+      toast.error('复制配置失败')
+    }
   }
 
   /* 保存（新建或更新） */
@@ -565,7 +631,7 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
   const handleToggleFast = async (id: string) => {
     try {
       const res = await api.post<{ is_fast: boolean }>(`/settings/ai/profiles/${id}/set-fast`)
-      toast.success(res.data.is_fast ? '已设为快模型（裁定/队友/摘要将走它）' : '已取消快模型，副任务回落主模型')
+      toast.success(res.is_fast ? '已设为快模型（裁定/队友/摘要将走它）' : '已取消快模型，副任务回落主模型')
       await fetchProfiles()
     } catch {
       toast.error('设置快模型失败')
@@ -761,6 +827,14 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
                 <button
                   className="btn-secondary"
                   style={{ padding: '0.25rem 0.6rem', fontSize: '0.8rem' }}
+                  onClick={() => handleDuplicate(p.id)}
+                  title="复制一份此配置（含密钥），改个模型名即可做成快模型变体"
+                >
+                  复制
+                </button>
+                <button
+                  className="btn-secondary"
+                  style={{ padding: '0.25rem 0.6rem', fontSize: '0.8rem' }}
                   onClick={() => handleTest(p.id)}
                   disabled={testing !== null}
                 >
@@ -795,13 +869,17 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
         </div>
       )}
 
-      {/* 新增按钮 / 编辑表单 */}
-      {editingId === null ? (
-        <button className="btn-primary" onClick={startCreate}>
-          + 新增配置
-        </button>
-      ) : (
-        <div className="card">
+      {/* 新增按钮；编辑/新建表单以悬浮窗呈现 */}
+      <button
+        className="btn-primary"
+        onClick={startCreate}
+        disabled={editingId !== null}
+      >
+        + 新增配置
+      </button>
+      {editingId !== null && (
+        <Modal onClose={cancelEdit} widthClass="max-w-xl" padded>
+          <div style={{ maxHeight: '78vh', overflowY: 'auto', paddingRight: '0.25rem' }}>
           <h3 className="card-title">
             {editingId === 'new' ? '新增配置' : '编辑配置'}
           </h3>
@@ -1010,17 +1088,47 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
               >
                 API Key
               </label>
-              <input
-                type="password"
-                className="input w-full"
-                placeholder={
-                  form.protocol === 'anthropic' ? 'sk-ant-...' : 'sk-...'
-                }
-                value={form.api_key}
-                onChange={(e) =>
-                  setForm({ ...form, api_key: e.target.value })
-                }
-              />
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showKey ? 'text' : 'password'}
+                  className="input w-full"
+                  style={{ paddingRight: '4.4rem' }}
+                  placeholder={
+                    form.protocol === 'anthropic' ? 'sk-ant-...' : 'sk-...'
+                  }
+                  value={form.api_key}
+                  onChange={(e) =>
+                    setForm({ ...form, api_key: e.target.value })
+                  }
+                />
+                <div
+                  style={{
+                    position: 'absolute',
+                    right: '0.45rem',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    display: 'flex',
+                    gap: '0.15rem',
+                  }}
+                >
+                  <button
+                    type="button"
+                    title={showKey ? '隐藏 API Key' : '显示 API Key'}
+                    onClick={toggleShowKey}
+                    style={KEY_ICON_BTN}
+                  >
+                    {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                  </button>
+                  <button
+                    type="button"
+                    title="复制 API Key"
+                    onClick={copyKey}
+                    style={KEY_ICON_BTN}
+                  >
+                    <Copy size={15} />
+                  </button>
+                </div>
+              </div>
               <p
                 className="text-xs mt-1"
                 style={{ color: 'var(--color-text-secondary)' }}
@@ -1043,7 +1151,8 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
               </button>
             </div>
           </div>
-        </div>
+          </div>
+        </Modal>
       )}
     </div>
   )

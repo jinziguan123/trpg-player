@@ -63,3 +63,28 @@ def test_set_fast_profile_toggle(monkeypatch, tmp_path):
     assert resp["is_fast"] is False and ai_settings.load_fast_profile() is None
 
     assert c.post("/api/settings/ai/profiles/nonexistent/set-fast").status_code == 404
+
+
+def test_reveal_key_and_duplicate_profile(monkeypatch, tmp_path):
+    """列表/增改响应里 key 恒掩码；/key 端点返回明文供「显示/复制」；
+    /duplicate 完整拷贝（含真实 key）、命名「X 副本」、不激活不标快。"""
+    c = TestClient(app)
+    monkeypatch.setattr(ai_settings, "SETTINGS_FILE", tmp_path / "ai_settings.json")
+
+    a = c.post("/api/settings/ai/profiles", json={
+        "name": "A", "model_name": "m", "api_key": "sk-verylongsecret1234",
+    }).json()
+    assert "****" in a["api_key"]  # 响应恒掩码
+
+    real = c.get(f"/api/settings/ai/profiles/{a['id']}/key").json()
+    assert real["api_key"] == "sk-verylongsecret1234"
+
+    dup = c.post(f"/api/settings/ai/profiles/{a['id']}/duplicate").json()
+    assert dup["name"] == "A 副本"
+    assert dup["is_active"] is False and dup["is_fast"] is False
+    assert "****" in dup["api_key"]  # 响应仍掩码
+    # 但落盘的是真实 key：副本可直接使用
+    assert c.get(f"/api/settings/ai/profiles/{dup['id']}/key").json()["api_key"] == "sk-verylongsecret1234"
+
+    assert c.get("/api/settings/ai/profiles/nope/key").status_code == 404
+    assert c.post("/api/settings/ai/profiles/nope/duplicate").status_code == 404
