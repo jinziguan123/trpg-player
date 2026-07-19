@@ -24,6 +24,8 @@ class ModuleRead(BaseModel):
     triggers: list = []
     # 手书（信件/报纸/日记/便条等原文文书），跑团中经 [HANDOUT] 指令发放
     handouts: list = []
+    # 幕后真相（守秘人资讯）：KP 专属参考，详情页带剧透警告展示
+    truth: str = ""
     # 原文 RAG 索引状态：""=未建 / indexing / ready / failed
     rag_status: str = ""
     created_at: datetime
@@ -44,6 +46,8 @@ class ModuleWrite(BaseModel):
     clues: list = []
     triggers: list = []
     handouts: list = []
+    # None = 本次编辑不动 truth（update_module 跳过 None，防旧前端把真相清空）
+    truth: str | None = None
 
 
 class ModuleUploadResponse(BaseModel):

@@ -12,8 +12,9 @@ import { MODULE_DIFFICULTIES } from '../lib/module'
 // 场景瓦片地图已下线；旧模组数据里的 scenes[].map / states[].map 字段容忍存在（保存时原样透传，不读取）
 interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string }
 interface NpcState { when?: string[]; personality?: string; initial_location?: string; alive?: boolean }
-interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[]; states?: SceneState[] }
-interface NPC { id: string; name?: string; description?: string; personality?: string; background?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number>; attributes?: Record<string, number>; states?: NpcState[] }
+interface SceneEvent { trigger?: string; kind?: string; san_loss?: string; skill?: string; damage?: string; note?: string }
+interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[]; events?: SceneEvent[]; states?: SceneState[] }
+interface NPC { id: string; name?: string; description?: string; personality?: string; background?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number>; attributes?: Record<string, number>; hp?: number; armor?: number; weapon?: string; goals?: string[]; states?: NpcState[] }
 interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string }
 interface Trigger { id: string; when?: string; set_flags?: string[]; clear_flags?: string[]; description?: string }
 interface ModuleData {
@@ -26,13 +27,23 @@ interface ModuleData {
   npcs: NPC[]
   clues: Clue[]
   triggers: Trigger[]
+  truth: string
 }
 
 const BLANK: ModuleData = {
   title: '', rule_system: 'coc', description: '',
   world_setting: { era: '', location: '', tone: '', player_count: '', region: '', difficulty: '', tags: [], player_brief: '', intro: '' },
-  scenes: [], npcs: [], clues: [], triggers: [],
+  scenes: [], npcs: [], clues: [], triggers: [], truth: '',
 }
+
+const EVENT_KINDS: { value: string; label: string }[] = [
+  { value: 'san_check', label: '理智检定' },
+  { value: 'dice_check', label: '技能检定' },
+  { value: 'damage', label: '伤害' },
+  { value: 'note', label: '提示' },
+]
+const eventKindLabel = (v?: string) => EVENT_KINDS.find((k) => k.value === v)?.label || '提示'
+const eventValue = (e: SceneEvent) => e.kind === 'san_check' ? e.san_loss : e.kind === 'dice_check' ? e.skill : e.kind === 'damage' ? e.damage : ''
 
 const COC_ATTRS = ['STR', 'CON', 'SIZ', 'DEX', 'APP', 'INT', 'POW', 'EDU', 'LUCK']
 const csv = (a?: string[]) => (a || []).join(', ')
@@ -118,9 +129,14 @@ export function ModuleDetailPage() {
           tags: Array.isArray(tags) ? tags : String(tags || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean),
         },
         scenes: data.scenes,
-        npcs: data.npcs.map((n) => ({ ...n, secrets: (n.secrets || []).filter((s) => s.trim()) })),
+        npcs: data.npcs.map((n) => ({
+          ...n,
+          secrets: (n.secrets || []).filter((s) => s.trim()),
+          goals: (n.goals || []).filter((g) => g.trim()),
+        })),
         clues: data.clues,
         triggers: data.triggers,
+        truth: data.truth,
       }
       const saved = isNew
         ? await api.post<ModuleData>('/modules', payload)
@@ -214,6 +230,18 @@ export function ModuleDetailPage() {
         <Row label="开场钩子">{edit ? <TextInput value={wsStr(data.world_setting, 'player_brief')} onChange={(v) => updateWS('player_brief', v)} multiline placeholder="玩家开场就合法知道的动机/处境（不含待发现的线索/真相）" /> : <span className="whitespace-pre-wrap">{wsStr(data.world_setting, 'player_brief') || '—'}</span>}</Row>
       </Section>
 
+      {/* 幕后真相（守秘人资讯，KP 专属） */}
+      <Section title="幕后真相（守秘人专属）">
+        {edit ? (
+          <TextInput value={data.truth} onChange={(v) => setData((d) => ({ ...d, truth: v }))} multiline
+            placeholder="整个事件的来龙去脉：真凶、动机、时间线——KP 专属参考，玩家永不可见" />
+        ) : (
+          <p className="whitespace-pre-wrap text-sm" style={{ color: 'var(--color-danger)' }}>
+            {data.truth || '—（旧模组无此段，重新导入可解析出）'}
+          </p>
+        )}
+      </Section>
+
       {/* 场景 */}
       <Section title={`场景（${data.scenes.length}）`} onAdd={edit ? () => setData((d) => ({ ...d, scenes: [...d.scenes, { id: genId('scene'), name: '', description: '', danger: 'calm', atmosphere: '', connections: [] }] })) : undefined}>
         {data.scenes.map((s, i) => (
@@ -228,6 +256,10 @@ export function ModuleDetailPage() {
             ) : <span className="badge" style={{ color: dangerMeta(s.danger)?.color, borderColor: dangerMeta(s.danger)?.color }}>{dangerMeta(s.danger)?.label || '平静'}</span>}</Row>
             <Row label="氛围">{edit ? <TextInput value={s.atmosphere || ''} onChange={(v) => updScene(i, { atmosphere: v })} placeholder="感官+情绪基调，如『腐臭、低压、随时塌方』" /> : <span style={{ color: 'var(--color-text-secondary)' }}>{s.atmosphere || '—'}</span>}</Row>
             <Row label="连接">{edit ? <TextInput value={(s.connections || []).join(', ')} onChange={(v) => updScene(i, { connections: v.split(/[,，]/).map((x) => x.trim()).filter(Boolean) })} placeholder="目标场景 id，逗号分隔" /> : <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{(s.connections || []).join('、') || '—'}　id: {s.id}</span>}</Row>
+            <EventList events={s.events} edit={edit}
+              onAdd={() => updScene(i, { events: [...(s.events || []), { trigger: '', kind: 'san_check', san_loss: '' }] })}
+              onRemove={(j) => updScene(i, { events: (s.events || []).filter((_, jj) => jj !== j) })}
+              onUpd={(j, patch) => updScene(i, { events: (s.events || []).map((e, jj) => (jj === j ? { ...e, ...patch } : e)) })} />
             <VariantList states={s.states} edit={edit} onAdd={() => addSceneState(i)} onRemove={(j) => rmSceneState(i, j)} onWhen={(j, f) => updSceneState(i, j, { when: f })}
               renderFields={(st, j) => (
                 <>
@@ -258,6 +290,31 @@ export function ModuleDetailPage() {
             <Row label="属性">{<AttrGrid attrs={n.attributes} edit={edit} onChange={(a) => updNpc(i, { attributes: a })} />}</Row>
             <Row label={<span style={{ color: 'var(--color-danger)' }} className="inline-flex items-center gap-0.5"><GiPadlock />秘密</span>}>{edit ? <TextInput value={(n.secrets || []).join('\n')} onChange={(v) => updNpc(i, { secrets: v.split('\n') })} multiline placeholder="每行一条，仅 KP 可见" /> : <span className="whitespace-pre-wrap" style={{ color: 'var(--color-danger)' }}>{(n.secrets || []).join('\n') || '—'}</span>}</Row>
             <Row label="技能">{edit ? <TextInput value={skillsToText(n.skills)} onChange={(v) => updNpc(i, { skills: parseSkills(v) })} multiline placeholder="每行 技能: 数值，如 侦查: 60" /> : <span className="text-xs">{skillsToText(n.skills).replace(/\n/g, '、') || '—'}</span>}</Row>
+            <Row label="战斗">{edit ? (
+              <div className="flex items-center gap-3 text-xs flex-wrap">
+                {([['hp', 'HP'], ['armor', '护甲']] as const).map(([k, lbl]) => (
+                  <label key={k} className="flex items-center gap-1">
+                    <span style={{ color: 'var(--color-text-secondary)' }}>{lbl}</span>
+                    <input type="number" value={n[k] ?? ''} className="w-14 px-1 py-0.5 rounded"
+                      style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)' }}
+                      onChange={(e) => updNpc(i, { [k]: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                  </label>
+                ))}
+                <label className="flex items-center gap-1 flex-1 min-w-32">
+                  <span style={{ color: 'var(--color-text-secondary)' }}>武器</span>
+                  <input value={n.weapon || ''} placeholder="如 匕首、撕咬" className="w-full px-1 py-0.5 rounded"
+                    style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)' }}
+                    onChange={(e) => updNpc(i, { weapon: e.target.value })} />
+                </label>
+              </div>
+            ) : (
+              <span className="text-xs">{[
+                n.hp != null ? `HP ${n.hp}` : '',
+                n.armor != null ? `护甲 ${n.armor}` : '',
+                n.weapon ? `武器 ${n.weapon}` : '',
+              ].filter(Boolean).join('、') || '—'}</span>
+            )}</Row>
+            <Row label="目标">{edit ? <TextInput value={(n.goals || []).join('\n')} onChange={(v) => updNpc(i, { goals: v.split('\n') })} multiline placeholder="每行一条：该 NPC 想达成什么（幕后推演据此让其行动）" /> : <span className="whitespace-pre-wrap text-xs">{(n.goals || []).join('\n') || '—'}</span>}</Row>
             <VariantList states={n.states} edit={edit} onAdd={() => addNpcState(i)} onRemove={(j) => rmNpcState(i, j)} onWhen={(j, f) => updNpcState(i, j, { when: f })}
               renderFields={(st, j) => (
                 <>
@@ -307,6 +364,51 @@ export function ModuleDetailPage() {
       </Section>
       </>
       )}
+    </div>
+  )
+}
+
+/** 场景机制点列表（events）：模组明文规定的「情景 → 理智检定/技能检定/伤害」，数值照抄原文。 */
+function EventList({ events, edit, onAdd, onRemove, onUpd }: {
+  events?: SceneEvent[]
+  edit: boolean
+  onAdd: () => void
+  onRemove: (j: number) => void
+  onUpd: (j: number, patch: Partial<SceneEvent>) => void
+}) {
+  const list = events || []
+  if (!edit && list.length === 0) return null
+  const inputStyle = { background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', color: 'var(--color-text-primary)' }
+  return (
+    <div className="mt-1 rounded" style={{ border: '1px dashed var(--color-border)', padding: 8 }}>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-semibold" style={{ color: 'var(--color-text-secondary)' }}>机制点（进入/行动触发的检定与伤害，数值照抄模组）</span>
+        {edit && <button onClick={onAdd} className="btn-secondary text-xs !px-1.5 !py-0.5 flex items-center gap-1"><Plus size={11} />机制点</button>}
+      </div>
+      {list.length === 0 && <p className="text-xs" style={{ color: 'var(--color-text-secondary)', opacity: 0.6 }}>无</p>}
+      {list.map((e, j) => edit ? (
+        <div key={j} className="rounded p-1.5 mb-1 relative" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
+          <button onClick={() => onRemove(j)} className="absolute top-1 right-1 p-0.5" style={{ color: 'var(--color-danger)' }} title="删除机制点"><Trash2 size={11} /></button>
+          <Row label="情景">{<TextInput value={e.trigger || ''} onChange={(v) => onUpd(j, { trigger: v })} placeholder="如 进入车厢即目睹尸体 / 翻动行李箱" />}</Row>
+          <Row label="类型">
+            <Select value={e.kind || 'note'} onValueChange={(v) => onUpd(j, { kind: v })}>
+              <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+              <SelectContent>{EVENT_KINDS.map((k) => <SelectItem key={k.value} value={k.value}>{k.label}</SelectItem>)}</SelectContent>
+            </Select>
+          </Row>
+          {e.kind === 'san_check' && <Row label="SAN 损失"><input value={e.san_loss || ''} placeholder="如 0/1d3" className="w-28 px-1 py-0.5 rounded text-sm" style={inputStyle} onChange={(ev) => onUpd(j, { san_loss: ev.target.value })} /></Row>}
+          {e.kind === 'dice_check' && <Row label="技能"><input value={e.skill || ''} placeholder="如 侦查" className="w-28 px-1 py-0.5 rounded text-sm" style={inputStyle} onChange={(ev) => onUpd(j, { skill: ev.target.value })} /></Row>}
+          {e.kind === 'damage' && <Row label="伤害"><input value={e.damage || ''} placeholder="如 1d6" className="w-28 px-1 py-0.5 rounded text-sm" style={inputStyle} onChange={(ev) => onUpd(j, { damage: ev.target.value })} /></Row>}
+          <Row label="备注">{<TextInput value={e.note || ''} onChange={(v) => onUpd(j, { note: v })} placeholder="（可选）补充说明或后果" />}</Row>
+        </div>
+      ) : (
+        <div key={j} className="flex items-start gap-2 text-xs py-0.5">
+          <span className="badge flex-shrink-0" style={{ color: 'var(--color-dice-gold)', borderColor: 'var(--color-dice-gold)' }}>{eventKindLabel(e.kind)}</span>
+          <span className="flex-1">{e.trigger || '—'}</span>
+          {eventValue(e) && <span className="flex-shrink-0" style={{ color: 'var(--color-danger)', fontFamily: 'var(--font-mono)' }}>{eventValue(e)}</span>}
+          {e.note && <span className="flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }}>{e.note}</span>}
+        </div>
+      ))}
     </div>
   )
 }
