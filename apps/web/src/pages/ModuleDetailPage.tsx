@@ -402,11 +402,19 @@ function EventList({ events, edit, onAdd, onRemove, onUpd }: {
           <Row label="备注">{<TextInput value={e.note || ''} onChange={(v) => onUpd(j, { note: v })} placeholder="（可选）补充说明或后果" />}</Row>
         </div>
       ) : (
-        <div key={j} className="flex items-start gap-2 text-xs py-0.5">
-          <span className="badge flex-shrink-0" style={{ color: 'var(--color-dice-gold)', borderColor: 'var(--color-dice-gold)' }}>{eventKindLabel(e.kind)}</span>
-          <span className="flex-1">{e.trigger || '—'}</span>
-          {eventValue(e) && <span className="flex-shrink-0" style={{ color: 'var(--color-danger)', fontFamily: 'var(--font-mono)' }}>{eventValue(e)}</span>}
-          {e.note && <span className="flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }}>{e.note}</span>}
+        <div key={j} className="text-xs py-1">
+          <div className="flex items-start gap-2">
+            <span className="badge flex-shrink-0" style={{ color: 'var(--color-dice-gold)', borderColor: 'var(--color-dice-gold)' }}>{eventKindLabel(e.kind)}</span>
+            <span className="flex-1 min-w-0">
+              {e.trigger || '—'}
+              {eventValue(e) && (
+                <span className="ml-2" style={{ color: 'var(--color-danger)', fontFamily: 'var(--font-mono)' }}>{eventValue(e)}</span>
+              )}
+            </span>
+          </div>
+          {e.note && (
+            <p className="mt-0.5 mb-0" style={{ color: 'var(--color-text-secondary)', paddingLeft: '0.5rem' }}>{e.note}</p>
+          )}
         </div>
       ))}
     </div>
