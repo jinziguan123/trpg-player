@@ -658,3 +658,19 @@ def test_player_brief_used_as_opening_hook(db_factory):
     msgs2 = ctx.build_kp_context(session, module, hero, [])
     opening2 = "\n".join(m["content"] for m in msgs2 if m["role"] == "user")
     assert HOOK_MARK not in opening2
+
+
+def test_kp_context_injects_truth_section(db_factory):
+    """模组带幕后真相 → KP 系统提示注入「幕后真相（守秘人专属）」小节（含守密措辞）；无则不注入。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+
+    plain = "\n".join(m["content"] for m in ctx.build_kp_context(session, module, hero, [], teammates=teammates))
+    assert "幕后真相" not in plain
+
+    module.truth = "真凶是列车长，他在头车藏着祭坛。"
+    db.commit()
+    joined = "\n".join(m["content"] for m in ctx.build_kp_context(session, module, hero, [], teammates=teammates))
+    assert "幕后真相（守秘人专属）" in joined
+    assert "真凶是列车长" in joined
+    assert "绝不向玩家直接透露" in joined

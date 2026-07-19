@@ -260,6 +260,8 @@ async def upload_module(
     except RuntimeError as e:
         # 视觉/文本接口报错（如图片被拒、超限）：回可读信息而非裸 500
         raise HTTPException(502, f"模型解析失败：{e}")
+    # 查漏自检（P4）：原文回喂对照，补遗漏的真相/机制点/怪物资料/场景（fail-open，内部兜异常）
+    parsed = await module_service.supplement_parse(raw_text, parsed, rule_system)
     parsed["rule_system"] = rule_system
 
     module = module_service.create_module(db, parsed, raw_content=raw_text)

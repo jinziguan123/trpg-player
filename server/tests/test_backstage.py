@@ -467,3 +467,15 @@ def test_augment_plan_none_and_empty_noop():
     plan = turn_planner.TurnPlan()
     chat_service._augment_plan_with_backstage(plan, [])
     assert plan.safety.do_not_reveal == []
+
+
+def test_backstage_payload_includes_truth(db_factory):
+    """幕后推演 payload 带模组幕后真相：NPC 的小步动作有全局总纲可循。"""
+    db = db_factory()
+    session, module, _player = _seed(db)
+    module.truth = "老爷之死是管家与账房合谋，证据藏在水井。"
+    db.commit()
+    messages = backstage_agent.build_backstage_messages(
+        session, module, backstage_agent.npcs_with_secrets(module), [],
+    )
+    assert "证据藏在水井" in messages[1]["content"]

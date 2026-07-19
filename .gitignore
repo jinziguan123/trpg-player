@@ -35,3 +35,4 @@ config/
 src-tauri/gen/
 src-tauri/binaries/
 src-tauri/resources/
+server/trpg.db.bak-*

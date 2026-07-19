@@ -107,6 +107,8 @@ def build_backstage_messages(
     ]
     payload = {
         "current_scene_id": session.current_scene_id,
+        # 幕后真相：世界演进的总纲——NPC 的小步动作应与全局真相/时间线相符
+        "truth": (getattr(module, "truth", "") or "").strip(),
         "scenes": scenes,
         "npcs": [
             {

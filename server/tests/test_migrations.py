@@ -40,6 +40,8 @@ def test_run_migrations_builds_full_schema(tmp_path, monkeypatch):
     finally:
         con.close()
     assert "handouts" in module_cols
+    # 幕后真相迁移（20260719）：modules 表带 truth TEXT 列
+    assert "truth" in module_cols
 
 
 def test_run_migrations_is_idempotent(tmp_path, monkeypatch):

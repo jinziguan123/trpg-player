@@ -454,3 +454,25 @@ async def test_run_turn_planner_tolerates_bad_field_shapes():
     assert plan is not None
     assert plan.turn_kind == "mixed"  # 非法枚举退默认
     assert plan.safety.do_not_reveal == []  # 句子形状的 safety 退默认
+
+
+def test_turn_plan_messages_include_truth_and_scene_events(db_factory):
+    """payload 带模组幕后真相与当前场景机制点（events）；指令要求命中时数值照抄、不得估值。"""
+    db = db_factory()
+    module, hero, session = _seed(db)
+    module.truth = "真相：管家杀害了主人并伪装成意外。"
+    scenes = [dict(s) for s in module.scenes]
+    for s in scenes:
+        if s.get("id") == "study":
+            s["events"] = [{"trigger": "翻动书桌后的尸体", "kind": "san_check", "san_loss": "0/1d3"}]
+    module.scenes = scenes
+    db.commit()
+
+    messages = turn_planner.build_turn_plan_messages(
+        session, module, hero, [], teammates=[], rules_lookup_enabled=False,
+    )
+    text = "\n".join(m["content"] for m in messages)
+    assert "管家杀害了主人" in text                    # truth 进 payload
+    assert "0/1d3" in text and "翻动书桌后的尸体" in text  # 当前场景 events 进 payload
+    instruction = messages[1]["content"]
+    assert "机制点" in instruction and "照抄" in instruction

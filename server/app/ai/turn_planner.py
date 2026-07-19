@@ -429,6 +429,8 @@ def build_turn_plan_messages(
         },
         "current_scene": current_scene,
         "scene_neighbors": scene_neighbors,
+        # 幕后真相：全局裁定依据（线索该不该给、NPC 反应、危险判断都以真相为锚）
+        "truth": (getattr(module, "truth", "") or "").strip(),
         "player": _compact_player(player_char),
         "teammates": [_compact_player(teammate) for teammate in teammates],
         "recent_events": _compact_events(events),
@@ -539,6 +541,10 @@ def build_turn_plan_messages(
                 "（用战斗态里的名字）；已知投掷武器填 weapon（如「莫洛托夫鸡尾酒」，系统查表拿 2D6 烧）、"
                 "否则填 formula 骰式；burning=是否点燃。后端会让玩家亲手掷这份伤害、应用到所有波及敌人，"
                 "不靠 KP 叙述扣血。\n"
+                "current_scene.events 若非空，列出的是**模组明文规定的机制点**（进入场景所见/"
+                "特定行动触发的理智检定、技能检定、伤害）：情景命中时**必须**按其规定裁定，数值照抄——"
+                "san_check 的 san_loss 规格直接作为 sanity 的 success_loss/failure_loss，damage 的骰式"
+                "直接作为伤害；有 events 依据时绝不用下面的通用建议档另行估值，也绝不漏掉。\n"
                 "sanity.trigger 在**本轮有角色目睹或得知会动摇心智的恐怖**时为 true："
                 "尸体/血腥惨状/怪物/超自然异象/亵渎的神话真相等；仅世俗惊吓（普通打斗、坏消息、"
                 "寻常尸体已见过）不触发。true 时给 source（恐怖源标识，如「墓室腐尸」，同一源只检一次）、"

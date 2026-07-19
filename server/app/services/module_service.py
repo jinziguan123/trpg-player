@@ -30,6 +30,7 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
     "location": "地点",
     "tone": "基调（如恐怖、悬疑、冒险）"
   }},
+  "truth": "幕后真相（守秘人资讯）：整个事件**真正发生了什么**——幕后黑手/元凶是谁、动机为何、按时间顺序的来龙去脉、各 NPC 在其中扮演的角色、玩家介入时局面处于哪一步。模组开头的『守秘人资讯/背景真相/KP须知』一类章节要**完整浓缩收录于此**（可以多段，宁全勿缺）。这是 KP 专属参考，玩家永远不可见。模组没有此类内容时留空字符串",
   "scenes": [
     {{
       "id": "scene_1",
@@ -40,6 +41,9 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       "kind": "二选一：location（一个真实存在的地点，默认）/ chapter（纯叙事章节或抽象阶段，如『委托与准备』『尾声』——它不是玩家能在地图上前往的地方）",
       "keywords": ["解锁关键词：玩家在对话/行动里提到其中任意一个，大地图就解锁该地点，因此**每个词都必须是『这个地点的称呼』**。覆盖：完整地名、核心地名（去掉『废墟/遗址/旧址』等状态词，如『沉思礼拜堂废墟』→『沉思礼拜堂』）、通俗设施名（礼拜堂/图书馆）、专名（沉思/科比特/罗克斯伯里）、模组原文里的门牌地址或俗称/绰号，以及数字写法变体（『2号车厢』要含『二号车厢』）。**绝不要该场景的内容词**：场景里的物件（行李/钥匙/报纸）、人物或怪物（乘务员/循声者）、氛围描写（黑暗/血腥/喘息）都不是地点称呼——这类词一旦出现在任何叙述里就会误解锁该地点、提前剧透。2-6 个，每个≥2字；不要过泛的通用词（如『房间』『那边』『房子』『街区』）。chapter 类场景留空数组"],
       "connections": ["scene_2"],
+      "events": [
+        {{"trigger": "触发情景，自然语言：进入场景即目睹/翻动尸体/打开衣柜/点灯后……", "kind": "四选一：san_check（见恐怖景象掷理智）/dice_check（需技能检定）/damage（陷阱或环境伤害）/note（其他机制性提示）", "san_loss": "kind=san_check 时的损失规格，**照抄模组原文**（如 0/1d3、1/1d6+1）", "skill": "kind=dice_check 时的技能名", "damage": "kind=damage 时的伤害骰式（如 1d6）", "note": "补充说明或后果"}}
+      ],
       "states": [
         {{"when": ["剧情标志名，如 basement_flooded"], "danger": "切换后的危险度", "atmosphere": "切换后的氛围", "description": "（可选）切换后的场景描述，覆盖默认", "structural": false}}
       ]
@@ -56,6 +60,10 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       "initial_location": "scene_1",
       "attributes": {{"STR": 50, "CON": 55, "SIZ": 60, "DEX": 50, "APP": 50, "INT": 70, "POW": 55, "EDU": 65, "LUCK": 50}},
       "skills": {{"战斗": 55, "闪避": 40, "侦查": 60, "潜行": 50, "心理学": 45}},
+      "hp": 11,
+      "armor": 0,
+      "weapon": "主要攻击方式/武器名（如 匕首、猎枪、撕咬；徒手可省略）",
+      "goals": ["该 NPC 的目标/动机：他接下来想达成什么（玩家不在场时他会朝这个方向行动）"],
       "states": [
         {{"when": ["剧情标志名，如 butler_exposed"], "personality": "切换后的态度", "initial_location": "切换后的位置", "alive": true}}
       ]
@@ -129,6 +137,13 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
     （『2号车厢』要含『二号车厢』）。**绝不要该场景的内容词**——物件、人物/怪物、氛围描写
     （行李/钥匙/乘务员/怪物/黑暗/血腥等）都不是地点称呼，出现在任何叙述里就会误解锁、提前剧透；
     也避免『房间』『房子』『街区』这类过泛通用词。chapter 类场景 keywords 留空数组 []。
+14. truth（幕后真相）**宁全勿缺**：模组的守秘人资讯是 KP 运转的根基，凡「真正发生了什么」的
+    叙述都要收进去；它与 NPC 的 secrets 不冲突（secrets 是单个 NPC 的秘密，truth 是全局真相）。
+15. 场景 events 只收模组**明文规定**的机制点（原文写了「目睹 X 需 0/1d3 理智检定」「触碰 Y 受
+    1d6 伤害」之类）：数值一律照抄原文，绝不自行估值；模组没写的不要编造。无机制点留空数组 []。
+16. NPC/怪物给出 hp（原文数值；没有则按 (CON+SIZ)/10 估算）、armor（护甲值，无甲为 0）、
+    weapon（主要攻击方式：人类用武器名，怪物用其攻击方式名如『撕咬』『触手』）——供战斗引擎
+    直接使用；goals 写他接下来想达成什么（幕后推演据此让世界在玩家不在场时演进）。
 
 模组文本：
 {content}"""
@@ -208,6 +223,134 @@ async def parse_module_images(images: list[tuple[bytes, str]], rule_system: str,
     return _extract_json(raw)
 
 
+SUPPLEMENT_PROMPT_TEMPLATE = """你是 {rule_system} 模组解析的质检员。下面给出模组原文与首轮解析出的结构化 JSON。
+请**逐段对照原文**，找出首轮解析**遗漏**的重要内容，只输出一个 JSON 对象（不要解释）：
+
+{{
+  "truth": "首轮 truth 遗漏的幕后真相补充（真凶/动机/时间线/来龙去脉）；已收录完整则空字符串",
+  "scenes": ["仅两种条目：①整个被遗漏的场景（完整场景对象，字段同首轮）；②已有场景遗漏了机制点时，给 {{\\"id\\": \\"已有场景id\\", \\"events\\": [仅遗漏的机制点]}}——events 数值照抄原文（如 0/1d3）"],
+  "npcs": ["仅两种条目：①整个被遗漏的 NPC/怪物（完整对象，含 attributes/skills/hp/armor/weapon/goals）；②已有 NPC 遗漏关键字段时，给 {{\\"id\\": \\"已有id\\", 仅补缺的字段}}"],
+  "clues": ["仅整个被遗漏的线索（完整对象）"],
+  "handouts": ["仅整个被遗漏的手书（完整对象，content 逐字照抄原文）"]
+}}
+
+铁律：只补遗漏，**绝不重复、改写或删改已收录的内容**；没有遗漏就输出全空（空串/空数组）。
+重点排查：守秘人资讯/背景真相章节、进入场景或特定行动触发的理智检定与伤害（数值照抄）、
+怪物资料（hp/护甲/攻击方式）、被跳过的场景或 NPC、给了完整正文却没收的手书。
+
+【模组原文】
+{content}
+
+【首轮解析 JSON】
+{parsed}"""
+
+
+def _merge_supplement(parsed: dict, patch: dict) -> dict:
+    """把查漏自检的补丁**保守合并**进首轮解析结果（纯函数，不改入参）。
+
+    - truth：首轮为空则取补丁；两者都有且补丁不是重复内容则追加；
+    - scenes/npcs：新 id 追加；已有 id 只做增量——场景合并遗漏的 events（按 trigger 去重），
+      NPC 只填首轮**缺失/为空**的字段（绝不覆盖已有值）；
+    - clues/handouts：新 id 追加，已有 id 忽略（不允许改写）。
+    """
+    out = dict(parsed or {})
+
+    p_truth = str(out.get("truth") or "").strip()
+    n_truth = str((patch or {}).get("truth") or "").strip()
+    if n_truth and not p_truth:
+        out["truth"] = n_truth
+    elif n_truth and n_truth not in p_truth:
+        out["truth"] = p_truth + "\n\n【查漏补充】" + n_truth
+
+    def _by_id(items):
+        return {str(x.get("id")): x for x in (items or []) if isinstance(x, dict) and x.get("id")}
+
+    # scenes：新场景追加；已有场景合并遗漏 events
+    scenes = [dict(s) for s in (out.get("scenes") or [])]
+    have = _by_id(scenes)
+    for item in (patch or {}).get("scenes") or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        sid = str(item["id"])
+        if sid not in have:
+            scenes.append(item)
+            continue
+        target = next(s for s in scenes if str(s.get("id")) == sid)
+        seen = {str((e or {}).get("trigger") or "").strip() for e in (target.get("events") or [])}
+        extra = [
+            e for e in (item.get("events") or [])
+            if isinstance(e, dict) and str(e.get("trigger") or "").strip() not in seen
+        ]
+        if extra:
+            target["events"] = list(target.get("events") or []) + extra
+    out["scenes"] = scenes
+
+    # npcs：新 NPC 追加；已有 NPC 只填缺失字段（列表字段追加去重）
+    npcs = [dict(n) for n in (out.get("npcs") or [])]
+    have = _by_id(npcs)
+    for item in (patch or {}).get("npcs") or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        nid = str(item["id"])
+        if nid not in have:
+            npcs.append(item)
+            continue
+        target = next(n for n in npcs if str(n.get("id")) == nid)
+        for key, val in item.items():
+            if key == "id" or val in (None, "", [], {}):
+                continue
+            cur = target.get(key)
+            if isinstance(cur, list) and isinstance(val, list):
+                target[key] = cur + [v for v in val if v not in cur]
+            elif cur in (None, "", [], {}, 0) and key != "armor":  # armor=0 是合法值，不视为缺失
+                target[key] = val
+            elif key == "armor" and cur is None:
+                target[key] = val
+    out["npcs"] = npcs
+
+    # clues / handouts：只追加新 id
+    for key in ("clues", "handouts"):
+        items = list(out.get(key) or [])
+        have = _by_id(items)
+        for item in (patch or {}).get(key) or []:
+            if isinstance(item, dict) and item.get("id") and str(item["id"]) not in have:
+                items.append(item)
+        out[key] = items
+    return out
+
+
+async def supplement_parse(raw_text: str, parsed: dict, rule_system: str) -> dict:
+    """查漏自检（P4）：把原文与首轮解析回喂一次，找出遗漏项并保守合并。
+
+    fail-open：无原文（纯图片模组）/ LLM 异常 / 坏 JSON 一律原样返回首轮结果，绝不劣化。
+    """
+    if not (raw_text or "").strip():
+        return parsed
+    llm = get_llm()
+    prompt = SUPPLEMENT_PROMPT_TEMPLATE.format(
+        rule_system=rule_system.upper(),
+        content=raw_text,
+        parsed=json.dumps(parsed, ensure_ascii=False, separators=(",", ":")),
+    )
+    try:
+        raw = await llm.complete(
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0,
+        )
+        patch = _extract_json(raw)
+    except Exception:  # noqa: BLE001 — 自检是增强件，失败绝不拖垮导入
+        logger.exception("模组查漏自检失败（跳过，沿用首轮解析结果）")
+        return parsed
+    added = {
+        k: len(patch.get(k) or []) for k in ("scenes", "npcs", "clues", "handouts")
+    }
+    if any(added.values()) or (patch.get("truth") or "").strip():
+        logger.info("模组查漏自检补充：truth=%s 增量=%s",
+                    bool((patch.get("truth") or "").strip()), added)
+    return _merge_supplement(parsed, patch)
+
+
 def _ensure_scene_keywords(scenes: list) -> list:
     """给每个 location 场景补全解锁关键词：LLM 生成的 keywords ∪ 标题确定性派生（兜底），
     归一（去空白、去重、≥2字）。chapter 类不需要（不上地图）。解析与手动编辑都经此归一。"""
@@ -245,6 +388,7 @@ def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
         clues=data.get("clues", []),
         triggers=data.get("triggers", []),
         handouts=data.get("handouts", []),
+        truth=str(data.get("truth") or ""),
     )
     db.add(module)
     db.commit()
@@ -278,6 +422,8 @@ def update_module(db: Session, module_id: str, data: dict) -> Module | None:
         module.triggers = data["triggers"]
     if "handouts" in data and data["handouts"] is not None:
         module.handouts = data["handouts"]
+    if "truth" in data and data["truth"] is not None:
+        module.truth = str(data["truth"])
     db.commit()
     db.refresh(module)
     return module

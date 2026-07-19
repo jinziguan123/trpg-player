@@ -21,6 +21,9 @@ class Module(Base, UUIDMixin, TimestampMixin):
     # 手书（Handouts）：模组原文里的信件/报纸/日记/便条等一等公民实体，
     # 形如 [{id, title, kind(letter|news|diary|note), content(原文), location, trigger_condition}]
     handouts: Mapped[list] = mapped_column(JSON, default=list)
+    # 幕后真相（守秘人资讯）：整个事件的来龙去脉/真凶/时间线，KP 专属参考，玩家永不可见。
+    # 注入 KP/planner/幕后推演上下文；空串 = 模组无此段或旧模组未重导。
+    truth: Mapped[str] = mapped_column(Text, default="")
     # 原文 RAG 索引状态：""=未建（存量模组）/ indexing / ready / failed，与规则书状态机同形
     rag_status: Mapped[str] = mapped_column(default="")
 

@@ -235,3 +235,85 @@ def test_create_rejects_empty_title(client):
 
 def test_update_missing_404(client):
     assert client.put("/api/modules/nope", json=_payload()).status_code == 404
+
+
+def test_merge_supplement_is_conservative():
+    """查漏合并铁律：只补遗漏——已有 events/字段/线索绝不被补丁覆盖或改写，输入不被修改。"""
+    from app.services.module_service import _merge_supplement
+
+    parsed = {
+        "truth": "",
+        "scenes": [{"id": "s1", "title": "车厢",
+                    "events": [{"trigger": "进入即见血迹", "kind": "san_check", "san_loss": "0/1"}]}],
+        "npcs": [{"id": "n1", "name": "循声者", "hp": 20, "armor": 2, "weapon": "撕咬"}],
+        "clues": [{"id": "c1"}],
+        "handouts": [],
+    }
+    patch = {
+        "truth": "真相是列车早已驶入异界。",
+        "scenes": [
+            {"id": "s1", "events": [
+                {"trigger": "进入即见血迹", "kind": "san_check", "san_loss": "9/9d9"},  # 重复：不覆盖
+                {"trigger": "打开行李箱", "kind": "san_check", "san_loss": "1/1d4"},    # 遗漏：补上
+            ]},
+            {"id": "s2", "title": "新场景"},
+        ],
+        "npcs": [
+            {"id": "n1", "hp": 99, "goals": ["吃掉全部乘客"]},   # hp 已有不覆盖；goals 缺失补上
+            {"id": "n2", "name": "账房"},
+        ],
+        "clues": [{"id": "c1", "name": "试图改写"}, {"id": "c2", "name": "新线索"}],
+        "handouts": [{"id": "h1", "title": "新手书"}],
+    }
+    out = _merge_supplement(parsed, patch)
+
+    assert out["truth"] == "真相是列车早已驶入异界。"        # 原为空 → 直接取补丁
+    s1 = next(s for s in out["scenes"] if s["id"] == "s1")
+    assert len(s1["events"]) == 2
+    assert s1["events"][0]["san_loss"] == "0/1"              # 已有机制点数值未被改
+    assert any(s.get("id") == "s2" for s in out["scenes"])   # 遗漏场景补入
+    n1 = next(n for n in out["npcs"] if n["id"] == "n1")
+    assert n1["hp"] == 20 and n1["goals"] == ["吃掉全部乘客"]
+    assert any(n.get("id") == "n2" for n in out["npcs"])
+    assert next(c for c in out["clues"] if c["id"] == "c1").get("name") is None  # 已有线索不被改写
+    assert any(c.get("id") == "c2" for c in out["clues"])
+    assert any(h.get("id") == "h1" for h in out["handouts"])
+    # 纯函数：输入未被修改
+    assert parsed["truth"] == "" and len(parsed["scenes"][0]["events"]) == 1
+    assert "goals" not in parsed["npcs"][0]
+
+
+def test_supplement_parse_merges_and_fails_open(monkeypatch):
+    """查漏自检：正常时合并补丁；LLM 炸掉 / 纯图片模组（无原文）时原样返回首轮结果。"""
+    import asyncio
+    import json as _json
+    from app.services import module_service as ms
+
+    parsed = {"truth": "", "scenes": [], "npcs": [], "clues": [], "handouts": []}
+
+    class LLM:
+        async def complete(self, messages, **kw):
+            assert "质检员" in messages[0]["content"]
+            return _json.dumps({"truth": "补上的真相", "scenes": [], "npcs": [],
+                                "clues": [], "handouts": []}, ensure_ascii=False)
+
+    monkeypatch.setattr(ms, "get_llm", lambda: LLM())
+    out = asyncio.run(ms.supplement_parse("模组原文……", parsed, "coc"))
+    assert out["truth"] == "补上的真相"
+
+    class Boom:
+        async def complete(self, *a, **kw):
+            raise RuntimeError("provider down")
+
+    monkeypatch.setattr(ms, "get_llm", lambda: Boom())
+    assert asyncio.run(ms.supplement_parse("模组原文……", parsed, "coc")) is parsed  # fail-open
+
+    called = {"n": 0}
+
+    class Never:
+        async def complete(self, *a, **kw):
+            called["n"] += 1
+
+    monkeypatch.setattr(ms, "get_llm", lambda: Never())
+    assert asyncio.run(ms.supplement_parse("   ", parsed, "coc")) is parsed  # 无原文：零调用跳过
+    assert called["n"] == 0

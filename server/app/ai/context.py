@@ -18,6 +18,7 @@ from app.ai.prompts.kp_system import (
     RULE_EXCERPT_SECTION,
     RULE_LOOKUP_INSTRUCTION,
     PLOT_FLAG_INSTRUCTION,
+    TRUTH_SECTION,
 )
 from app.ai.prompts.npc_system import NPC_SYSTEM_PROMPT
 from app.ai.prompts.team_system import (
@@ -790,6 +791,11 @@ def build_kp_context(
         clues_info=clues_info,
         player_info=player_info,
     )
+
+    # 幕后真相（守秘人专属）：模组解析出的全局真相，KP 据此裁定与铺垫（带守密措辞）。
+    truth = (getattr(module, "truth", "") or "").strip()
+    if truth:
+        system_content += TRUTH_SECTION.format(truth=truth)
 
     # 模组原文摘录（被动注入）：调用方检索好才有，独立小节、带泄密警示措辞。
     if module_excerpts:
