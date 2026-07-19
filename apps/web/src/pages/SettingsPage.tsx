@@ -31,6 +31,9 @@ interface AIProfile {
   image_model?: string
   image_base_url?: string
   image_api_key?: string
+  image_backend?: 'openai' | 'comfyui'
+  comfyui_base_url?: string
+  comfyui_workflow?: string
 }
 
 interface TestResult {
@@ -51,6 +54,9 @@ type FormData = {
   image_model: string
   image_base_url: string
   image_api_key: string
+  image_backend: 'openai' | 'comfyui'
+  comfyui_base_url: string
+  comfyui_workflow: string
 }
 
 // API Key 输入框内嵌的图标小按钮（显示/隐藏、复制）
@@ -76,6 +82,9 @@ const EMPTY_FORM: FormData = {
   image_model: '',
   image_base_url: '',
   image_api_key: '',
+  image_backend: 'openai',
+  comfyui_base_url: '',
+  comfyui_workflow: '',
 }
 
 const PROTOCOL_INFO: Record<
@@ -534,6 +543,9 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
       image_model: p.image_model || '',
       image_base_url: p.image_base_url || '',
       image_api_key: p.image_api_key || '',
+      image_backend: p.image_backend === 'comfyui' ? 'comfyui' : 'openai',
+      comfyui_base_url: p.comfyui_base_url || '',
+      comfyui_workflow: p.comfyui_workflow || '',
     })
   }
 
@@ -782,6 +794,15 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
                       快模型
                     </span>
                   )}
+                  {p.image_backend === 'comfyui' && (
+                    <span
+                      className="badge"
+                      style={{ color: 'var(--color-text-accent)' }}
+                      title={`手书配图走本地 ComfyUI 工作流${p.comfyui_base_url ? `（${p.comfyui_base_url}）` : ''}`}
+                    >
+                      ComfyUI
+                    </span>
+                  )}
                 </div>
                 <div
                   style={{
@@ -840,13 +861,13 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
                 >
                   {testing?.id === p.id && testing.kind === 'conn' ? '测试中...' : '测试'}
                 </button>
-                {p.image_model && (
+                {(p.image_model || p.image_backend === 'comfyui') && (
                   <button
                     className="btn-secondary"
                     style={{ padding: '0.25rem 0.6rem', fontSize: '0.8rem' }}
                     onClick={() => handleTestImage(p.id)}
                     disabled={testing !== null}
-                    title={`测试文生图（${p.image_model}）`}
+                    title={p.image_backend === 'comfyui' ? '测试文生图（ComfyUI）' : `测试文生图（${p.image_model}）`}
                   >
                     {testing?.id === p.id && testing.kind === 'image' ? '测试中...' : '测试生图'}
                   </button>
@@ -1012,39 +1033,76 @@ function AISettingsPanel({ onTestSuccess }: { onTestSuccess?: () => void }) {
                   </p>
                 </div>
 
-                {/* 文生图模型（手书配图） */}
+                {/* 图片生成（手书配图）：可选 OpenAI 兼容 images 接口或本地 ComfyUI 工作流 */}
                 <div>
                   <label className="block text-sm font-semibold mb-1" style={{ fontSize: '0.85rem' }}>
-                    文生图模型（手书配图，可选）
+                    图片生成后端（手书配图，可选）
                   </label>
-                  <input
-                    className="input w-full"
-                    placeholder="留空=不生图；OpenAI 填 dall-e-3 或 gpt-image-1"
-                    value={form.image_model}
-                    onChange={(e) => setForm({ ...form, image_model: e.target.value })}
-                  />
+                  <Select
+                    value={form.image_backend}
+                    onValueChange={(v) =>
+                      setForm({ ...form, image_backend: v as 'openai' | 'comfyui' })
+                    }
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="openai">OpenAI 接口</SelectItem>
+                      <SelectItem value="comfyui">ComfyUI</SelectItem>
+                    </SelectContent>
+                  </Select>
                   <p className="text-xs mt-1" style={{ color: 'var(--color-text-secondary)' }}>
-                    与聊天模型分开的文生图模型。填好后**保存**，再到下方配置卡点「测试生图」确认能否生成。
-                    KP 发手书（信件/报纸/照片等）时会据此配图。
+                    KP 发手书（信件/报纸/照片等）时据此配图。改完**保存**，再到下方配置卡点「测试生图」确认能否生成。
                   </p>
-                  {form.image_model && (
+                  {form.image_backend === 'comfyui' ? (
                     <div className="mt-2 flex flex-col gap-2">
                       <input
                         className="input w-full"
-                        placeholder="生图地址（可选）：留空=复用上面的接口地址；生图另在一处就填这里"
-                        value={form.image_base_url}
-                        onChange={(e) => setForm({ ...form, image_base_url: e.target.value })}
+                        placeholder="ComfyUI 地址，如 http://172.30.18.236:8188"
+                        value={form.comfyui_base_url}
+                        onChange={(e) => setForm({ ...form, comfyui_base_url: e.target.value })}
                       />
-                      <input
-                        type="password"
+                      <textarea
                         className="input w-full"
-                        placeholder="生图密钥（可选）：留空=复用上面的 API Key"
-                        value={form.image_api_key}
-                        onChange={(e) => setForm({ ...form, image_api_key: e.target.value })}
+                        rows={6}
+                        style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: '0.78rem', resize: 'vertical' }}
+                        placeholder={'工作流 JSON（可选）：从 ComfyUI 菜单导出 (API) 格式粘贴到这里；\n正/负提示词处分别写 PLACEHOLDER_POSITIVE / PLACEHOLDER_NEGATIVE 占位；\n留空则使用内置默认工作流。'}
+                        value={form.comfyui_workflow}
+                        onChange={(e) => setForm({ ...form, comfyui_workflow: e.target.value })}
                       />
                       <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-                        生图与文本不在同一分组/供应商时，在此单独填地址与密钥；两者留空则复用上面文本模型的。
+                        工作流即 ComfyUI「导出 (API)」得到的 JSON 全文；后端会把正/负提示词占位符替换成手书描述后提交生图。
                       </p>
+                    </div>
+                  ) : (
+                    <div className="mt-2 flex flex-col gap-2">
+                      <input
+                        className="input w-full"
+                        placeholder="留空=不生图；OpenAI 填 dall-e-3 或 gpt-image-1"
+                        value={form.image_model}
+                        onChange={(e) => setForm({ ...form, image_model: e.target.value })}
+                      />
+                      {form.image_model && (
+                        <>
+                          <input
+                            className="input w-full"
+                            placeholder="生图地址（可选）：留空=复用上面的接口地址；生图另在一处就填这里"
+                            value={form.image_base_url}
+                            onChange={(e) => setForm({ ...form, image_base_url: e.target.value })}
+                          />
+                          <input
+                            type="password"
+                            className="input w-full"
+                            placeholder="生图密钥（可选）：留空=复用上面的 API Key"
+                            value={form.image_api_key}
+                            onChange={(e) => setForm({ ...form, image_api_key: e.target.value })}
+                          />
+                          <p className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                            生图与文本不在同一分组/供应商时，在此单独填地址与密钥；两者留空则复用上面文本模型的。
+                          </p>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>

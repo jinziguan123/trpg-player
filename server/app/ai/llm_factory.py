@@ -13,21 +13,38 @@ __all__ = ["get_llm", "get_fast_llm", "OpenAICompatProvider"]
 def _provider_from_profile(profile) -> LLMProvider:
     if profile.protocol == "anthropic":
         from app.ai.providers.anthropic import AnthropicProvider
-        return AnthropicProvider(
+        provider: LLMProvider = AnthropicProvider(
             model=profile.model_name,
             base_url=profile.base_url,
             api_key=profile.api_key,
         )
-    return OpenAICompatProvider(
-        model=profile.model_name,
-        base_url=profile.base_url,
-        api_key=profile.api_key,
-        vision=getattr(profile, "vision", False),
-        reasoning_effort=getattr(profile, "reasoning_effort", ""),
-        image_model=getattr(profile, "image_model", ""),
-        image_base_url=getattr(profile, "image_base_url", ""),
-        image_api_key=getattr(profile, "image_api_key", ""),
-    )
+    else:
+        provider = OpenAICompatProvider(
+            model=profile.model_name,
+            base_url=profile.base_url,
+            api_key=profile.api_key,
+            vision=getattr(profile, "vision", False),
+            reasoning_effort=getattr(profile, "reasoning_effort", ""),
+            image_model=getattr(profile, "image_model", ""),
+            image_base_url=getattr(profile, "image_base_url", ""),
+            image_api_key=getattr(profile, "image_api_key", ""),
+        )
+    # 图片后端选 ComfyUI 时挂上客户端：任何协议的文本模型都获得文生图能力
+    if (
+        getattr(profile, "image_backend", "") == "comfyui"
+        and getattr(profile, "comfyui_base_url", "").strip()
+    ):
+        from app.ai.comfyui import ComfyUIClient
+        provider.set_comfyui(ComfyUIClient(
+            profile.comfyui_base_url.strip(),
+            getattr(profile, "comfyui_workflow", ""),
+        ))
+    return provider
+
+
+def provider_from_profile(profile) -> LLMProvider:
+    """公开入口：按任意 profile 建 Provider（设置页测试连接/测试生图用，保证与运行时同一装配）。"""
+    return _provider_from_profile(profile)
 
 
 def get_llm() -> LLMProvider:

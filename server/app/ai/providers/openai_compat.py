@@ -106,15 +106,18 @@ class OpenAICompatProvider(LLMProvider):
         return payload
 
     def supports_image_gen(self) -> bool:
-        return bool(self._image_model)
+        return self._comfyui is not None or bool(self._image_model)
 
     async def generate_image(self, prompt: str, size: str = "1024x1024") -> str | None:
-        """文生图（OpenAI Images 端点 {base}/images/generations）。返回 base64（无 data: 前缀）。
+        """文生图。挂了 ComfyUI 后端时优先走它（内网免费出图）；否则走 OpenAI Images
+        端点 {base}/images/generations。返回 base64（无 data: 前缀）。
 
         未配置 image_model 或任何失败一律返回 None——配图是可选增强，**绝不因它失败而中断游戏**。
         不下发 response_format 以兼容 dall-e-3（默认回 url）与 gpt-image-1（默认回 b64_json）：
         两种响应都能解析，回的是 url 时再抓一次转成 base64。
         """
+        if self._comfyui is not None:
+            return await self._comfyui.generate(prompt)
         if not self._image_model:
             return None
         payload = {"model": self._image_model, "prompt": prompt, "size": size, "n": 1}

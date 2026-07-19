@@ -49,6 +49,10 @@ class AIProfile(BaseModel):
     # 文生图**可独立**的地址与密钥（生图常与文本不在同一分组/供应商）。空则回落到上面的 base_url/api_key。
     image_base_url: str = ""
     image_api_key: str = ""
+    # 图片后端：openai=OpenAI Images 端点（现状）；comfyui=内网 ComfyUI（任何协议的文本模型都可搭配）
+    image_backend: str = "openai"
+    comfyui_base_url: str = ""       # 如 http://172.30.18.236:8188（仅后端访问）
+    comfyui_workflow: str = ""       # API 格式工作流 JSON；占位 PLACEHOLDER_POSITIVE/NEGATIVE；空=内置默认
 
 
 class AIProfileCreate(BaseModel):
@@ -64,6 +68,9 @@ class AIProfileCreate(BaseModel):
     image_model: str = ""
     image_base_url: str = ""
     image_api_key: str = ""
+    image_backend: str = "openai"
+    comfyui_base_url: str = ""
+    comfyui_workflow: str = ""
 
 
 class AIProfileUpdate(BaseModel):
@@ -79,6 +86,9 @@ class AIProfileUpdate(BaseModel):
     image_model: str | None = None
     image_base_url: str | None = None
     image_api_key: str | None = None
+    image_backend: str | None = None
+    comfyui_base_url: str | None = None
+    comfyui_workflow: str | None = None
 
 
 # 常见模型的上下文窗口（token）——用于用户没显式配 context_window 时的启发式回落。
@@ -236,6 +246,9 @@ def create_profile(body: AIProfileCreate):
         image_model=body.image_model,
         image_base_url=body.image_base_url,
         image_api_key=body.image_api_key,
+        image_backend=body.image_backend,
+        comfyui_base_url=body.comfyui_base_url,
+        comfyui_workflow=body.comfyui_workflow,
         is_active=len(profiles) == 0,  # 第一个配置自动激活
     )
     profiles.append(new_profile)
@@ -459,6 +472,19 @@ async def test_profile_image(profile_id: str):
     target = next((p for p in profiles if p.id == profile_id), None)
     if not target:
         raise HTTPException(status_code=404, detail="配置不存在")
+    # ComfyUI 后端：与运行时同一装配（provider_from_profile），真打一张验证工作流/连通性
+    if getattr(target, "image_backend", "") == "comfyui":
+        if not (getattr(target, "comfyui_base_url", "") or "").strip():
+            return TestResult(success=False, message="未填写 ComfyUI 地址", latency_ms=0)
+        from app.ai.llm_factory import provider_from_profile
+
+        start = time.time()
+        provider = provider_from_profile(target)
+        b64 = await provider.generate_image("a simple red apple on a wooden table, photo")
+        ms = int((time.time() - start) * 1000)
+        if b64:
+            return TestResult(success=True, message=f"ComfyUI 生图成功（{len(b64) // 1024}KB base64）", latency_ms=ms)
+        return TestResult(success=False, message="ComfyUI 生图失败：检查地址可达性、工作流 JSON 与占位符（详见后端日志）", latency_ms=ms)
     if not (getattr(target, "image_model", "") or "").strip():
         return TestResult(success=False, message="未填写「文生图模型」（image_model）", latency_ms=0)
     if target.protocol != "openai":

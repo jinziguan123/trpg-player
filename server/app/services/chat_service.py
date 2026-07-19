@@ -4131,7 +4131,73 @@ async def _exec_handout(
             world_memory.record_handout_issue(ws, _hid, _title, present, _seq)
         ),
     )
+    # 手书配图（可选增强）：激活配置具备生图能力（OpenAI Images 或 ComfyUI）才起后台任务；
+    # 卡片即时发出（文字先读），图片生成完经 event_patch 增量补挂，失败静默保持纯文字。
+    try:
+        if get_llm().supports_image_gen():
+            asyncio.create_task(_illustrate_handout(
+                session_id, ev.id, title,
+                str(handout.get("kind") or ""), ev.content or "",
+            ))
+    except Exception:  # noqa: BLE001 — 配图判定失败不影响发放
+        logger.exception("手书配图任务启动失败（忽略）")
     return chunks, f"手书 {hid} 已发放（正文已由系统以卡片呈现给玩家，续写时不要复述正文）。"
+
+
+_HANDOUT_PROMPT_SYS = (
+    "你是文生图提示词工程师。把给定的 TRPG 手书（信件/报纸/日记/便条）转成一行**英文**"
+    " Stable Diffusion 提示词：描绘这份实体文书本身的画面——纸张质感、字迹/排版、年代感、"
+    "光线氛围（如 1920s cosmic horror prop, aged paper, dim candlelight, photorealistic）。"
+    "不要出现人物面孔与真实人名，不要引号，只输出提示词本身。"
+)
+
+
+async def _illustrate_handout(
+    session_id: str, event_id: str, title: str, kind: str, content: str,
+) -> None:
+    """手书配图（后台）：快模型写英文提示词 → 图片后端出图 → 落盘 → 补挂事件 metadata 并广播增量。
+
+    任何环节失败一律静默放弃（卡片保持纯文字），绝不影响跑团主流程。
+    """
+    from app.database import SessionLocal
+    from app.services.image_store import save_image_b64
+
+    try:
+        raw = await get_fast_llm().complete(
+            [
+                {"role": "system", "content": _HANDOUT_PROMPT_SYS},
+                {"role": "user", "content": f"标题：{title}\n类型：{kind}\n正文：\n{content[:600]}"},
+            ],
+            temperature=0.7,
+        )
+        sd_prompt = (raw or "").strip().splitlines()[0].strip()[:500] if isinstance(raw, str) and raw.strip() else ""
+        if not sd_prompt:
+            return
+        b64 = await get_llm().generate_image(sd_prompt)
+        if not b64:
+            return
+        url = save_image_b64(b64)
+        if not url:
+            return
+        db = SessionLocal()
+        try:
+            ev = db.get(EventLog, event_id)
+            if ev is None:
+                return
+            meta = dict(ev.metadata_ or {})
+            meta["image"] = url
+            ev.metadata_ = meta
+            db.commit()
+        finally:
+            db.close()
+        room_hub.broadcast(session_id, _make_chunk(
+            "event_patch", metadata={"event_id": event_id, "patch": {"image": url}},
+        ))
+        logger.info("手书配图完成：event=%s url=%s", event_id, url)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001
+        logger.exception("手书配图失败（卡片保持纯文字）：event=%s", event_id)
 
 
 

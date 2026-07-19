@@ -3,7 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { toast } from 'sonner'
-import { api, connectSSE } from '../api/client'
+import { api, connectSSE, getServerUrl } from '../api/client'
 import { useSessionStore, type ChatMessage } from '../stores/sessionStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { PartyRoster } from '../components/game/PartyRoster'
@@ -50,6 +50,29 @@ const HANDOUT_KIND_LABELS: Record<string, string> = {
 }
 // 信笺正文用衬线体（配合泛黄纸质感），本地打包 Noto Serif SC，中文回退宋体
 const HANDOUT_SERIF = '"Noto Serif SC", Georgia, "Songti SC", "SimSun", serif'
+
+// 手书配图（metadata.image）：加载完成淡入（尊重 prefers-reduced-motion），加载失败整体隐藏不留占位
+function HandoutImage({ src }: { src: string }) {
+  const [loaded, setLoaded] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const reducedMotion = typeof window !== 'undefined'
+    && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  if (failed) return null
+  return (
+    <img
+      src={src}
+      alt=""
+      className="block w-full rounded mb-3"
+      style={{
+        border: '1px solid var(--color-border)',
+        opacity: loaded ? 1 : 0,
+        transition: reducedMotion ? undefined : 'opacity 0.6s ease',
+      }}
+      onLoad={() => setLoaded(true)}
+      onError={() => setFailed(true)}
+    />
+  )
+}
 
 // NPC 气泡按角色名派生一个稳定色相（写入 --npc-hue），同一 NPC 颜色一致、不同 NPC 微有区分
 function npcHue(name?: string): number {
@@ -278,7 +301,7 @@ export function GameSessionPage() {
   const location = useLocation()
   const isNew = (location.state as { isNew?: boolean })?.isNew
   const {
-    currentSession, messages, addMessage, removeMessage, updateMessage, clearMessages,
+    currentSession, messages, addMessage, removeMessage, updateMessage, patchMessageMetadata, clearMessages,
     setCurrentSession, loadHistory, loadOlderEvents,
     hasMoreHistory, loadingOlder,
     startStreamMessage, appendToStream, endStream,
@@ -605,6 +628,12 @@ export function GameSessionPage() {
     if (t === 'chase_end') { setChase(null); return }  // 结果那句话已由后端落库为消息，不额外处理
     if (t === 'event_delete') { if (chunk.id) removeMessage(chunk.id); return }
     if (t === 'event_update') { if (chunk.id) updateMessage(chunk.id, chunk.content || ''); return }
+    if (t === 'event_patch') {
+      // 已渲染事件的 metadata 增量更新（如手书配图异步生成完成后补 image）：浅合并触发重渲，找不到则忽略
+      const meta = chunk.metadata as { event_id?: string; patch?: Record<string, unknown> } | undefined
+      if (meta?.event_id && meta.patch) patchMessageMetadata(String(meta.event_id), meta.patch)
+      return
+    }
     if (t === 'housekeeping') {
       // 叙事已停但仍在收尾（摘要/幕后）：脉冲点旁给出可读文案，输入仍锁但不再无解释
       setThinking(false); setTailNote(chunk.content || 'KP 正在整理笔记…')
@@ -694,7 +723,7 @@ export function GameSessionPage() {
       const cid = String((chunk.metadata as Record<string, unknown> | undefined)?.id ?? '')
       if (cid) setOptimisticPending((s) => new Set(s).add(cid))
     }
-  }, [addMessage, removeMessage, updateMessage, appendToStream, endStream, startStreamMessage, resyncHistory, refetchSession])
+  }, [addMessage, removeMessage, updateMessage, patchMessageMetadata, appendToStream, endStream, startStreamMessage, resyncHistory, refetchSession])
 
   useEffect(() => {
     if (!sessionId) return
@@ -1531,6 +1560,8 @@ export function GameSessionPage() {
                 const title = String(msg.metadata?.title || '手书')
                 const KindIcon = HANDOUT_ICONS[hk] || GiScrollUnfurled
                 const kindLabel = HANDOUT_KIND_LABELS[hk] || '文书'
+                // 配图相对 URL（如 /api/images/xxx.jpg）：本机走同源（vite 代理），客人模式拼房主地址
+                const handoutImg = String(msg.metadata?.image || '')
                 return (
                   <div key={msg.id} className="chat-msg py-2 flex justify-center">
                     <div className="rounded-sm px-5 py-4 max-w-2xl w-full"
@@ -1545,6 +1576,7 @@ export function GameSessionPage() {
                         <span className="font-semibold" style={{ fontFamily: HANDOUT_SERIF }}>{title}</span>
                         <span className="text-xs ml-auto flex-shrink-0" style={{ color: 'var(--color-text-secondary)' }}>{kindLabel}</span>
                       </div>
+                      {handoutImg && <HandoutImage src={`${getServerUrl()}${handoutImg}`} />}
                       <div className="text-sm whitespace-pre-wrap leading-relaxed"
                         style={{ color: 'var(--color-text-primary)', fontFamily: HANDOUT_SERIF }}>
                         {msg.content}

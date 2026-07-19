@@ -74,6 +74,7 @@ interface SessionStore {
   addMessage: (msg: ChatMessage) => void
   removeMessage: (id: string) => void
   updateMessage: (id: string, content: string) => void
+  patchMessageMetadata: (id: string, patch: Record<string, unknown>) => void
   startStreamMessage: (type: string, actorName?: string, metadata?: Record<string, unknown>) => string
   appendToStream: (content: string) => void
   endStream: () => void
@@ -146,6 +147,18 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   updateMessage: (id, content) =>
     set((s) => ({ messages: s.messages.map((m) => (m.id === id ? { ...m, content } : m)) })),
+
+  /** 事件 metadata 增量更新（SSE event_patch，如手书配图异步生成完成后补 image）：
+   *  按事件 id 找到已渲染消息，浅合并 patch；找不到（如尚未拉到历史）则静默忽略。 */
+  patchMessageMetadata: (id, patch) =>
+    set((s) => {
+      if (!s.messages.some((m) => m.id === id)) return s
+      return {
+        messages: s.messages.map((m) =>
+          m.id === id ? { ...m, metadata: { ...(m.metadata || {}), ...patch } } : m
+        ),
+      }
+    }),
 
   startStreamMessage: (type, actorName, metadata) => {
     const id = `stream-${++msgCounter}`
