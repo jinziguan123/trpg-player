@@ -122,7 +122,9 @@ class ComfyUIClient:
 
     async def _generate(self, wf: dict) -> str | None:
         client_id = uuid.uuid4().hex
-        async with httpx.AsyncClient(timeout=30) as http:
+        # trust_env=False：绝不走系统代理（HTTP_PROXY 等环境变量）。ComfyUI 是内网直连，
+        # 开发环境常为访问外网 API 配代理，代理转发内网 IP 会「Server disconnected」。
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as http:
             resp = await http.post(
                 f"{self.base_url}/prompt",
                 json={"prompt": wf, "client_id": client_id},
