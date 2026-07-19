@@ -57,6 +57,48 @@ def test_chunk_pages_tracks_page_and_filters_short():
     assert sum(1 for c in chunks if c["page"] == 1) == 2
 
 
+def test_chunk_pages_sections_and_line_join():
+    """结构感知切块：小节标题行分节（【标题】前缀），节内 PDF 硬换行被合并；
+    页眉/孤立页码等短节被过滤。"""
+    text = (
+        "克苏鲁的呼唤 第七版\n96\n"
+        "自动武器射击\n"
+        "若使用自动武器，攻击者在一个战斗轮中可以扣\n"
+        "动一次扳机，自动武器随后会不断开火直到弹药耗尽。\n"
+        "目标体格\n"
+        "小型的目标较难被命中，如果射击者攻击的目\n"
+        "标的体格为-2或更小，射击者将承受一个惩罚骰，大型目标则相反给奖励骰。"
+    )
+    chunks = rulebook_service.chunk_pages([(1, text)])
+    texts = [c["text"] for c in chunks]
+
+    auto = next(t for t in texts if "自动武器射击" in t)
+    assert auto.startswith("【自动武器射击】")
+    assert "扣动一次扳机" in auto and "\n" not in auto     # 硬换行「扣\n动」已合并
+    body = next(t for t in texts if "目标体格" in t)
+    assert "目标的体格为-2" in body                        # 「目\n标」已合并
+    assert not any("克苏鲁的呼唤" in t for t in texts)     # 页眉短节被过滤
+
+
+def test_retrieve_merges_adjacent_overlapping_chunks(db_factory, monkeypatch):
+    """同一长节切出的两个相邻滑窗块（含 80 字重叠）命中后合并为一段返回：
+    不浪费 top-k 名额、注入内容无重复，合并文本等于原节全文。"""
+    page_text = "孤注一掷规则" + "甲乙丙丁" * 160   # 单行 646 字 → 一节两块
+    monkeypatch.setattr(rulebook_service, "extract_pages", lambda b: [(1, page_text)])
+    db = db_factory()
+    book = Rulebook(title="长节书", rule_system="coc", status="indexing")
+    db.add(book)
+    db.commit()
+    fake = FakeEmbedder()
+    rulebook_service.ingest_rulebook(db, book, b"x", embedder=fake)
+    assert book.chunk_count == 2
+
+    hits = rulebook_service.retrieve(db, "孤注一掷 甲乙丙丁", "coc", k=3, embedder=fake)
+    assert len(hits) == 1                 # 两个孪生块并成一段
+    assert hits[0]["text"] == page_text   # 中缝重叠被去掉，恰为原文
+    assert "ordinal" not in hits[0]       # 内部字段不外泄
+
+
 def test_ingest_and_retrieve_roundtrip(db_factory, monkeypatch):
     db = db_factory()
     canned = [
