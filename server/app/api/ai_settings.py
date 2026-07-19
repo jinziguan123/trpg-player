@@ -290,6 +290,12 @@ def update_profile(profile_id: str, body: AIProfileUpdate):
         target.image_model = body.image_model
     if body.image_base_url is not None:
         target.image_base_url = body.image_base_url
+    if body.image_backend is not None:
+        target.image_backend = body.image_backend
+    if body.comfyui_base_url is not None:
+        target.comfyui_base_url = body.comfyui_base_url
+    if body.comfyui_workflow is not None:
+        target.comfyui_workflow = body.comfyui_workflow
     if body.api_key is not None:
         # 如果包含掩码字符，说明前端没有修改 key，保留旧值
         if "****" not in body.api_key:

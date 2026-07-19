@@ -88,3 +88,22 @@ def test_reveal_key_and_duplicate_profile(monkeypatch, tmp_path):
 
     assert c.get("/api/settings/ai/profiles/nope/key").status_code == 404
     assert c.post("/api/settings/ai/profiles/nope/duplicate").status_code == 404
+
+
+def test_update_profile_persists_comfyui_fields(monkeypatch, tmp_path):
+    """回归：PUT 更新必须应用 image_backend/comfyui_* 三字段（此前模型收了、应用漏了，静默丢弃）。"""
+    c = TestClient(app)
+    monkeypatch.setattr(ai_settings, "SETTINGS_FILE", tmp_path / "ai_settings.json")
+
+    p = c.post("/api/settings/ai/profiles", json={"name": "A", "model_name": "m", "api_key": "k"}).json()
+    r = c.put(f"/api/settings/ai/profiles/{p['id']}", json={
+        "name": "A",
+        "image_backend": "comfyui",
+        "comfyui_base_url": "http://172.30.18.236:8188",
+        "comfyui_workflow": '{"1": {}}',
+    })
+    assert r.status_code == 200, r.text
+    saved = ai_settings._load_profiles()[0]
+    assert saved.image_backend == "comfyui"
+    assert saved.comfyui_base_url == "http://172.30.18.236:8188"
+    assert saved.comfyui_workflow == '{"1": {}}'
