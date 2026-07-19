@@ -11,7 +11,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-MAX_REPLAY_WINDOW_TOKENS = 1800   # 单窗输出上限（略宽于输入窗，容改写扩写）
 _TAIL_CHARS = 200                 # 携带给下一窗的上文结尾长度
 
 _STYLE_GUIDE = {
@@ -61,7 +60,6 @@ async def rewrite_window(llm: Any, style: str, body: str, prev_tail: str) -> str
         raw = await llm.complete(
             build_replay_messages(style, body, prev_tail),
             temperature=0.6,
-            max_tokens=MAX_REPLAY_WINDOW_TOKENS,
         )
     except Exception:
         logger.exception("团记改写调用失败（该窗回退朴素文本）")

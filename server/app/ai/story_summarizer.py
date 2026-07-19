@@ -7,10 +7,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# 单次滚动摘要的输出上限（token 粗上限）：控制摘要不随游戏无限膨胀。
-MAX_STORY_SUMMARY_TOKENS = 1200
-# 合并调用（摘要 + MemoryKeeper 差量）的输出上限：比纯摘要略宽，容下 JSON 骨架与差量字段。
-MAX_MEMORY_KEEPER_TOKENS = 1800
+# 项目约定：一切 LLM 调用不设 max_tokens（输出长短交给 prompt 约束与服务端默认）。
+# 摘要的「不膨胀」由提示词的浓缩要求保证，不靠输出预算硬砍。
 
 
 def _events_text(events: list[Any]) -> str:
@@ -75,7 +73,6 @@ async def summarize_story(llm: Any, prev_summary: str, events: list[Any]) -> str
         raw = await llm.complete(
             build_summary_messages(prev_summary, events),
             temperature=0.2,
-            max_tokens=MAX_STORY_SUMMARY_TOKENS,
         )
     except Exception:
         logger.exception("滚动剧情摘要生成失败，保持原摘要")
@@ -192,7 +189,6 @@ async def summarize_and_extract(
                 prev_summary, events, npc_memory_brief, team_memory_brief,
             ),
             temperature=0,
-            max_tokens=MAX_MEMORY_KEEPER_TOKENS,
             response_format={"type": "json_object"},
         )
     except Exception:

@@ -145,7 +145,6 @@ async def evaluate_character(data: EvaluateRequest, db: Session = Depends(get_db
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
         temperature=0.3,
-        max_tokens=1024,
     )
     return json.loads(result)
 

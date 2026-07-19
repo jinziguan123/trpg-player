@@ -14,7 +14,6 @@ from app.ai.story_summarizer import _events_text, _extract_json_object
 
 logger = logging.getLogger(__name__)
 
-MAX_RECAP_TOKENS = 1500
 # 喂给战报的事件正文字符上限：整局可能很长，截断到尾部（近段更关键），配合滚动摘要覆盖前情。
 _EVENTS_CHAR_BUDGET = 8000
 
@@ -92,7 +91,6 @@ async def generate_recap(
         raw = await llm.complete(
             build_recap_messages(prev_summary, events, clue_ledger_text, party_status_text),
             temperature=0.3,
-            max_tokens=MAX_RECAP_TOKENS,
             response_format={"type": "json_object"},
         )
     except Exception:

@@ -14,7 +14,6 @@ from app.ai.story_summarizer import _events_text, _extract_json_object
 
 logger = logging.getLogger(__name__)
 
-MAX_PROMOTE_TOKENS = 900
 _EVENTS_CHAR_BUDGET = 6000
 
 
@@ -80,7 +79,6 @@ async def generate_npc_card(
         raw = await llm.complete(
             build_promote_messages(name, material, module_title),
             temperature=0.3,
-            max_tokens=MAX_PROMOTE_TOKENS,
             response_format={"type": "json_object"},
         )
     except Exception:

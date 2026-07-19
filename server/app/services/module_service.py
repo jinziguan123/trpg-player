@@ -152,7 +152,6 @@ async def parse_module_text(raw_text: str, rule_system: str) -> dict:
         messages=messages,
         response_format={"type": "json_object"},
         temperature=0.3,
-        max_tokens=8192,
     )
     try:
         return _extract_json(result)
@@ -173,7 +172,6 @@ async def parse_module_text(raw_text: str, rule_system: str) -> dict:
             )},
         ],
         temperature=0.3,
-        max_tokens=8192,
     )
     combined = (result or "") + (continuation or "")
     # 优先按「断点拼接」解析；个别模型不接续而是整个重output——退而解析续写单独成篇的情形
@@ -206,7 +204,7 @@ async def parse_module_images(images: list[tuple[bytes, str]], rule_system: str,
     content = extra_text.strip() or "（模组内容见所附图片，请仔细阅读图片中的文字与示意图后提取）"
     prompt = PARSE_PROMPT_TEMPLATE.format(rule_system=rule_system.upper(), content=content)
     imgs = [(base64.b64encode(b).decode(), mime) for b, mime in images]
-    raw = await llm.complete_vision(prompt, imgs, max_tokens=8192)
+    raw = await llm.complete_vision(prompt, imgs)
     return _extract_json(raw)
 
 
