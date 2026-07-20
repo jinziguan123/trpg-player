@@ -1,5 +1,4 @@
 import logging
-import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,7 +12,7 @@ from app.api.router import api_router
 logger = logging.getLogger(__name__)
 
 # 迁移失败进入的「维护模式」：非空即代表启动迁移失败，所有请求返回可读错误页而非
-# 以「新代码 + 旧 schema」带病运行（仅打包分发场景启用；dev 下保持 log-and-continue）。
+# 以「新代码 + 旧 schema」带病运行。开发与打包环境都启用，避免业务接口继续返回 500。
 _MIGRATION_ERROR: str | None = None
 
 
@@ -28,9 +27,8 @@ async def lifespan(_app: FastAPI):
         run_migrations()
     except Exception as e:
         logger.exception("启动自动迁移失败，请手动执行 alembic upgrade head")
-        if getattr(sys, "frozen", False):
-            # 打包分发：不以半新半旧 schema 运行，进入维护模式，请求返回可读错误页。
-            _MIGRATION_ERROR = str(e)
+        # 不以半新半旧 schema 运行，进入维护模式，请求返回可读错误页。
+        _MIGRATION_ERROR = str(e)
     yield
 
 

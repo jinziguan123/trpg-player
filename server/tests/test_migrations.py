@@ -43,12 +43,53 @@ def test_run_migrations_builds_full_schema(tmp_path, monkeypatch):
     # 幕后真相迁移（20260719）：modules 表带 truth TEXT 列
     assert "truth" in module_cols
 
+    con = sqlite3.connect(db_file)
+    try:
+        session_cols = {
+            r[1] for r in con.execute("PRAGMA table_info(game_sessions)")
+        }
+        participant_cols = {
+            r[1] for r in con.execute("PRAGMA table_info(session_participants)")
+        }
+    finally:
+        con.close()
+    assert {"host_token", "identity_version"} <= session_cols
+    assert "identity_version" in participant_cols
+
 
 def test_run_migrations_is_idempotent(tmp_path, monkeypatch):
     db_file = tmp_path / "again.db"
     monkeypatch.setattr(settings, "db_path", db_file)
     database.run_migrations()
     database.run_migrations()  # 第二次为 no-op，不应抛错
+
+
+def test_identity_schema_repair_fixes_already_stamped_database(tmp_path, monkeypatch):
+    """版本号已到旧身份迁移、实际缺列时，后续修复迁移必须按 schema 补齐。"""
+    db_file = tmp_path / "identity-drift.db"
+    monkeypatch.setattr(settings, "db_path", db_file)
+    database.run_migrations()
+
+    con = sqlite3.connect(db_file)
+    try:
+        con.execute("ALTER TABLE game_sessions DROP COLUMN identity_version")
+        con.execute(
+            "UPDATE alembic_version SET version_num = 'd4f7a9c2e1b3'"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    database.run_migrations()
+
+    con = sqlite3.connect(db_file)
+    try:
+        columns = {
+            row[1] for row in con.execute("PRAGMA table_info(game_sessions)")
+        }
+    finally:
+        con.close()
+    assert "identity_version" in columns
 
 
 def test_noop_migration_creates_no_backup(tmp_path, monkeypatch):
