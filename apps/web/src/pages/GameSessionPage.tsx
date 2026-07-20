@@ -133,6 +133,7 @@ const ILLUST_LABELS: Record<string, string> = {
   scene: '场景',
   clue: '线索',
   encounter: '遭遇',
+  custom: 'KP 配图',
 }
 
 // NPC 气泡按角色名派生一个稳定色相（写入 --npc-hue），同一 NPC 颜色一致、不同 NPC 微有区分
@@ -1193,7 +1194,7 @@ export function GameSessionPage() {
   })
 
   return (
-    <div className="flex h-full gap-4">
+    <div className="game-session-layout flex h-full gap-4">
       {sceneVeil && <div className="scene-veil" aria-hidden="true" />}
       {battleVeil && <div className="scene-veil" aria-hidden="true" />}
       {/* 沉浸战斗布局：战斗激活时战场占左侧约 2/3（棋盘居中放大、参战卡环绕、动作区钉底），
@@ -1910,7 +1911,7 @@ export function GameSessionPage() {
             </button>
           </div>
         )}
-        {isKp && <HumanKpPanel sessionId={currentSession.id} />}
+        {isKp && <HumanKpPanel sessionId={currentSession.id} turnReady={turnState?.ready === true} />}
         {!streaming && (
           <div className="px-3 pb-1 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -2016,7 +2017,7 @@ export function GameSessionPage() {
       {/* 角色卡侧栏：沉浸战斗布局下暂时隐藏（参战卡已带 HP/状态，屏幕让给战场与聊天） */}
       {!immersiveOn && showPanel && panelChar && (
         <aside
-          className="w-64 flex-shrink-0 border-l overflow-y-auto game-info"
+          className="game-character-panel w-64 flex-shrink-0 border-l overflow-y-auto game-info"
           style={{ borderColor: 'var(--color-border)', background: 'var(--color-bg-card)' }}
         >
           <div

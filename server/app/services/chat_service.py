@@ -41,6 +41,7 @@ from app.models.module import Module
 from app.models.session import GameSession
 from app.rules.registry import get_engine
 from app.services import (
+    human_kp_service,
     inventory_service,
     module_image_service,
     module_rag_service,
@@ -4233,6 +4234,21 @@ async def _exec_handout(
     # 手书配图（可选增强）：激活配置具备生图能力（OpenAI Images 或 ComfyUI）才起后台任务；
     # 卡片即时发出（文字先读），图片生成完经 event_patch 增量补挂，失败静默保持纯文字。
     try:
+        if game_session.kp_mode == "human":
+            human_kp_service.queue_image_suggestion(
+                db, game_session,
+                key=f"handout:{module.id}:{hid}",
+                title=title or "手书配图",
+                prompt=(
+                    f"标题：{title}\n类型：{str(handout.get('kind') or '')}\n"
+                    f"正文：\n{str(handout.get('content') or '')[:600]}"
+                ),
+                image_kind="handout",
+                image_item_id=hid,
+                image_field="image",
+                source_event_id=str(ev.id),
+            )
+            return chunks, f"手书 {hid} 已发放（配图已进入真人 KP 审核队列）。"
         if get_llm().supports_image_gen():
             asyncio.create_task(_illustrate_handout(
                 session_id, ev.id, title,
@@ -4673,6 +4689,21 @@ def _maybe_scene_illustration(
             f"描述：{str(resolved_scene.get('description') or '')[:600]}"
         )
 
+        if game_session.kp_mode == "human":
+            human_kp_service.queue_image_suggestion(
+                db, game_session,
+                key=f"scene:{scene_id}:{visual_state_key}",
+                title=title,
+                prompt=prompt_user,
+                image_kind="scene",
+                image_item_id=scene_id,
+                image_field="image" if visual_state_key == "base" else "image_variant",
+                variant_key=visual_state_key if visual_state_key != "base" else "",
+                preview_url=cached,
+                source_event_id=str(existing.id) if existing is not None else "",
+            )
+            return []
+
         def repair(event) -> None:
             if cached or event is None:
                 return
@@ -4747,6 +4778,22 @@ def _maybe_clue_illustration(
             cached = ""
         if cached:
             meta["image"] = cached
+        game_session = db.get(GameSession, session_id)
+        if game_session is not None and game_session.kp_mode == "human":
+            human_kp_service.queue_image_suggestion(
+                db, game_session,
+                key=f"clue:{module.id}:{clue_id}",
+                title=name,
+                prompt=(
+                    f"线索：{name}\n年代：{_module_era(module)}\n"
+                    f"内容：{str(clue.get('description') or '')[:600]}"
+                ),
+                image_kind="clue",
+                image_item_id=clue_id,
+                image_field="image",
+                preview_url=cached,
+            )
+            return
         ev = session_service.add_event(
             db, session_id, "system", f"—— 发现线索：{name} ——", actor_name="系统", metadata=meta,
         )
@@ -4794,6 +4841,26 @@ def _maybe_encounter_illustration(
             cached = ""
         if cached:
             meta["image"] = cached
+        game_session = db.get(GameSession, session_id)
+        if game_session is not None and game_session.kp_mode == "human":
+            desc = "；".join(
+                f"{str(e.get('name') or '')}：{str(e.get('description') or '')[:200]}"
+                for e in enemies if e.get("name")
+            )
+            human_kp_service.queue_image_suggestion(
+                db, game_session,
+                key=(
+                    f"encounter:{module.id}:"
+                    f"{','.join(str(e.get('id') or e.get('name') or '') for e in enemies)}"
+                ),
+                title="遭遇战",
+                prompt=f"敌方：{desc}\n年代：{_module_era(module)}",
+                image_kind="npc" if anchor is not None else "",
+                image_item_id=str(anchor.get("id")) if anchor is not None else "",
+                image_field="encounter_image" if anchor is not None else "",
+                preview_url=cached,
+            )
+            return []
         ev = session_service.add_event(
             db, session_id, "system", f"—— 遭遇：{'、'.join(names)} ——",
             actor_name="系统", metadata=meta,
@@ -4847,6 +4914,24 @@ def _attach_npc_portrait(db: Session, session_id: str, module: Module, ev) -> No
         cached = str(npc.get("portrait") or "").strip()
         if not module_image_service.image_url_available(cached):
             cached = ""
+        game_session = db.get(GameSession, session_id)
+        if game_session is not None and game_session.kp_mode == "human":
+            human_kp_service.queue_image_suggestion(
+                db, game_session,
+                key=f"npc-portrait:{module.id}:{npc.get('id') or name}",
+                title=f"{npc.get('name') or name} 立绘",
+                prompt=(
+                    f"NPC：{npc.get('name') or name}\n年代：{_module_era(module)}\n"
+                    f"外貌与身份：{str(npc.get('description') or '')[:400]}\n"
+                    f"性格：{str(npc.get('personality') or '')[:200]}"
+                ),
+                image_kind="npc",
+                image_item_id=str(npc.get("id") or ""),
+                image_field="portrait",
+                preview_url=cached,
+                source_event_id=str(getattr(ev, "id", "") or ""),
+            )
+            return
         if cached:
             meta = dict(ev.metadata_ or {})
             if meta.get("portrait") == cached:

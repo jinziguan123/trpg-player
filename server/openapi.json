@@ -1066,6 +1066,107 @@
         "title": "KpActionRequest",
         "type": "object"
       },
+      "KpDraftRequest": {
+        "properties": {
+          "instruction": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Instruction",
+            "type": "string"
+          }
+        },
+        "title": "KpDraftRequest",
+        "type": "object"
+      },
+      "KpImagePreviewRequest": {
+        "properties": {
+          "prompt": {
+            "maxLength": 1500,
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          },
+          "title": {
+            "default": "KP 配图",
+            "maxLength": 100,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "title": "KpImagePreviewRequest",
+        "type": "object"
+      },
+      "KpImagePublishRequest": {
+        "properties": {
+          "suggestion_key": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Suggestion Key",
+            "type": "string"
+          },
+          "title": {
+            "default": "KP 配图",
+            "maxLength": 100,
+            "title": "Title",
+            "type": "string"
+          },
+          "url": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "KpImagePublishRequest",
+        "type": "object"
+      },
+      "KpPlanRequest": {
+        "properties": {
+          "focus": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Focus",
+            "type": "string"
+          }
+        },
+        "title": "KpPlanRequest",
+        "type": "object"
+      },
+      "KpWorkspaceUpdate": {
+        "properties": {
+          "auto_ai_teammates": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Ai Teammates"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          }
+        },
+        "title": "KpWorkspaceUpdate",
+        "type": "object"
+      },
       "ModuleImageRegenerateRequest": {
         "properties": {
           "field": {
@@ -5073,6 +5174,483 @@
         "summary": "Kp Action",
         "tags": [
           "chat"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/kp/advisor/draft": {
+      "post": {
+        "operationId": "generate_draft_api_sessions__session_id__kp_advisor_draft_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KpDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Generate Draft",
+        "tags": [
+          "human-kp"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/kp/advisor/plan": {
+      "post": {
+        "operationId": "generate_plan_api_sessions__session_id__kp_advisor_plan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KpPlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Generate Plan",
+        "tags": [
+          "human-kp"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/kp/end-turn": {
+      "post": {
+        "operationId": "end_kp_turn_api_sessions__session_id__kp_end_turn_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "End Kp Turn",
+        "tags": [
+          "human-kp"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/kp/images/preview": {
+      "post": {
+        "operationId": "preview_image_api_sessions__session_id__kp_images_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KpImagePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Preview Image",
+        "tags": [
+          "human-kp"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/kp/images/publish": {
+      "post": {
+        "operationId": "publish_image_api_sessions__session_id__kp_images_publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KpImagePublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Publish Image",
+        "tags": [
+          "human-kp"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/kp/lookup": {
+      "get": {
+        "operationId": "lookup_api_sessions__session_id__kp_lookup_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": true,
+            "schema": {
+              "enum": [
+                "rule",
+                "module"
+              ],
+              "title": "Scope",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "maxLength": 500,
+              "minLength": 1,
+              "title": "Q",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Lookup",
+        "tags": [
+          "human-kp"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/kp/team-turn": {
+      "post": {
+        "operationId": "run_team_turn_api_sessions__session_id__kp_team_turn_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Run Team Turn",
+        "tags": [
+          "human-kp"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/kp/workspace": {
+      "get": {
+        "operationId": "get_workspace_api_sessions__session_id__kp_workspace_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Get Workspace",
+        "tags": [
+          "human-kp"
+        ]
+      },
+      "patch": {
+        "operationId": "update_workspace_api_sessions__session_id__kp_workspace_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KpWorkspaceUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Update Workspace",
+        "tags": [
+          "human-kp"
         ]
       }
     },

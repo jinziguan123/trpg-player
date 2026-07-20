@@ -21,7 +21,7 @@ from app.schemas.event import (
     TravelRequest,
 )
 from app.schemas.session import KpActionRequest
-from app.services import session_service
+from app.services import human_kp_service, session_service
 from app.services.chat_service import (
     _make_chunk,
     commit_pending_travel,
@@ -39,6 +39,26 @@ from app.services.generation_manager import generation_manager
 from app.services.room_hub import room_hub
 
 router = APIRouter(prefix="/api/sessions", tags=["chat"])
+
+
+def _continue_human_kp_turn(
+    db: Session, session_id: str, game_session: GameSession,
+) -> None:
+    """按 KP 私有偏好运行 AI 队友，或直接通知真人 KP 接管。"""
+    if (
+        human_kp_service.auto_ai_teammates_enabled(game_session)
+        and session_service.get_ai_teammates(db, session_id)
+        and human_kp_service.has_unprocessed_player_turn(db, session_id, game_session)
+    ):
+        room_hub.broadcast(session_id, _make_chunk("generating"))
+        generation_manager.start(
+            session_id, human_kp_service.run_human_team_turn_generation(session_id),
+        )
+        return
+    room_hub.broadcast(
+        session_id,
+        _make_chunk("kp_turn_ready", "玩家回合已提交，等待真人 KP 处理"),
+    )
 
 
 @router.post("/{session_id}/ooc")
@@ -295,10 +315,7 @@ async def advance(
         if game_session.kp_mode == "human":
             # 真人 KP 不会进入 AI 生成管线，因此必须在此处完成前往动作的位置同步。
             commit_pending_travel(db, session_id)
-            room_hub.broadcast(
-                session_id,
-                _make_chunk("kp_turn_ready", "玩家回合已提交，等待真人 KP 处理"),
-            )
+            _continue_human_kp_turn(db, session_id, game_session)
         else:
             room_hub.broadcast(session_id, _make_chunk("generating"))
             generation_manager.start(session_id, run_chat_generation(session_id))
@@ -331,7 +348,7 @@ async def force_advance(
         commit_pending_travel(db, session_id)
     room_hub.broadcast(session_id, _make_chunk("turn_state", metadata={"confirmed_ids": [], "total": 0, "ready": True}))
     if game_session.kp_mode == "human":
-        room_hub.broadcast(session_id, _make_chunk("kp_turn_ready", "玩家回合已提交，等待真人 KP 处理"))
+        _continue_human_kp_turn(db, session_id, game_session)
     else:
         room_hub.broadcast(session_id, _make_chunk("generating"))
         generation_manager.start(session_id, run_chat_generation(session_id))

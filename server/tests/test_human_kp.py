@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, Character, EventLog, GameSession, Module, SessionParticipant
+from app.models import Base, Character, EventLog, Module
 from app.services import session_service
 from app.services.chat_service import execute_human_kp_action, initialize_human_session
 

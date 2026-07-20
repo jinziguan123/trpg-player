@@ -31,6 +31,10 @@ class GameSession(Base, UUIDMixin, TimestampMixin):
     )
     current_scene_id: Mapped[str | None] = mapped_column(nullable=True)
     world_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 真人 KP 私有工作区：笔记、自动队友偏好等。绝不加入 SessionRead，避免玩家端读取。
+    kp_state: Mapped[dict] = mapped_column(
+        JSON, default=dict, server_default="{}",
+    )
     turn_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     participants: Mapped[list["SessionParticipant"]] = relationship(

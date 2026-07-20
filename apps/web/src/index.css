@@ -431,6 +431,26 @@ body {
   padding: 0.4rem;
 }
 
+@media (max-width: 767px) {
+  .game-session-shell .sidebar {
+    display: none;
+  }
+
+  .game-session-shell .app-main {
+    width: 100%;
+    min-width: 0;
+    padding: 0.75rem;
+  }
+
+  .game-session-layout {
+    gap: 0;
+  }
+
+  .game-character-panel {
+    display: none;
+  }
+}
+
 /* ===== 游戏内信息字体作用域 =====
    「游戏内信息」= 游戏页的聊天消息 + 右侧角色卡。给容器统一挂 --font-game（圆润楷体），
    容器内除数值/等宽（.font-mono / --font-mono）与结构标题（--font-title）外的中文正文都变柔和。
