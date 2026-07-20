@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import (
     player_token,
     require_session_actor,
+    require_session_host,
     require_session_manager,
     require_session_token_actor,
     require_session_viewer,
@@ -153,6 +154,7 @@ def set_ready(
     token: str | None = Depends(player_token),
 ):
     """大厅：把当前玩家席位的准备态置位，并广播 lobby 刷新。"""
+    require_session_token_actor(db, session_id, token)
     try:
         session = session_service.set_ready(db, session_id, token, data.ready)
     except ValueError as e:
@@ -172,6 +174,9 @@ async def start_game(
     token: str | None = Depends(player_token),
 ):
     """大厅：房主开局。校验门槛后 setup→active，并触发开场生成。"""
+    require_session_host(
+        db, session_id, token, detail="只有房主可以开始游戏",
+    )
     try:
         session = session_service.start_game(db, session_id, token)
     except ValueError as e:
@@ -195,6 +200,9 @@ def kick_seat(
     token: str | None = Depends(player_token),
 ):
     """大厅：房主把某真人席位的玩家移出，席位回到空席。"""
+    require_session_host(
+        db, session_id, token, detail="只有房主可以移出玩家",
+    )
     try:
         session, name = session_service.kick_seat(db, session_id, seat_order, token)
     except ValueError as e:
@@ -362,11 +370,9 @@ async def promote_improvised_npc(
     """
     from app.services import promote_service
 
-    session = session_service.get_session(db, session_id)
-    if not session:
-        raise HTTPException(404, "会话不存在")
-    if not session_service.is_host(db, session_id, token):
-        raise HTTPException(403, "仅房主可转正临场 NPC")
+    require_session_host(
+        db, session_id, token, detail="仅房主可转正临场 NPC",
+    )
     name = (body or {}).get("name")
     if not name:
         raise HTTPException(400, "缺少 name")
@@ -430,8 +436,11 @@ def vote_end_module(
     if session.status == "ended":
         raise HTTPException(400, "本模组已结束")
     acting = data.acting_character_id if data else None
+    actor = require_session_actor(db, session_id, token, acting)
     try:
-        ended, vote = session_service.cast_end_vote(db, session_id, token, acting)
+        ended, vote = session_service.cast_end_vote_for_actor(
+            db, session_id, actor.id,
+        )
     except ValueError as e:
         raise HTTPException(403, str(e)) from e
     if ended:
@@ -455,11 +464,12 @@ def cancel_end_module_vote(
     token: str | None = Depends(player_token),
 ):
     """撤销进行中的结束投票（任一在场真人玩家可撤）。返回公开投票态。"""
-    if not session_service.get_session(db, session_id):
-        raise HTTPException(404, "会话不存在")
     acting = data.acting_character_id if data else None
+    actor = require_session_actor(db, session_id, token, acting)
     try:
-        vote = session_service.cancel_end_vote(db, session_id, token, acting)
+        vote = session_service.cancel_end_vote_for_actor(
+            db, session_id, actor.id,
+        )
     except ValueError as e:
         raise HTTPException(403, str(e)) from e
     room_hub.broadcast(session_id, _make_chunk("end_vote", metadata={"end_vote": vote}))

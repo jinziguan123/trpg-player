@@ -292,19 +292,25 @@ def end_vote_public(db: Session, session_id: str) -> dict:
 def cast_end_vote(
     db: Session, session_id: str, token: str | None, acting_character_id: str | None,
 ) -> tuple[bool, dict]:
-    """某真人玩家投票同意结束模组。返回 (是否已全体共识并结束, 公开投票态)。
+    """兼容入口：校验 token 后由纯业务投票函数执行。"""
+    actor = resolve_actor(db, session_id, token, acting_character_id)
+    return cast_end_vote_for_actor(db, session_id, actor.id)
 
-    经 resolve_actor 校验 token 拥有该角色（否则 ValueError）。所有当前有效投票者都同意时，
-    确定性置会话为 ended 并清票；有人中途离席，其票按当前投票者集合作废。
-    """
+
+def cast_end_vote_for_actor(
+    db: Session,
+    session_id: str,
+    actor_id: str,
+) -> tuple[bool, dict]:
+    """以已授权真人角色投票；返回 (是否结束, 公开投票态)。"""
     from app.services import world_state
-    actor = resolve_actor(db, session_id, token, acting_character_id)  # 校验 token 拥有该角色
+
     voter_ids = _end_voter_ids(db, session_id)
-    if actor.id not in voter_ids:
+    if actor_id not in voter_ids:
         raise ValueError("只有真人玩家可参与结束投票")
     session = db.get(GameSession, session_id)
     ev = dict((session.world_state or {}).get("end_vote") or {})
-    agreed = (set(ev.get("agreed") or []) | {actor.id}) & voter_ids
+    agreed = (set(ev.get("agreed") or []) | {actor_id}) & voter_ids
     world_state.set_key(db, session, "end_vote", {"agreed": sorted(agreed)})
     if agreed >= voter_ids:                                            # 全体真人一致同意
         update_session_status(db, session_id, "ended")
@@ -316,9 +322,21 @@ def cast_end_vote(
 def cancel_end_vote(
     db: Session, session_id: str, token: str | None, acting_character_id: str | None,
 ) -> dict:
-    """撤销进行中的结束投票（任一在场真人玩家可撤，避免误触卡住）。返回公开投票态。"""
+    """兼容入口：校验 token 后由纯业务撤票函数执行。"""
+    actor = resolve_actor(db, session_id, token, acting_character_id)
+    return cancel_end_vote_for_actor(db, session_id, actor.id)
+
+
+def cancel_end_vote_for_actor(
+    db: Session,
+    session_id: str,
+    actor_id: str,
+) -> dict:
+    """由已授权真人角色撤销进行中的结束投票。"""
     from app.services import world_state
-    resolve_actor(db, session_id, token, acting_character_id)  # 校验来自在场真人席
+
+    if actor_id not in _end_voter_ids(db, session_id):
+        raise ValueError("只有真人玩家可撤销结束投票")
     world_state.set_key(db, db.get(GameSession, session_id), "end_vote", None)
     return end_vote_public(db, session_id)
 

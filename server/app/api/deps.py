@@ -85,3 +85,19 @@ def require_session_manager(
     if not session_service.can_manage_session(db, session_id, token):
         raise HTTPException(403, detail)
     return session
+
+
+def require_session_host(
+    db: Session,
+    session_id: str,
+    token: str | None,
+    *,
+    detail: str = "只有房主可以执行该操作",
+) -> GameSession:
+    """统一严格房主授权；与 manager 不同，不放行无归属旧会话。"""
+    session = session_service.get_session(db, session_id)
+    if session is None:
+        raise HTTPException(404, "会话不存在")
+    if not session_service.is_host(db, session_id, token):
+        raise HTTPException(403, detail)
+    return session
