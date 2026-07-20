@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { api, getServerUrl } from '@/api/client'
 import { GiRollingDices, GiScrollUnfurled } from 'react-icons/gi'
@@ -7,11 +7,15 @@ import {
   Bot,
   ChevronDown,
   ChevronUp,
+  Crosshair,
   Image,
   Mic,
   MicOff,
+  Maximize2,
+  Move,
   NotebookPen,
   RefreshCw,
+  Search,
   Send,
   Swords,
   WandSparkles,
@@ -86,6 +90,7 @@ interface ModuleSource {
   handouts: unknown[]
   maps: unknown[]
   rag_status: string
+  chunks: Array<{ ordinal: number; scene_hint?: string | null; text: string }>
 }
 
 interface KpInputProps {
@@ -181,6 +186,18 @@ function imageUrl(src: string): string {
   return `${getServerUrl()}${src}`
 }
 
+function highlightText(text: string, query: string) {
+  const needle = query.trim()
+  if (!needle) return text
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const parts = text.split(new RegExp(`(${escaped})`, 'ig'))
+  return parts.map((part, index) => (
+    part.toLocaleLowerCase() === needle.toLocaleLowerCase()
+      ? <mark key={`${part}-${index}`} className="rounded px-0.5" style={{ background: 'var(--color-warning)', color: 'var(--color-bg-primary)' }}>{part}</mark>
+      : part
+  ))
+}
+
 export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
   const [collapsed, setCollapsed] = useState(false)
   const [tab, setTab] = useState<PanelTab>('tools')
@@ -191,6 +208,10 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
   const [source, setSource] = useState<ModuleSource | null>(null)
   const [sourceView, setSourceView] = useState<'raw' | 'parsed'>('raw')
   const [sourceOpen, setSourceOpen] = useState(false)
+  const [sourceQuery, setSourceQuery] = useState('')
+  const [sourceTargetOrdinal, setSourceTargetOrdinal] = useState<number | null>(null)
+  const [sourcePosition, setSourcePosition] = useState({ x: 0, y: 0 })
+  const [sourceSize, setSourceSize] = useState({ width: 640, height: 680 })
   const [notes, setNotes] = useState('')
   const [draftInstruction, setDraftInstruction] = useState('')
   const [draft, setDraft] = useState('')
@@ -206,6 +227,9 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
   const [previewSuggestionKey, setPreviewSuggestionKey] = useState('')
   const [dictating, setDictating] = useState(false)
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
+  const sourceChunkRefs = useRef<Record<number, HTMLDivElement | null>>({})
+  const sourceDragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null)
+  const sourceResizeRef = useRef<{ startX: number; startY: number; width: number; height: number } | null>(null)
 
   const refreshWorkspace = async () => {
     try {
@@ -217,18 +241,71 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
     }
   }
 
-  const openModuleSource = async (force = false) => {
+  const openModuleSource = async (force = false): Promise<ModuleSource | null> => {
     setSourceOpen(true)
-    if (source && !force) return
+    if (source && !force) return source
     setBusy('source')
     try {
-      setSource(await api.get<ModuleSource>(`/sessions/${sessionId}/kp/source`))
+      const loaded = await api.get<ModuleSource>(`/sessions/${sessionId}/kp/source`)
+      setSource(loaded)
+      return loaded
     } catch (error) {
       setSourceOpen(false)
       toast.error(error instanceof Error ? error.message : '模组资料加载失败')
+      return null
     } finally {
       setBusy('')
     }
+  }
+
+  const onSourceDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest('button, input')) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    sourceDragRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: sourcePosition.x,
+      originY: sourcePosition.y,
+    }
+  }
+
+  const onSourceDragMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = sourceDragRef.current
+    if (!drag) return
+    setSourcePosition({
+      x: drag.originX + event.clientX - drag.startX,
+      y: drag.originY + event.clientY - drag.startY,
+    })
+  }
+
+  const onSourceDragEnd = () => {
+    sourceDragRef.current = null
+  }
+
+  const onSourceResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    sourceResizeRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      width: sourceSize.width,
+      height: sourceSize.height,
+    }
+  }
+
+  const onSourceResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = sourceResizeRef.current
+    if (!resize) return
+    const maxWidth = typeof window === 'undefined' ? 960 : Math.max(360, window.innerWidth - 32)
+    const maxHeight = typeof window === 'undefined' ? 900 : Math.max(320, window.innerHeight - 96)
+    setSourceSize({
+      width: Math.min(maxWidth, Math.max(360, resize.width + event.clientX - resize.startX)),
+      height: Math.min(maxHeight, Math.max(320, resize.height + event.clientY - resize.startY)),
+    })
+  }
+
+  const onSourceResizeEnd = () => {
+    sourceResizeRef.current = null
   }
 
   useEffect(() => {
@@ -239,6 +316,24 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
   useEffect(() => {
     if (tab === 'director' || tab === 'assets') void refreshWorkspace()
   }, [tab, turnReady])
+
+  useEffect(() => {
+    sourceChunkRefs.current = {}
+    setSourcePosition({ x: 0, y: 0 })
+    setSourceSize({ width: 640, height: 680 })
+    setSourceQuery('')
+    setSourceTargetOrdinal(null)
+    setSource(null)
+    setSourceOpen(false)
+  }, [sessionId])
+
+  useEffect(() => {
+    if (!sourceOpen || sourceView !== 'parsed' || sourceTargetOrdinal === null) return
+    const frame = window.requestAnimationFrame(() => {
+      sourceChunkRefs.current[sourceTargetOrdinal]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [sourceOpen, sourceView, sourceTargetOrdinal, source])
 
   const setField = (key: string, value: string) => {
     setFields((current) => ({ ...current, [key]: value }))
@@ -342,6 +437,15 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
     } finally {
       setBusy('')
     }
+  }
+
+  const openModuleAtHit = async (hit: LookupHit) => {
+    setLookupOpen(false)
+    setSourceView('parsed')
+    setSourceQuery(hit.text.slice(0, 120))
+    setSourceTargetOrdinal(typeof hit.ordinal === 'number' ? hit.ordinal : null)
+    const loaded = await openModuleSource()
+    if (!loaded?.chunks?.length) setSourceView('raw')
   }
 
   const updateAutoTeammates = async (enabled: boolean) => {
@@ -460,6 +564,13 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
     ['手书', source?.handouts],
     ['地图', source?.maps],
   ]
+  const normalizedSourceQuery = sourceQuery.trim().toLocaleLowerCase()
+  const sourceChunks = source?.chunks || []
+  const visibleSourceChunks = sourceChunks.filter((chunk) => (
+    !normalizedSourceQuery
+    || chunk.text.toLocaleLowerCase().includes(normalizedSourceQuery)
+    || String(chunk.scene_hint || '').toLocaleLowerCase().includes(normalizedSourceQuery)
+  ))
 
   return (
     <section
@@ -715,14 +826,26 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
 
       {sourceOpen && !collapsed && (
         <aside
-          className="fixed right-4 top-20 z-50 flex h-[min(78vh,720px)] w-[min(44rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-md border shadow-xl backdrop-blur-md"
+          className="fixed right-4 top-20 z-50 flex max-h-[calc(100vh-5rem)] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-md border shadow-xl backdrop-blur-md"
           style={{
             background: 'color-mix(in srgb, var(--color-bg-secondary) 88%, transparent)',
             borderColor: 'var(--color-border-strong)',
+            width: `${sourceSize.width}px`,
+            height: `${sourceSize.height}px`,
+            transform: `translate3d(${sourcePosition.x}px, ${sourcePosition.y}px, 0)`,
           }}
           aria-label="KP 模组资料"
         >
-          <div className="flex items-center gap-2 border-b px-3 py-2" style={{ borderColor: 'var(--color-border)' }}>
+          <div
+            className="flex cursor-move touch-none items-center gap-2 border-b px-3 py-2"
+            style={{ borderColor: 'var(--color-border)' }}
+            onPointerDown={onSourceDragStart}
+            onPointerMove={onSourceDragMove}
+            onPointerUp={onSourceDragEnd}
+            onPointerCancel={onSourceDragEnd}
+            title="拖动资料窗"
+          >
+            <Move size={14} style={{ color: 'var(--color-text-secondary)' }} />
             <BookOpen size={15} style={{ color: 'var(--color-text-accent)' }} />
             <span className="min-w-0 flex-1 truncate text-sm font-semibold">{source?.title || '模组资料'}</span>
             <button type="button" onClick={() => void openModuleSource(true)} disabled={busy === 'source'} className="btn-secondary !p-1.5" title="刷新模组资料">
@@ -737,16 +860,53 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
             <button type="button" onClick={() => setSourceView('parsed')} className="btn-secondary !px-2 !py-1 text-xs" style={sourceView === 'parsed' ? { color: 'var(--color-text-accent)' } : undefined} role="tab" aria-selected={sourceView === 'parsed'}>解析内容</button>
             <span className="ml-auto text-[11px]" style={{ color: 'var(--color-text-secondary)' }}>仅 KP 可见</span>
           </div>
+          <div className="flex items-center gap-2 border-b px-3 py-2" style={{ borderColor: 'var(--color-border)' }}>
+            <Search size={14} style={{ color: 'var(--color-text-secondary)' }} />
+            <input
+              value={sourceQuery}
+              onChange={(event) => { setSourceQuery(event.target.value); setSourceTargetOrdinal(null) }}
+              placeholder="搜索原文或解析内容"
+              className="input min-w-0 flex-1 text-xs"
+              aria-label="搜索模组资料"
+            />
+            {sourceQuery && <button type="button" onClick={() => { setSourceQuery(''); setSourceTargetOrdinal(null) }} className="btn-secondary !p-1.5" title="清除搜索"><X size={13} /></button>}
+            <span className="shrink-0 text-[11px]" style={{ color: 'var(--color-text-secondary)' }}>
+              {sourceView === 'parsed' && sourceChunks.length ? `${visibleSourceChunks.length}/${sourceChunks.length} 段` : '全文'}
+            </span>
+          </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
             {!source ? (
               <div className="py-12 text-center text-sm" style={{ color: 'var(--color-text-secondary)' }}>正在加载模组资料…</div>
             ) : sourceView === 'raw' ? (
-              <pre className="whitespace-pre-wrap text-xs leading-6" style={{ color: 'var(--color-text-primary)' }}>{source.raw_content || source.description || '该模组没有保存原文。'}</pre>
+              <pre className="whitespace-pre-wrap text-xs leading-6" style={{ color: 'var(--color-text-primary)' }}>{highlightText(source.raw_content || source.description || '该模组没有保存原文。', sourceQuery)}</pre>
             ) : (
               <div className="space-y-3">
+                {sourceChunks.length > 0 && (
+                  <section className="border-b pb-3" style={{ borderColor: 'var(--color-border)' }}>
+                    <div className="mb-1 flex items-center gap-2">
+                      <h4 className="min-w-0 flex-1 text-xs font-semibold" style={{ color: 'var(--color-text-accent)' }}>原文分段</h4>
+                      <span className="text-[11px]" style={{ color: 'var(--color-text-secondary)' }}>按检索结果定位</span>
+                    </div>
+                    {visibleSourceChunks.length ? visibleSourceChunks.map((chunk) => (
+                      <div
+                        key={chunk.ordinal}
+                        ref={(element) => { sourceChunkRefs.current[chunk.ordinal] = element }}
+                        className="mb-2 rounded border p-2 last:mb-0"
+                        style={{
+                          borderColor: chunk.ordinal === sourceTargetOrdinal ? 'var(--color-accent)' : 'var(--color-border)',
+                          background: chunk.ordinal === sourceTargetOrdinal ? 'color-mix(in srgb, var(--color-accent) 12%, transparent)' : 'transparent',
+                        }}
+                      >
+                        <div className="mb-1 text-[11px]" style={{ color: 'var(--color-text-secondary)' }}>第 {chunk.ordinal + 1} 段{chunk.scene_hint ? ` · ${sceneLabel(chunk.scene_hint)}` : ''}</div>
+                        <pre className="whitespace-pre-wrap text-xs leading-6" style={{ color: 'var(--color-text-primary)' }}>{highlightText(chunk.text, sourceQuery)}</pre>
+                      </div>
+                    )) : <div className="py-4 text-center text-xs" style={{ color: 'var(--color-text-secondary)' }}>没有匹配的原文分段。</div>}
+                  </section>
+                )}
                 {sourceSections.map(([label, value]) => {
                   const text = typeof value === 'string' ? value : JSON.stringify(value ?? {}, null, 2)
                   if (!text || text === '{}' || text === '[]') return null
+                  if (normalizedSourceQuery && !text.toLocaleLowerCase().includes(normalizedSourceQuery)) return null
                   return (
                     <section key={label} className="border-b pb-3" style={{ borderColor: 'var(--color-border)' }}>
                       <div className="mb-1 flex items-center gap-2">
@@ -764,12 +924,23 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
                           <Image size={11} /> 用于配图
                         </button>
                       </div>
-                      <pre className="whitespace-pre-wrap text-xs leading-6" style={{ color: 'var(--color-text-primary)' }}>{text}</pre>
+                      <pre className="whitespace-pre-wrap text-xs leading-6" style={{ color: 'var(--color-text-primary)' }}>{highlightText(text, sourceQuery)}</pre>
                     </section>
                   )
                 })}
               </div>
             )}
+          </div>
+          <div
+            className="absolute bottom-1 right-1 flex h-5 w-5 cursor-se-resize touch-none items-end justify-end"
+            onPointerDown={onSourceResizeStart}
+            onPointerMove={onSourceResizeMove}
+            onPointerUp={onSourceResizeEnd}
+            onPointerCancel={onSourceResizeEnd}
+            title="调整资料窗大小"
+            aria-label="调整资料窗大小"
+          >
+            <Maximize2 size={13} style={{ color: 'var(--color-text-secondary)' }} />
           </div>
         </aside>
       )}
@@ -792,9 +963,10 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
             <div className="max-h-[70vh] space-y-3 overflow-y-auto p-4">
               {lookupHits.length ? lookupHits.map((hit, index) => (
                 <article key={`${hit.page || hit.scene_hint || hit.ordinal || ''}-${index}`} className="border-l-2 pl-3 text-xs" style={{ borderColor: 'var(--color-border-strong)', color: 'var(--color-text-secondary)' }}>
-                  <div className="mb-1 font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+                  <div className="mb-1 flex items-center gap-2 font-semibold" style={{ color: 'var(--color-text-primary)' }}>
                     {lookupScope === 'rule' ? (hit.page ? `规则书第 ${hit.page} 页` : '规则书片段') : sceneLabel(hit.scene_hint)}
                     {typeof hit.score === 'number' && <span className="ml-2 font-normal opacity-70">相关度 {hit.score.toFixed(3)}</span>}
+                    {lookupScope === 'module' && <button type="button" onClick={() => void openModuleAtHit(hit)} className="btn-secondary ml-auto inline-flex shrink-0 items-center gap-1 !px-1.5 !py-0.5 text-[11px]" title="在模组资料窗定位"><Crosshair size={11} />定位到资料</button>}
                   </div>
                   <div className="whitespace-pre-wrap leading-6">{hit.text}</div>
                 </article>

@@ -12,6 +12,7 @@ from app.schemas.kp import (
     KpDraftRequest,
     KpImagePreviewRequest,
     KpImagePublishRequest,
+    KpModuleSource,
     KpPlanRequest,
     KpWorkspaceUpdate,
 )
@@ -49,7 +50,7 @@ def get_workspace(
     return human_kp_service.workspace_payload(db, session_id, game_session, module)
 
 
-@router.get("/{session_id}/kp/source")
+@router.get("/{session_id}/kp/source", response_model=KpModuleSource)
 def get_module_source(
     session_id: str,
     db: Session = Depends(get_db),
@@ -57,7 +58,7 @@ def get_module_source(
 ):
     """按需读取真人 KP 专属的模组原文与解析结果。"""
     _game_session, module = _kp_context(db, session_id, token)
-    return human_kp_service.module_source_payload(module)
+    return human_kp_service.module_source_payload(db, module)
 
 
 @router.patch("/{session_id}/kp/workspace")

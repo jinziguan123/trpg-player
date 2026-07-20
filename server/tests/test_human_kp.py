@@ -75,6 +75,33 @@ def test_human_kp_action_publishes_narration_without_llm(tmp_path):
     assert event.metadata_["kp_manual"] is True
 
 
+def test_human_kp_action_uses_seated_player_when_primary_is_empty(tmp_path):
+    db = _db(tmp_path)()
+    module = Module(title="真人 KP 空主角席", rule_system="coc", scenes=[])
+    hero = Character(name="临时调查员", rule_system="coc", is_player=True)
+    db.add_all([module, hero])
+    db.commit()
+    session = session_service.create_session(
+        db, module.id,
+        [{"character_id": None, "role": "human", "is_primary": True}],
+        creator_token="kp-token", kp_mode="human",
+    )
+    player_seat = next(
+        p for p in session_service.get_participants(db, session.id)
+        if p.role == "human"
+    )
+    session_service.claim_seat(
+        db, session.id, player_seat.seat_order, hero.id, "player-token",
+    )
+    db.refresh(session)
+
+    chunks, result = asyncio.run(execute_human_kp_action(
+        db, session.id, session, module, "narration", {"content": "走廊尽头传来脚步声。"},
+    ))
+
+    assert chunks and "已发布" in result
+
+
 def test_human_kp_open_player_seat_can_start_without_counting_kp_seat(tmp_path):
     db_factory = _db(tmp_path)
     db = db_factory()

@@ -2378,6 +2378,48 @@ export interface components {
             /** Url */
             url: string;
         };
+        /** KpModuleChunk */
+        KpModuleChunk: {
+            /** Ordinal */
+            ordinal: number;
+            /** Scene Hint */
+            scene_hint?: string | null;
+            /** Text */
+            text: string;
+        };
+        /** KpModuleSource */
+        KpModuleSource: {
+            /** Chunks */
+            chunks: components["schemas"]["KpModuleChunk"][];
+            /** Clues */
+            clues: unknown[];
+            /** Description */
+            description: string;
+            /** Handouts */
+            handouts: unknown[];
+            /** Id */
+            id: string;
+            /** Maps */
+            maps: unknown[];
+            /** Npcs */
+            npcs: unknown[];
+            /** Rag Status */
+            rag_status: string;
+            /** Raw Content */
+            raw_content: string;
+            /** Scenes */
+            scenes: unknown[];
+            /** Title */
+            title: string;
+            /** Triggers */
+            triggers: unknown[];
+            /** Truth */
+            truth: string;
+            /** World Setting */
+            world_setting: {
+                [key: string]: unknown;
+            };
+        };
         /** KpPlanRequest */
         KpPlanRequest: {
             /**
@@ -5171,7 +5213,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["KpModuleSource"];
                 };
             };
             /** @description Validation Error */

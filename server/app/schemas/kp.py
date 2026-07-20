@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -25,3 +27,26 @@ class KpImagePublishRequest(BaseModel):
     url: str = Field(min_length=1, max_length=300)
     title: str = Field(default="KP 配图", max_length=100)
     suggestion_key: str = Field(default="", max_length=300)
+
+
+class KpModuleChunk(BaseModel):
+    ordinal: int
+    scene_hint: str | None = None
+    text: str
+
+
+class KpModuleSource(BaseModel):
+    id: str
+    title: str
+    description: str
+    raw_content: str
+    world_setting: dict[str, Any]
+    truth: str
+    scenes: list[Any]
+    npcs: list[Any]
+    clues: list[Any]
+    triggers: list[Any]
+    handouts: list[Any]
+    maps: list[Any]
+    rag_status: str
+    chunks: list[KpModuleChunk]

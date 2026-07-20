@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import get_db
 from app.main import app
-from app.models import Base, Character, EventLog, Module
+from app.models import Base, Character, EventLog, Module, ModuleChunk
 from app.schemas.session import SessionRead
 from app.services import chat_service, human_kp_service, image_store, session_service
 
@@ -91,12 +91,18 @@ def test_workspace_without_player_character_returns_warning(tmp_path):
 def test_module_source_returns_original_and_parsed_content(tmp_path):
     db = _db(tmp_path)()
     module, _hero, _ally, _session = _seed(db)
+    db.add_all([
+        ModuleChunk(module_id=module.id, ordinal=1, scene_hint="s1", text="第二段", embedding=b""),
+        ModuleChunk(module_id=module.id, ordinal=0, scene_hint="s1", text="第一段", embedding=b""),
+    ])
+    db.commit()
 
-    source = human_kp_service.module_source_payload(module)
+    source = human_kp_service.module_source_payload(db, module)
 
     assert source["raw_content"] == "第一幕：门厅的吊灯在午夜熄灭。"
     assert source["scenes"][0]["id"] == "s1"
     assert source["handouts"][0]["content"] == "午夜前不要开门。"
+    assert [chunk["ordinal"] for chunk in source["chunks"]] == [0, 1]
 
 
 def test_advisor_draft_and_plan_never_write_public_events(tmp_path, monkeypatch):

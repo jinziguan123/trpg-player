@@ -1132,6 +1132,123 @@
         "title": "KpImagePublishRequest",
         "type": "object"
       },
+      "KpModuleChunk": {
+        "properties": {
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "scene_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Hint"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ordinal",
+          "text"
+        ],
+        "title": "KpModuleChunk",
+        "type": "object"
+      },
+      "KpModuleSource": {
+        "properties": {
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/KpModuleChunk"
+            },
+            "title": "Chunks",
+            "type": "array"
+          },
+          "clues": {
+            "items": {},
+            "title": "Clues",
+            "type": "array"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "handouts": {
+            "items": {},
+            "title": "Handouts",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "maps": {
+            "items": {},
+            "title": "Maps",
+            "type": "array"
+          },
+          "npcs": {
+            "items": {},
+            "title": "Npcs",
+            "type": "array"
+          },
+          "rag_status": {
+            "title": "Rag Status",
+            "type": "string"
+          },
+          "raw_content": {
+            "title": "Raw Content",
+            "type": "string"
+          },
+          "scenes": {
+            "items": {},
+            "title": "Scenes",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "triggers": {
+            "items": {},
+            "title": "Triggers",
+            "type": "array"
+          },
+          "truth": {
+            "title": "Truth",
+            "type": "string"
+          },
+          "world_setting": {
+            "additionalProperties": true,
+            "title": "World Setting",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "raw_content",
+          "world_setting",
+          "truth",
+          "scenes",
+          "npcs",
+          "clues",
+          "triggers",
+          "handouts",
+          "maps",
+          "rag_status",
+          "chunks"
+        ],
+        "title": "KpModuleSource",
+        "type": "object"
+      },
       "KpPlanRequest": {
         "properties": {
           "focus": {
@@ -5587,7 +5704,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/KpModuleSource"
+                }
               }
             },
             "description": "Successful Response"

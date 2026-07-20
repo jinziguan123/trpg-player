@@ -15,7 +15,7 @@ from app.ai import director_signals, turn_planner
 from app.ai.context import build_kp_context
 from app.ai.llm_factory import get_fast_llm, get_llm
 from app.models.character import Character
-from app.models.module import Module
+from app.models.module import Module, ModuleChunk
 from app.models.session import GameSession
 from app.services import (
     image_store,
@@ -35,9 +35,10 @@ _IMAGE_STYLE = (
 _CONTROL_TAG_RE = re.compile(r"\[(?:[A-Z_]{3,})(?::[^\]]*)?\]")
 
 
-def _party(
+def resolve_player_character(
     db: Session, session_id: str, game_session: GameSession,
-) -> tuple[Character, list[Character]]:
+) -> Character | None:
+    """解析真人 KP 上下文中的玩家角色，兼容 KP 独占 KP 席位的会话。"""
     player = (
         db.get(Character, game_session.player_character_id)
         if game_session.player_character_id
@@ -53,6 +54,13 @@ def _party(
         ]
         if participant_ids:
             player = db.get(Character, participant_ids[0])
+    return player
+
+
+def _party(
+    db: Session, session_id: str, game_session: GameSession,
+) -> tuple[Character, list[Character]]:
+    player = resolve_player_character(db, session_id, game_session)
     if player is None:
         raise ValueError("会话缺少主角角色")
     others = session_service.get_party_members(
@@ -175,8 +183,14 @@ def workspace_payload(
     }
 
 
-def module_source_payload(module: Module) -> dict:
+def module_source_payload(db: Session, module: Module) -> dict:
     """返回 KP 专属的模组原文与解析结果，避免暴露给普通玩家接口。"""
+    chunks = (
+        db.query(ModuleChunk.ordinal, ModuleChunk.scene_hint, ModuleChunk.text)
+        .filter(ModuleChunk.module_id == module.id)
+        .order_by(ModuleChunk.ordinal.asc())
+        .all()
+    )
     return {
         "id": module.id,
         "title": module.title,
@@ -191,6 +205,14 @@ def module_source_payload(module: Module) -> dict:
         "handouts": module.handouts or [],
         "maps": module.maps or [],
         "rag_status": module.rag_status or "",
+        "chunks": [
+            {
+                "ordinal": ordinal,
+                "scene_hint": scene_hint,
+                "text": text,
+            }
+            for ordinal, scene_hint, text in chunks
+        ],
     }
 
 

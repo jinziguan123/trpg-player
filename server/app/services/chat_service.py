@@ -4272,7 +4272,9 @@ async def execute_human_kp_action(
     这里不生成 AI 叙事，也不复制骰子、场景、战斗和库存规则；只负责把真人 KP 的
     触发转换为现有执行器调用，并返回待广播的 chunks 与简短结果。
     """
-    player_char = db.get(Character, game_session.player_character_id)
+    player_char = human_kp_service.resolve_player_character(
+        db, session_id, game_session,
+    )
     if player_char is None:
         raise ValueError("会话缺少主角角色，无法执行 KP 动作")
     teammates = session_service.get_party_members(
