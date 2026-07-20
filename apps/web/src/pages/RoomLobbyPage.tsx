@@ -48,6 +48,7 @@ export function RoomLobbyPage() {
   const [moduleDesc, setModuleDesc] = useState('')
   const [myChars, setMyChars] = useState<Character[]>([])
   const [localChars, setLocalChars] = useState<Character[]>([])
+  const [characterHint, setCharacterHint] = useState('')
   const [chat, setChat] = useState<ChatLine[]>([])
   const [chatInput, setChatInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -61,6 +62,9 @@ export function RoomLobbyPage() {
   const myNameRef = useRef<string | null>(null)
   const myPlayerSeat = room?.participants.find((p) => p.is_mine && p.role !== 'kp') ?? null
   const myKpSeat = room?.participants.find((p) => p.is_mine && p.role === 'kp') ?? null
+  const myChatSeat = room?.participants.find(
+    (p) => p.is_mine && (p.role === 'human' || p.role === 'kp'),
+  ) ?? null
   myNameRef.current = myPlayerSeat?.character_name ?? null
 
   const mySeat = myPlayerSeat
@@ -225,7 +229,11 @@ export function RoomLobbyPage() {
     if (!room) return
     setBusy(true)
     try {
-      const draft = await api.post<Record<string, unknown>>('/characters/ai-generate', { module_id: room.module_id, hint: '', is_player: true })
+      const draft = await api.post<Record<string, unknown>>('/characters/ai-generate', {
+        module_id: room.module_id,
+        hint: characterHint.trim(),
+        is_player: true,
+      })
       const created = await api.post<Character>('/characters', {
         name: draft.name, module_id: room.module_id, rule_system: (draft.rule_system as string) || 'coc',
         is_player: true, age: draft.age ?? 25, base_attributes: draft.base_attributes,
@@ -263,16 +271,19 @@ export function RoomLobbyPage() {
 
   const sendChat = async () => {
     const text = chatInput.trim()
-    if (!text || !room || !mySeat?.character_id) return
+    if (!text || !room || !myChatSeat) return
     setChatInput('')
     try {
-      await api.post(`/sessions/${room.id}/ooc`, { content: text, acting_character_id: mySeat.character_id })
+      await api.post(`/sessions/${room.id}/ooc`, {
+        content: text,
+        ...(myChatSeat.character_id ? { acting_character_id: myChatSeat.character_id } : {}),
+      })
     } catch (e) { toast.error(e instanceof Error ? e.message : '发送失败') }
   }
 
   const onChatInput = (v: string) => {
     setChatInput(v)
-    if (!room || !mySeat?.character_id) return
+    if (!room || !myChatSeat) return
     const now = Date.now()
     if (now - lastTypingSent.current > 2000) {
       lastTypingSent.current = now
@@ -464,6 +475,14 @@ export function RoomLobbyPage() {
                   </div>
                 )}
                 <p className="text-sm mb-2" style={{ color: 'var(--color-text-secondary)' }}>或选择玩家角色入座空席：</p>
+                <textarea
+                  value={characterHint}
+                  onChange={(e) => setCharacterHint(e.target.value)}
+                  disabled={busy}
+                  rows={2}
+                  placeholder="角色提示词（可选）：职业、性格、背景或你想扮演的概念"
+                  className="input mb-2 w-full resize-y text-sm"
+                />
                 <div className="flex flex-wrap gap-2">
                   {myChars.map((c) => (
                     <button key={c.id} onClick={() => claimWithChar(c.id)} disabled={busy}
@@ -527,11 +546,11 @@ export function RoomLobbyPage() {
                 if (e.nativeEvent.isComposing) return
                 if (e.key === 'Enter') { e.preventDefault(); sendChat() }
               }}
-              placeholder={mySeat?.character_id ? '说点什么…' : '选择角色后可发言'}
-              disabled={!mySeat?.character_id}
+              placeholder={myChatSeat ? '说点什么…' : '加入房间后可发言'}
+              disabled={!myChatSeat}
               className="input flex-1"
             />
-            <button onClick={sendChat} disabled={!mySeat?.character_id || !chatInput.trim()} className="btn-primary">发送</button>
+            <button onClick={sendChat} disabled={!myChatSeat || !chatInput.trim()} className="btn-primary">发送</button>
           </div>
         </div>
 

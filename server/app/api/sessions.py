@@ -7,6 +7,7 @@ from app.api.deps import (
     require_session_actor,
     require_session_host,
     require_session_manager,
+    require_session_ooc_actor,
     require_session_token_actor,
     require_session_viewer,
 )
@@ -260,10 +261,10 @@ def typing(
     token: str | None = Depends(player_token),
 ):
     """大厅/游戏：广播'正在输入'（短暂、ephemeral，不入库）。"""
-    char = require_session_token_actor(db, session_id, token)
+    _actor_id, actor_name = require_session_ooc_actor(db, session_id, token, None)
     room_hub.broadcast(
         session_id,
-        _make_chunk("typing", actor_name=char.name),
+        _make_chunk("typing", actor_name=actor_name),
     )
     return {"ok": True}
 

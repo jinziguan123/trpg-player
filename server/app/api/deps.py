@@ -59,6 +59,21 @@ def require_session_actor(
         _raise_actor_error(error)
 
 
+def require_session_ooc_actor(
+    db: Session,
+    session_id: str,
+    token: str | None,
+    acting_character_id: str | None,
+) -> tuple[str | None, str]:
+    """大厅 OOC 授权：角色可选，但必须属于当前真人或 KP 席位。"""
+    try:
+        return session_service.resolve_ooc_actor(
+            db, session_id, token, acting_character_id,
+        )
+    except ValueError as error:
+        _raise_actor_error(error)
+
+
 def require_session_token_actor(
     db: Session,
     session_id: str,

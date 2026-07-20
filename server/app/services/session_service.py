@@ -655,6 +655,43 @@ def resolve_actor(
     return char
 
 
+def resolve_ooc_actor(
+    db: Session,
+    session_id: str,
+    token: str | None,
+    acting_character_id: str | None,
+) -> tuple[str | None, str]:
+    """解析大厅 OOC 身份；允许已认领但尚未绑定角色的真人席位发言。"""
+    if acting_character_id:
+        char = resolve_actor(db, session_id, token, acting_character_id)
+        return char.id, char.name
+
+    session = db.get(GameSession, session_id)
+    if not session:
+        raise ValueError("房间不存在")
+
+    parts = get_participants(db, session_id)
+    if token:
+        seat = next(
+            (
+                p for p in parts
+                if p.owner_token == token and p.role in ("human", "kp")
+            ),
+            None,
+        )
+        if seat:
+            if seat.character_id:
+                char = db.get(Character, seat.character_id)
+                if not char:
+                    raise ValueError("角色不存在")
+                return char.id, char.name
+            return None, "真人 KP" if seat.role == "kp" else "玩家"
+
+    # 保留纯本机旧会话的无 token 兼容行为。
+    char = resolve_actor(db, session_id, token, None)
+    return char.id, char.name
+
+
 def resolve_token_actor(
     db: Session,
     session_id: str,

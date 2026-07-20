@@ -92,3 +92,96 @@ def test_ooc_endpoint_persists_without_generation(db_factory):
         db2.close()
     finally:
         app.dependency_overrides.clear()
+
+
+def test_ooc_endpoint_allows_reserved_human_kp_without_character(db_factory):
+    engine_session = db_factory
+
+    def override_get_db():
+        d = engine_session()
+        try:
+            yield d
+        finally:
+            d.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        db = engine_session()
+        module = Module(title="真人 KP 模组", rule_system="coc", npcs=[], scenes=[])
+        db.add(module)
+        db.commit()
+        session = session_service.create_session(
+            db,
+            module.id,
+            [{"character_id": None, "role": "human", "is_primary": True}],
+            creator_token="kp-token",
+            kp_mode="human",
+        )
+        sid = session.id
+        db.close()
+
+        client = TestClient(app)
+        response = client.post(
+            f"/api/sessions/{sid}/ooc",
+            json={"content": "（先确认一下规则）"},
+            headers={"X-Player-Token": "kp-token"},
+        )
+        assert response.status_code == 200, response.text
+        typing = client.post(
+            f"/api/sessions/{sid}/typing",
+            headers={"X-Player-Token": "kp-token"},
+        )
+        assert typing.status_code == 200, typing.text
+
+        db2 = engine_session()
+        event = session_service.get_session_events(db2, sid)[-1]
+        assert event.actor_id is None and event.actor_name == "真人 KP"
+        db2.close()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ooc_endpoint_allows_reserved_player_without_character(db_factory):
+    engine_session = db_factory
+
+    def override_get_db():
+        d = engine_session()
+        try:
+            yield d
+        finally:
+            d.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        db = engine_session()
+        module = Module(title="访客大厅模组", rule_system="coc", npcs=[], scenes=[])
+        hero = Character(name="房主角色", rule_system="coc", is_player=True)
+        db.add_all([module, hero])
+        db.commit()
+        session = session_service.create_session(
+            db,
+            module.id,
+            [
+                {"character_id": hero.id, "role": "human", "is_primary": True},
+                {"character_id": None, "role": "human"},
+            ],
+            creator_token="host-token",
+        )
+        session_service.join_session(db, session.id, "guest-token")
+        sid = session.id
+        db.close()
+
+        client = TestClient(app)
+        response = client.post(
+            f"/api/sessions/{sid}/ooc",
+            json={"content": "（我想生成一名记者）"},
+            headers={"X-Player-Token": "guest-token"},
+        )
+        assert response.status_code == 200, response.text
+
+        db2 = engine_session()
+        event = session_service.get_session_events(db2, sid)[-1]
+        assert event.actor_id is None and event.actor_name == "玩家"
+        db2.close()
+    finally:
+        app.dependency_overrides.clear()

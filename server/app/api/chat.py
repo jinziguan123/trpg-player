@@ -6,6 +6,7 @@ from app.api.deps import (
     require_session_actor,
     require_session_kp,
     require_session_manager,
+    require_session_ooc_actor,
     require_session_token_actor,
     require_session_viewer,
 )
@@ -72,7 +73,7 @@ def post_ooc(
     game_session = db.get(GameSession, session_id)
     if not game_session:
         raise HTTPException(404, "会话不存在")
-    actor = require_session_actor(
+    actor_id, actor_name = require_session_ooc_actor(
         db, session_id, token, data.acting_character_id,
     )
 
@@ -80,7 +81,7 @@ def post_ooc(
     text = ooc or data.content.strip()
     ev = session_service.add_event(
         db, session_id, "ooc", text,
-        actor_id=actor.id, actor_name=actor.name,
+        actor_id=actor_id, actor_name=actor_name,
     )
     room_hub.broadcast(session_id, event_to_chunk(ev))
     return {"ok": True, "id": ev.id}
