@@ -50,11 +50,13 @@ def _target(module: Module, kind: str, item_id: str, field: str | None = None) -
     if config is None:
         raise ValueError("不支持的图片类型")
     list_field, expected_field, prompt_sys = config
-    if field and field != expected_field:
+    allowed_fields = ("portrait", "encounter_image") if kind == "npc" else (expected_field,)
+    if field and field not in allowed_fields:
         raise ValueError("图片字段与类型不匹配")
+    target_field = field or expected_field
     for item in getattr(module, list_field, None) or []:
         if isinstance(item, dict) and str(item.get("id") or "") == str(item_id):
-            return item, list_field, expected_field, prompt_sys
+            return item, list_field, target_field, prompt_sys
     raise LookupError("模组图片条目不存在")
 
 

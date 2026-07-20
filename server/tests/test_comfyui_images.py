@@ -281,6 +281,7 @@ def test_scene_illustration_first_entry_generates_and_caches(db_factory, monkeyp
     assert len(cards) == 1
     meta = cards[0].metadata_
     assert meta["icat"] == "scene" and meta["title"] == "废弃教堂"
+    assert meta["image_kind"] == "scene" and meta["image_item_id"] == "s1"
     url = meta.get("image")
     assert url and url.startswith("/api/images/")
     assert any('"event_patch"' in c and url in c for c in sent)
@@ -407,6 +408,7 @@ def test_clue_illustration_card_only_on_first_reveal(db_factory, monkeypatch, tm
     assert len(cards) == 1
     meta = cards[0].metadata_
     assert meta["icat"] == "clue" and meta["title"] == "血字日记"
+    assert meta["image_kind"] == "clue" and meta["image_item_id"] == "clue_1"
     assert "发现线索" in cards[0].content
     url = meta.get("image")
     assert url and url.startswith("/api/images/")

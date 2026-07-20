@@ -9,11 +9,20 @@ interface ModuleImageProps {
   moduleId?: string
   kind: ModuleImageKind
   itemId: string
-  field: 'image' | 'portrait'
+  field: 'image' | 'portrait' | 'encounter_image'
   alt: string
   aspectRatio?: string
   objectFit?: 'cover' | 'contain'
   className?: string
+  onRegenerated?: (url: string) => void
+}
+
+export interface RepairableImageOptions {
+  src?: string
+  moduleId?: string
+  kind: ModuleImageKind
+  itemId: string
+  field: 'image' | 'portrait' | 'encounter_image'
   onRegenerated?: (url: string) => void
 }
 
@@ -40,6 +49,42 @@ export function ModuleImage({
   className = '',
   onRegenerated,
 }: ModuleImageProps) {
+  const image = useRepairableImage({ src, moduleId, kind, itemId, field, onRegenerated })
+  if (!src || !image.imageUrl) return null
+
+  return (
+    <div
+      className={`relative overflow-hidden rounded-md ${className}`}
+      style={{ aspectRatio, border: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)' }}
+    >
+      {image.status !== 'failed' && (
+        <img
+          src={image.imageUrl}
+          alt={alt}
+          className="block h-full w-full"
+          style={{ objectFit, opacity: image.status === 'ready' ? 1 : 0.35 }}
+          onLoad={image.onLoad}
+          onError={image.onError}
+        />
+      )}
+      {image.status === 'regenerating' && (
+        <div className="absolute inset-0 flex items-center justify-center" aria-label="图片重新生成中">
+          <LoaderCircle className="animate-spin" size={22} />
+        </div>
+      )}
+      {image.status === 'failed' && (
+        <div
+          className="absolute inset-0 flex items-center justify-center gap-2 text-xs"
+          style={{ color: 'var(--color-text-secondary)' }}
+        >
+          <ImageOff size={18} /> 图片暂不可用
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function useRepairableImage({ src, moduleId, kind, itemId, field, onRegenerated }: RepairableImageOptions) {
   const [imageUrl, setImageUrl] = useState(() => src ? verificationUrl(src) : '')
   const [status, setStatus] = useState<'loading' | 'ready' | 'regenerating' | 'failed'>('loading')
   const attemptedRef = useRef(false)
@@ -52,8 +97,6 @@ export function ModuleImage({
   useEffect(() => {
     attemptedRef.current = false
   }, [moduleId, kind, itemId])
-
-  if (!src || !imageUrl) return null
 
   const handleError = async () => {
     if (attemptedRef.current || !moduleId) {
@@ -76,34 +119,10 @@ export function ModuleImage({
     }
   }
 
-  return (
-    <div
-      className={`relative overflow-hidden rounded-md ${className}`}
-      style={{ aspectRatio, border: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)' }}
-    >
-      {status !== 'failed' && (
-        <img
-          src={imageUrl}
-          alt={alt}
-          className="block h-full w-full"
-          style={{ objectFit, opacity: status === 'ready' ? 1 : 0.35 }}
-          onLoad={() => setStatus('ready')}
-          onError={handleError}
-        />
-      )}
-      {status === 'regenerating' && (
-        <div className="absolute inset-0 flex items-center justify-center" aria-label="图片重新生成中">
-          <LoaderCircle className="animate-spin" size={22} />
-        </div>
-      )}
-      {status === 'failed' && (
-        <div
-          className="absolute inset-0 flex items-center justify-center gap-2 text-xs"
-          style={{ color: 'var(--color-text-secondary)' }}
-        >
-          <ImageOff size={18} /> 图片暂不可用
-        </div>
-      )}
-    </div>
-  )
+  return {
+    imageUrl,
+    status,
+    onLoad: () => setStatus('ready'),
+    onError: handleError,
+  }
 }

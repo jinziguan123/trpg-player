@@ -22,6 +22,7 @@ import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiEnvel
 import { Copy, Bot, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { parseChaseState, parseCombatState, parsePendingReaction } from '../lib/liveState'
+import { useRepairableImage, type ModuleImageKind } from '../components/module/ModuleImage'
 
 interface KnownLocation { id: string; name: string; current: boolean; visited: boolean; connections?: string[]; party?: string[] }
 interface SearchHit { id: string; sequence_num: number; event_type: string; actor_name: string; content: string }
@@ -74,6 +75,50 @@ function HandoutImage({ src }: { src: string }) {
   )
 }
 
+// 跑团事件配图/立绘：图片缺失时按事件 metadata 定位模组条目并只修复一次。
+function LiveModuleImage({
+  src,
+  moduleId,
+  kind,
+  itemId,
+  field,
+  alt = '',
+  className = '',
+  onClick,
+  onRegenerated,
+}: {
+  src: string
+  moduleId?: string
+  kind?: string
+  itemId?: string
+  field?: string
+  alt?: string
+  className?: string
+  onClick?: () => void
+  onRegenerated?: (url: string) => void
+}) {
+  const image = useRepairableImage({
+    src,
+    moduleId,
+    kind: (kind || 'scene') as ModuleImageKind,
+    itemId: itemId || '',
+    field: (field || 'image') as 'image' | 'portrait' | 'encounter_image',
+    onRegenerated,
+  })
+  if (!image.imageUrl || image.status === 'failed') return null
+  return (
+    <img
+      src={image.imageUrl}
+      alt={alt}
+      className={className}
+      style={{ opacity: image.status === 'ready' ? 1 : 0.35, transition: 'opacity 0.4s ease' }}
+      onLoad={image.onLoad}
+      onError={image.onError}
+      onClick={onClick}
+    />
+  )
+}
+
 // 配图卡（metadata.kind === 'illustration'）：按 icat 选矢量图标与类别标签
 const ILLUST_ICONS: Record<string, typeof GiScrollUnfurled> = {
   scene: GiAncientRuins,
@@ -84,22 +129,6 @@ const ILLUST_LABELS: Record<string, string> = {
   scene: '场景',
   clue: '线索',
   encounter: '遭遇',
-}
-
-// NPC 对话气泡旁的小圆立绘（metadata.portrait）：加载失败整体隐藏；点击放大查看
-function NpcAvatar({ src, name, onClick }: { src: string; name?: string; onClick: () => void }) {
-  const [failed, setFailed] = useState(false)
-  if (failed) return null
-  return (
-    <button
-      onClick={onClick}
-      title={name ? `${name}（点击查看立绘）` : '查看立绘'}
-      className="flex-shrink-0 rounded-full overflow-hidden cursor-pointer p-0"
-      style={{ width: 30, height: 30, border: '1px solid var(--color-border-strong)', background: 'var(--color-bg-tertiary)' }}
-    >
-      <img src={src} alt="" className="w-full h-full object-cover" onError={() => setFailed(true)} />
-    </button>
-  )
 }
 
 // NPC 气泡按角色名派生一个稳定色相（写入 --npc-hue），同一 NPC 颜色一致、不同 NPC 微有区分
@@ -1645,7 +1674,15 @@ export function GameSessionPage() {
                         <div className="text-xs mb-2" style={{ color: 'var(--color-text-secondary)' }}>{msg.content}</div>
                       )}
                       {illustImg ? (
-                        <HandoutImage src={`${getServerUrl()}${illustImg}`} />
+                        <LiveModuleImage
+                          src={illustImg}
+                          moduleId={currentSession.module_id}
+                          kind={String(msg.metadata?.image_kind || '')}
+                          itemId={String(msg.metadata?.image_item_id || '')}
+                          field={String(msg.metadata?.image_field || '')}
+                          className="block w-full rounded mb-3"
+                          onRegenerated={(url) => msg.id && patchMessageMetadata(msg.id, { image: url })}
+                        />
                       ) : isFresh(msg) ? (
                         // 图片尚未生成完：低调一行小字占位（若最终没图，这行也只在新鲜卡片上出现）
                         <div className="text-xs" style={{ color: 'var(--color-text-secondary)', opacity: 0.6 }}>配图生成中…</div>
@@ -1731,10 +1768,16 @@ export function GameSessionPage() {
                   // NPC 气泡：有立绘（metadata.portrait，缓存秒挂或生成后 event_patch 补挂）时在气泡旁放小圆头像
                   <div className="flex items-end gap-2">
                     {msg.metadata?.portrait ? (
-                      <NpcAvatar
-                        src={`${getServerUrl()}${String(msg.metadata.portrait)}`}
-                        name={msg.actor_name}
+                      <LiveModuleImage
+                        src={String(msg.metadata.portrait)}
+                        moduleId={currentSession.module_id}
+                        kind={String(msg.metadata?.image_kind || 'npc')}
+                        itemId={String(msg.metadata?.image_item_id || '')}
+                        field={String(msg.metadata?.image_field || 'portrait')}
+                        alt={msg.actor_name || ''}
+                        className="block flex-shrink-0 w-[30px] h-[30px] object-cover rounded-full overflow-hidden cursor-pointer p-0"
                         onClick={() => setPortraitView(`${getServerUrl()}${String(msg.metadata?.portrait)}`)}
+                        onRegenerated={(url) => msg.id && patchMessageMetadata(msg.id, { portrait: url })}
                       />
                     ) : null}
                     <span className="chat-bubble-npc" style={{ '--npc-hue': npcHue(msg.actor_name) } as CSSProperties}><InlineMd text={msg.content} /></span>

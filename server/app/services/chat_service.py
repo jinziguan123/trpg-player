@@ -4361,7 +4361,10 @@ def _maybe_scene_illustration(
         if scene is None:
             return []
         title = str(scene.get("title") or scene.get("name") or "").strip() or scene_id
-        meta: dict = {"kind": "illustration", "icat": "scene", "title": title}
+        meta: dict = {
+            "kind": "illustration", "icat": "scene", "title": title,
+            "image_kind": "scene", "image_item_id": scene_id, "image_field": "image",
+        }
         cached = str(scene.get("image") or "").strip()
         if not module_image_service.image_url_available(cached):
             cached = ""
@@ -4413,7 +4416,10 @@ def _maybe_clue_illustration(
         if clue is None:
             return
         name = str(clue.get("name") or "").strip() or clue_id
-        meta: dict = {"kind": "illustration", "icat": "clue", "title": name}
+        meta: dict = {
+            "kind": "illustration", "icat": "clue", "title": name,
+            "image_kind": "clue", "image_item_id": clue_id, "image_field": "image",
+        }
         cached = str(clue.get("image") or "").strip()
         if not module_image_service.image_url_available(cached):
             cached = ""
@@ -4455,7 +4461,12 @@ def _maybe_encounter_illustration(
         anchor = next(
             (e for e in enemies if str(e.get("id") or "") in npc_ids and e.get("id")), None,
         )
-        meta: dict = {"kind": "illustration", "icat": "encounter", "title": "遭遇战"}
+        meta: dict = {
+            "kind": "illustration", "icat": "encounter", "title": "遭遇战",
+            "image_kind": "npc" if anchor is not None else "",
+            "image_item_id": str(anchor.get("id")) if anchor is not None else "",
+            "image_field": "encounter_image" if anchor is not None else "",
+        }
         cached = str((anchor or {}).get("encounter_image") or "").strip()
         if not module_image_service.image_url_available(cached):
             cached = ""
@@ -4519,6 +4530,7 @@ def _attach_npc_portrait(db: Session, session_id: str, module: Module, ev) -> No
             if meta.get("portrait") == cached:
                 return
             meta["portrait"] = cached
+            meta.update({"image_kind": "npc", "image_item_id": str(npc.get("id") or ""), "image_field": "portrait"})
             ev.metadata_ = meta
             db.add(ev)
             db.commit()
@@ -4529,6 +4541,15 @@ def _attach_npc_portrait(db: Session, session_id: str, module: Module, ev) -> No
         key = (str(module.id), str(npc.get("id") or name))
         if key in _PORTRAIT_INFLIGHT:
             return
+        meta = dict(ev.metadata_ or {})
+        meta.update({
+            "image_kind": "npc",
+            "image_item_id": str(npc.get("id") or ""),
+            "image_field": "portrait",
+        })
+        ev.metadata_ = meta
+        db.add(ev)
+        db.commit()
         _PORTRAIT_INFLIGHT.add(key)
         _spawn_illustration(
             session_id, ev.id, _NPC_PORTRAIT_PROMPT_SYS,
