@@ -47,7 +47,7 @@ from app.services.room_hub import room_hub
 
 logger = logging.getLogger(__name__)
 
-# DICE_CHECK 升级为键值解析（参数顺序无关）：skill=必填；difficulty/char/visibility 选填。
+# DICE_CHECK 升级为键值解析（参数顺序无关）：skill=必填；difficulty/char/chars/visibility 选填。
 # char=对谁投（空/主角=主角，队友名，NPC 名）；visibility=open|blind（blind=暗投/暗骰，结果只给 KP）。
 DICE_CHECK_RE = re.compile(r"\[DICE_CHECK:([^\]]*)\]")
 # KP 有时（尤其多人回合）不发 [DICE_CHECK]、而是把「X 检定（normal）：困难成功 (10 ≤ 60)」这类
@@ -364,6 +364,30 @@ def _pool_dice_detail(roll_result) -> dict:
 
 
 _ALL_TOKENS = {"在场", "全体", "全部", "所有人", "所有", "all", "everyone"}
+_GROUP_CHECK_WORDS = ("全员", "全体", "所有调查员", "所有角色", "每名角色", "每个角色", "所有人")
+
+
+def _scene_requires_group_check(
+    module: Module, game_session: GameSession, player_char: Character, skill_name: str,
+) -> bool:
+    """兼容旧模组 JSON：明文机制点明确写群检时，补全为在场群检。
+
+    仅在当前场景恰好只有一个同技能 dice_check 机制点、且 trigger/note 明确出现群检词时
+    才补全；显式 char/chars 由调用方优先保留，不经过此兜底。
+    """
+    scene_id = session_service.get_char_location(game_session, player_char.id) or game_session.current_scene_id
+    scene = next((s for s in (module.scenes or []) if s.get("id") == scene_id), None)
+    events = (scene or {}).get("events") or []
+    same_skill = [
+        e for e in events
+        if isinstance(e, dict)
+        and e.get("kind") == "dice_check"
+        and str(e.get("skill") or "").strip() == skill_name
+    ]
+    if len(same_skill) != 1:
+        return False
+    text = " ".join(str(same_skill[0].get(k) or "") for k in ("trigger", "note"))
+    return any(word in text for word in _GROUP_CHECK_WORDS)
 
 
 def _resolve_san_targets(
@@ -1257,6 +1281,8 @@ async def _run_team_turn(
 def _persist_error_notice(db: Session, session_id: str, text: str) -> None:
     """把生成中断提示落库为 system 事件，保证在客户端 resync 后仍可见。"""
     try:
+        # 上游 flush/commit 失败后 Session 处于 failed transaction 状态；补偿写入前必须回滚。
+        db.rollback()
         session_service.add_event(db, session_id, "system", text, actor_name="系统")
     except Exception:
         logger.exception("落库生成中断提示失败: session=%s", session_id)
@@ -3902,6 +3928,11 @@ async def _exec_dice_check(
         return chunks, descs, False
     difficulty = (kv.get("difficulty") or "normal").strip() or "normal"
     char_ref = (kv.get("char") or "").strip()
+    # 兼容旧模组：planner/旧 KP 没有携带 chars 时，只有明确唯一的场景群检机制点才补全。
+    # 显式 char/chars 永远优先，多个同技能机制点则不猜。
+    if not char_ref and not (kv.get("chars") or "").strip():
+        if _scene_requires_group_check(module, game_session, player_char, skill_name):
+            char_ref = "在场"
     blind = (kv.get("visibility") or "open").strip().lower() == "blind"
     # 心理学等技能一律强制暗投：即使 KP 写了 visibility=open 或没写，也不挂「待玩家投骰」、
     # 不广播达成等级——结果只回灌 KP，玩家永远看不到成败。
@@ -4808,6 +4839,8 @@ def _plan_check_call(plan: turn_planner.TurnPlan) -> ToolCall:
         args["difficulty"] = check.difficulty
     if check.visibility and check.visibility != "open":
         args["visibility"] = check.visibility
+    if check.chars:
+        args["chars"] = check.chars
     return ToolCall(id=f"fallback_{uuid.uuid4().hex[:8]}", name="dice_check", arguments=args)
 
 

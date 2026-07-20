@@ -265,6 +265,15 @@ def test_build_turn_plan_message_requires_check_硬约束():
     content = turn_planner.build_turn_plan_message(plan)["content"]
     # 必须把照发的指令原文喂给 KP（含技能名，open 明骰不赘写 visibility）
     assert "[DICE_CHECK: skill=侦查, difficulty=normal]" in content
+
+
+def test_build_turn_plan_message_carries_group_check_scope():
+    from app.ai.turn_planner import CheckPlan, TurnPlan
+
+    content = turn_planner.build_turn_plan_message(
+        TurnPlan(requires_check=True, check=CheckPlan(skill="幸运", chars="在场"))
+    )["content"]
+    assert "[DICE_CHECK: skill=幸运, difficulty=normal, chars=在场]" in content
     # 必须是「最后一行」硬约束，且明确禁止指令之前泄露结果/线索位置
     assert "最后一行" in content
     assert "凌驾叙事完整性" in content

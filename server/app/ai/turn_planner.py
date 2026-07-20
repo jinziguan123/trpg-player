@@ -85,6 +85,7 @@ class CheckPlan(BaseModel):
     skill: str = ""
     difficulty: str = "normal"
     visibility: str = "open"
+    chars: str = ""  # 群检范围："在场"/"全体" 或角色名单；空=主角
     reason: str = ""
     bonus: int = 0    # 奖励骰数量：情境明显有利时 1，系统多掷十位取优
     penalty: int = 0  # 惩罚骰数量：情境明显不利时 1，系统多掷十位取劣
@@ -545,6 +546,9 @@ def build_turn_plan_messages(
                 "特定行动触发的理智检定、技能检定、伤害）：情景命中时**必须**按其规定裁定，数值照抄——"
                 "san_check 的 san_loss 规格直接作为 sanity 的 success_loss/failure_loss，damage 的骰式"
                 "直接作为伤害；有 events 依据时绝不用下面的通用建议档另行估值，也绝不漏掉。\n"
+                "场景机制点的 note/trigger 若明确写了‘全员/全体/所有调查员/每名角色’等群检范围，"
+                "check.chars 必须填‘在场’（或‘全体’）；单人机制点保持为空。不要因为玩家是主角"
+                "就把明文规定的全员检定缩成主角检定。\n"
                 "sanity.trigger 在**本轮有角色目睹或得知会动摇心智的恐怖**时为 true："
                 "尸体/血腥惨状/怪物/超自然异象/亵渎的神话真相等；仅世俗惊吓（普通打斗、坏消息、"
                 "寻常尸体已见过）不触发。true 时给 source（恐怖源标识，如「墓室腐尸」，同一源只检一次）、"
@@ -680,6 +684,8 @@ def _check_directive(check: CheckPlan) -> str:
         parts.append(f"difficulty={check.difficulty}")
     if check.visibility and check.visibility != "open":
         parts.append(f"visibility={check.visibility}")
+    if check.chars:
+        parts.append(f"chars={check.chars}")
     if check.bonus:
         parts.append(f"bonus={check.bonus}")
     if check.penalty:
@@ -722,7 +728,7 @@ def build_turn_plan_message(plan: TurnPlan) -> dict:
             "本轮 requires_check=true。你这次回复的唯一正确结束方式，是原样输出下面这行检定指令"
             "并就此停笔——把它当作你回复的**最后一行**逐字照抄，一个字都不要改：\n"
             f"    {directive}\n"
-            "（skill/difficulty/visibility 一律照计划 check 字段，不得改动、不得省略、不得替换成别的技能。）\n"
+            "（skill/difficulty/visibility/chars 一律照计划 check 字段，不得改动、不得省略、不得替换成别的技能或范围。）\n"
             "\n硬性要求，逐条遵守：\n"
             "1. 指令之后不许有任何文字；这一整段回复里，指令**之前**也**绝不允许**写出或暗示检定结果——"
             "不得叙述玩家已经「找到 / 发现 / 摸到 / 听到 / 看懂 / 察觉 / 注意到」任何东西，"

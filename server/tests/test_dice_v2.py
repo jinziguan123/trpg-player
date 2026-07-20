@@ -350,6 +350,31 @@ def test_group_check_all_present_auto_roll(db_factory, monkeypatch):
     assert _of_type(chunks, "check_request") == []      # 群检不挂 pending
 
 
+def test_legacy_scene_event_expands_explicit_all_party_check(db_factory, monkeypatch):
+    """旧模组未写 chars 时，明确“全员”机制点仍会对在场主角和队友各掷一次。"""
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+    module.scenes = [{
+        "id": "scene_6",
+        "events": [{
+            "trigger": "进入6号车厢时",
+            "kind": "dice_check",
+            "skill": "幸运",
+            "note": "全员幸运检定，失败则失去随身物品",
+        }],
+    }]
+    session.current_scene_id = "scene_6"
+    db.add_all([module, session])
+    db.commit()
+
+    chunks = _run(
+        db, module, hero, teammates, session,
+        "[DICE_CHECK: skill=幸运]", monkeypatch,
+    )
+    assert sorted(d["metadata"]["actor"] for d in _dice(chunks)) == ["主角", "阿尔法"]
+    assert _of_type(chunks, "check_request") == []
+
+
 def test_group_check_named_list(db_factory, monkeypatch):
     """chars=名单：仅名单内成员各自检定。"""
     db = db_factory()

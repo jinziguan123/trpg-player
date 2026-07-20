@@ -7,6 +7,7 @@ import asyncio
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.models.base import Base
@@ -189,6 +190,22 @@ def test_duplicate_dice_check_deduped(db_factory):
     assert len(req1) == 1 and len(req2) == 0  # 第一次弹卡；第二次去重、不再弹
     pending = (db.get(GameSession, gs.id).world_state or {}).get("pending_checks") or {}
     assert len(pending) == 1  # 只挂了一个待投检定
+
+
+def test_persist_error_notice_rolls_back_failed_transaction(db_factory):
+    """上游唯一约束失败后，错误提示仍能回滚并落成 system 事件。"""
+    db = db_factory()
+    sid = _seed_session(db)
+    db.add(EventLog(session_id=sid, sequence_num=1, event_type="action", content="已有事件"))
+    db.commit()
+    db.add(EventLog(session_id=sid, sequence_num=1, event_type="action", content="重复事件"))
+    with pytest.raises(IntegrityError):
+        db.commit()
+
+    chat_service._persist_error_notice(db, sid, "（生成失败，请重试）")
+
+    events = session_service.get_session_events(db_factory(), sid)
+    assert any(e.event_type == "system" and e.content == "（生成失败，请重试）" for e in events)
 
 
 def test_finish_generation_detaches_housekeeping(monkeypatch, db_factory):
