@@ -5,6 +5,8 @@ import { GiRollingDices, GiScrollUnfurled } from 'react-icons/gi'
 import {
   BookOpen,
   Bot,
+  ChevronDown,
+  ChevronUp,
   Image,
   Mic,
   MicOff,
@@ -13,6 +15,7 @@ import {
   Send,
   Swords,
   WandSparkles,
+  X,
 } from 'lucide-react'
 
 type KpAction =
@@ -88,6 +91,8 @@ interface LookupHit {
   page?: number
   scene_hint?: string | null
   score?: number
+  rulebook_id?: string
+  ordinal?: number
 }
 
 interface SpeechRecognitionResultEventLike {
@@ -139,6 +144,7 @@ function imageUrl(src: string): string {
 }
 
 export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
+  const [collapsed, setCollapsed] = useState(false)
   const [tab, setTab] = useState<PanelTab>('tools')
   const [action, setAction] = useState<KpAction>('narration')
   const [busy, setBusy] = useState('')
@@ -152,6 +158,7 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
   const [lookupScope, setLookupScope] = useState<'rule' | 'module'>('module')
   const [lookupQuery, setLookupQuery] = useState('')
   const [lookupHits, setLookupHits] = useState<LookupHit[]>([])
+  const [lookupOpen, setLookupOpen] = useState(false)
   const [imageTitle, setImageTitle] = useState('当前场景')
   const [imagePrompt, setImagePrompt] = useState('')
   const [previewUrl, setPreviewUrl] = useState('')
@@ -197,10 +204,14 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
   }
 
   const submit = async () => {
+    if (busy) return
     const payload = Object.fromEntries(
       Object.entries(fields).filter(([, value]) => value.trim()),
     )
-    if (await postAction(action, payload, `${ACTION_LABELS[action]}已发布`)) setFields({})
+    if (await postAction(action, payload, `${ACTION_LABELS[action]}已发布`)) {
+      // 连续 NPC 台词时保留说话人，只清空上一句正文。
+      setFields(action === 'dialogue' ? { npc_id: fields.npc_id || '' } : {})
+    }
   }
 
   const toggleDictation = () => {
@@ -270,6 +281,7 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
       const params = new URLSearchParams({ scope: lookupScope, q: lookupQuery.trim() })
       const result = await api.get<{ hits: LookupHit[] }>(`/sessions/${sessionId}/kp/lookup?${params}`)
       setLookupHits(result.hits)
+      setLookupOpen(true)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '资料检索失败')
     } finally {
@@ -390,17 +402,20 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
   )
 
   const signals = workspace?.signals
+  const sceneLabel = (sceneId: string | null | undefined) => (
+    workspace?.catalogs.scenes.find((scene) => scene.id === sceneId)?.name || sceneId || '模组原文片段'
+  )
 
   return (
     <section
       className="mx-3 mb-2 rounded-md px-3 py-2"
       style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border-strong)' }}
     >
-      <div className="mb-2 flex items-center gap-1 overflow-x-auto">
+      <div className={`${collapsed ? '' : 'mb-2'} flex items-center gap-1 overflow-x-auto`}>
         <span className="mr-2 whitespace-nowrap text-xs font-semibold" style={{ color: 'var(--color-text-accent)' }}>
           真人 KP
         </span>
-        {TABS.map(({ id, label, icon: Icon }) => (
+        {!collapsed && TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
@@ -419,9 +434,18 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
         >
           <Send size={13} /> {busy === 'end-turn' ? '处理中…' : '开放行动'}
         </button>
+        <button
+          type="button"
+          onClick={() => setCollapsed((value) => !value)}
+          className="btn-secondary !p-1.5"
+          aria-expanded={!collapsed}
+          title={collapsed ? '展开 KP 控制台' : '收起 KP 控制台'}
+        >
+          {collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+        </button>
       </div>
 
-      {tab === 'tools' && (
+      {!collapsed && tab === 'tools' && (
         <div>
           <div className="mb-2 flex items-center gap-2">
             <select
@@ -449,7 +473,21 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
                 </button>
               </div>
             )}
-            {action === 'dialogue' && <><Input name="npc_id" placeholder="NPC 名称或 ID" list="kp-npcs" /><Input name="content" placeholder="台词内容" /></>}
+            {action === 'dialogue' && <>
+              <Input name="npc_id" placeholder="NPC 名称或 ID" list="kp-npcs" />
+              <textarea
+                value={fields.content || ''}
+                onChange={(event) => setField('content', event.target.value)}
+                onKeyDown={(event) => {
+                  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                    event.preventDefault()
+                    void submit()
+                  }
+                }}
+                placeholder="台词内容（可连续输入；按 Ctrl/Cmd+Enter 发布）"
+                className="input min-h-16 min-w-48 flex-1 resize-y text-xs"
+              />
+            </>}
             {action === 'dice_check' && <>
               <Input name="skill" placeholder="技能，如 幸运、侦查" />
               <Input name="char" placeholder="角色，空=主角；在场=群检" />
@@ -479,7 +517,7 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
         </div>
       )}
 
-      {tab === 'advisor' && (
+      {!collapsed && tab === 'advisor' && (
         <div className="space-y-3">
           <div className="flex flex-wrap gap-2 border-b pb-3" style={{ borderColor: 'var(--color-border)' }}>
             <input value={planFocus} onChange={(event) => setPlanFocus(event.target.value)} placeholder="裁定重点（可选）" className="input min-w-48 flex-1 text-xs" />
@@ -526,17 +564,29 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <select value={lookupScope} onChange={(event) => setLookupScope(event.target.value as 'rule' | 'module')} className="input !w-auto text-xs">
-              <option value="module">模组原文</option><option value="rule">规则书</option>
-            </select>
+            <div className="inline-flex items-center gap-1 rounded border p-0.5" style={{ borderColor: 'var(--color-border)' }} role="tablist" aria-label="检索范围">
+              {(['module', 'rule'] as const).map((scope) => (
+                <button
+                  key={scope}
+                  type="button"
+                  onClick={() => { setLookupScope(scope); setLookupHits([]); setLookupOpen(false) }}
+                  className="btn-secondary !border-0 !px-2 !py-1 text-xs"
+                  style={lookupScope === scope ? { background: 'var(--color-bg-tertiary)', color: 'var(--color-text-accent)' } : undefined}
+                  role="tab"
+                  aria-selected={lookupScope === scope}
+                >
+                  {scope === 'module' ? '模组原文' : '规则书'}
+                </button>
+              ))}
+            </div>
             <input value={lookupQuery} onChange={(event) => setLookupQuery(event.target.value)} placeholder="输入检索关键词" className="input min-w-48 flex-1 text-xs" />
             <button onClick={() => void runLookup()} disabled={!!busy} className="btn-secondary inline-flex items-center gap-1 text-xs"><BookOpen size={13} />{busy === 'lookup' ? '检索中…' : '速查'}</button>
-            {!!lookupHits.length && <div className="max-h-40 w-full space-y-2 overflow-y-auto text-xs">{lookupHits.map((hit, index) => <div key={`${hit.page || hit.scene_hint || ''}-${index}`} className="border-l-2 pl-2" style={{ borderColor: 'var(--color-border-strong)', color: 'var(--color-text-secondary)' }}><div className="mb-1 font-semibold">{hit.page ? `第 ${hit.page} 页` : hit.scene_hint || `片段 ${index + 1}`}</div><div className="whitespace-pre-wrap">{hit.text}</div></div>)}</div>}
+            {!!lookupHits.length && <button type="button" onClick={() => setLookupOpen(true)} className="btn-secondary !px-2 !py-1 text-xs">查看 {lookupHits.length} 条结果</button>}
           </div>
         </div>
       )}
 
-      {tab === 'assets' && (
+      {!collapsed && tab === 'assets' && (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-3 border-b pb-3" style={{ borderColor: 'var(--color-border)' }}>
             <label className="inline-flex items-center gap-2 text-xs">
@@ -574,7 +624,7 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
         </div>
       )}
 
-      {tab === 'director' && (
+      {!collapsed && tab === 'director' && (
         <div className="space-y-3">
           <div className="flex items-start gap-2 border-b pb-3 text-xs" style={{ borderColor: 'var(--color-border)' }}>
             <div className="min-w-0 flex-1 space-y-1" style={{ color: 'var(--color-text-secondary)' }}>
@@ -591,9 +641,45 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
         </div>
       )}
 
-      <datalist id="kp-scenes">{workspace?.catalogs.scenes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</datalist>
-      <datalist id="kp-npcs">{workspace?.catalogs.npcs.map((item) => <option key={item.id} value={item.name}>{item.id}</option>)}</datalist>
-      <datalist id="kp-handouts">{workspace?.catalogs.handouts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</datalist>
+      {!collapsed && <>
+        <datalist id="kp-scenes">{workspace?.catalogs.scenes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</datalist>
+        <datalist id="kp-npcs">{workspace?.catalogs.npcs.map((item) => <option key={item.id} value={item.name}>{item.id}</option>)}</datalist>
+        <datalist id="kp-handouts">{workspace?.catalogs.handouts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</datalist>
+      </>}
+
+      {lookupOpen && !collapsed && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 p-4 pt-16"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${lookupScope === 'module' ? '模组原文' : '规则书'}检索结果`}
+          onMouseDown={(event) => { if (event.target === event.currentTarget) setLookupOpen(false) }}
+        >
+          <div className="w-full max-w-3xl overflow-hidden rounded-md" style={{ background: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-strong)', boxShadow: '0 6px 18px var(--shadow-color-strong)' }}>
+            <div className="flex items-center gap-2 border-b px-4 py-3" style={{ borderColor: 'var(--color-border)' }}>
+              <BookOpen size={16} style={{ color: 'var(--color-text-accent)' }} />
+              <div className="min-w-0 flex-1 text-sm font-semibold">{lookupScope === 'module' ? '模组原文' : '规则书'}检索结果</div>
+              <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{lookupHits.length} 条</span>
+              <button type="button" onClick={() => setLookupOpen(false)} className="btn-secondary !p-1.5" title="关闭检索结果"><X size={15} /></button>
+            </div>
+            <div className="max-h-[70vh] space-y-3 overflow-y-auto p-4">
+              {lookupHits.length ? lookupHits.map((hit, index) => (
+                <article key={`${hit.page || hit.scene_hint || hit.ordinal || ''}-${index}`} className="border-l-2 pl-3 text-xs" style={{ borderColor: 'var(--color-border-strong)', color: 'var(--color-text-secondary)' }}>
+                  <div className="mb-1 font-semibold" style={{ color: 'var(--color-text-primary)' }}>
+                    {lookupScope === 'rule' ? (hit.page ? `规则书第 ${hit.page} 页` : '规则书片段') : sceneLabel(hit.scene_hint)}
+                    {typeof hit.score === 'number' && <span className="ml-2 font-normal opacity-70">相关度 {hit.score.toFixed(3)}</span>}
+                  </div>
+                  <div className="whitespace-pre-wrap leading-6">{hit.text}</div>
+                </article>
+              )) : (
+                <div className="py-10 text-center text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+                  暂无匹配结果。{lookupScope === 'rule' && '规则书检索需要先在规则书管理中完成索引。'}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }

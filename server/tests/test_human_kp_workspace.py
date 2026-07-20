@@ -93,6 +93,21 @@ def test_advisor_draft_and_plan_never_write_public_events(tmp_path, monkeypatch)
     assert not (session.world_state or {}).get("clue_ledger")
 
 
+def test_kp_lookup_supports_rulebook_scope(tmp_path, monkeypatch):
+    db = _db(tmp_path)()
+    module, _hero, _ally, session = _seed(db)
+
+    monkeypatch.setattr(
+        human_kp_service.rulebook_service,
+        "retrieve",
+        lambda _db, query, rule_system, k: [
+            {"text": f"{rule_system}:{query}", "page": 12, "score": 0.91},
+        ],
+    )
+    hits = human_kp_service.lookup(db, session, module, "rule", "幸运检定")
+    assert hits == [{"text": "coc:幸运检定", "page": 12, "score": 0.91}]
+
+
 def test_image_preview_is_private_until_explicit_publish(tmp_path, monkeypatch):
     db = _db(tmp_path)()
     module, _hero, _ally, session = _seed(db)
