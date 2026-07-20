@@ -5077,6 +5077,52 @@
         ]
       }
     },
+    "/api/sessions/{session_id}/join": {
+      "post": {
+        "description": "进入大厅即预留真人席；角色可稍后选择或导入。",
+        "operationId": "join_session_api_sessions__session_id__join_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Join Session",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
     "/api/sessions/{session_id}/kick/{seat_order}": {
       "post": {
         "description": "大厅：房主把某真人席位的玩家移出，席位回到空席。",

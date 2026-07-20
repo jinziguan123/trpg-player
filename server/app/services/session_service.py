@@ -231,6 +231,58 @@ def get_session_by_code(db: Session, room_code: str) -> GameSession | None:
     )
 
 
+def join_session(db: Session, session_id: str, token: str) -> GameSession:
+    """进入大厅即预留一个真人席，使房间立即出现在该 token 的游戏列表中。"""
+    if not token:
+        raise ValueError("缺少玩家身份")
+    session = db.get(GameSession, session_id)
+    if not session:
+        raise ValueError("房间不存在")
+    if session.status != "setup":
+        raise ValueError("游戏已经开始，无法加入大厅")
+
+    existing = (
+        db.query(SessionParticipant)
+        .filter(
+            SessionParticipant.session_id == session_id,
+            SessionParticipant.owner_token == token,
+        )
+        .first()
+    )
+    if existing:
+        return session
+
+    seat = (
+        db.query(SessionParticipant)
+        .filter(
+            SessionParticipant.session_id == session_id,
+            SessionParticipant.role == "human",
+            SessionParticipant.character_id.is_(None),
+            SessionParticipant.owner_token.is_(None),
+            SessionParticipant.claimed.is_(False),
+        )
+        .order_by(SessionParticipant.seat_order.asc())
+        .first()
+    )
+    if not seat:
+        raise ValueError("房间没有可加入的真人席位")
+
+    seat.owner_token = token
+    seat.claimed = True
+    seat.ready = False
+    if session.identity_version >= 2:
+        seat.identity_version = 2
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if "uq_session_participant_token_v2" in str(exc).lower():
+            raise ValueError("同一个 token 在本房间只能占用一个席位") from exc
+        raise
+    db.refresh(session)
+    return session
+
+
 def claim_seat(
     db: Session, session_id: str, seat_order: int, character_id: str | None, token: str,
 ) -> GameSession:
@@ -253,7 +305,13 @@ def claim_seat(
         raise ValueError("席位不存在")
     if seat.role not in ("human", "kp"):
         raise ValueError("只能认领真人或 KP 席位")
-    if seat.claimed:
+    reserved_by_me = bool(
+        seat.role == "human"
+        and seat.claimed
+        and seat.owner_token == token
+        and not seat.character_id
+    )
+    if seat.claimed and not reserved_by_me:
         raise ValueError("该席位已被认领")
 
     strict_identity = session.host_token is not None or seat.identity_version >= 2
@@ -264,6 +322,7 @@ def claim_seat(
                 SessionParticipant.session_id == session_id,
                 SessionParticipant.owner_token == token,
                 SessionParticipant.identity_version >= 2,
+                SessionParticipant.id != seat.id,
             )
             .first()
         )

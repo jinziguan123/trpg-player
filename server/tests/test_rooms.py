@@ -88,6 +88,60 @@ def test_claim_seat(db_factory):
     assert guest.owner_token == "guest-token"
 
 
+def test_join_reserves_seat_and_lists_room_for_token(db_factory):
+    db = db_factory()
+    module, hero, _guest = _seed(db)
+    session = session_service.create_session(
+        db, module.id,
+        [
+            {"character_id": hero.id, "role": "human", "is_primary": True},
+            {"character_id": None, "role": "human"},
+        ],
+        creator_token="host",
+    )
+
+    session_service.join_session(db, session.id, "guest-token")
+
+    reserved = next(
+        p for p in session_service.get_participants(db, session.id)
+        if p.owner_token == "guest-token"
+    )
+    assert reserved.character_id is None and reserved.claimed and not reserved.ready
+    assert session.id in {s.id for s in session_service.list_sessions_for_token(db, "guest-token")}
+    # 重复进入幂等，不会再占第二个席位。
+    session_service.join_session(db, session.id, "guest-token")
+    assert len([
+        p for p in session_service.get_participants(db, session.id)
+        if p.owner_token == "guest-token"
+    ]) == 1
+
+
+def test_reserved_seat_can_later_select_existing_character(db_factory):
+    db = db_factory()
+    module, hero, guest = _seed(db)
+    session = session_service.create_session(
+        db, module.id,
+        [
+            {"character_id": hero.id, "role": "human", "is_primary": True},
+            {"character_id": None, "role": "human"},
+        ],
+        creator_token="host",
+    )
+    session_service.join_session(db, session.id, "guest-token")
+    reserved = next(
+        p for p in session_service.get_participants(db, session.id)
+        if p.owner_token == "guest-token"
+    )
+
+    session_service.claim_seat(db, session.id, reserved.seat_order, guest.id, "guest-token")
+
+    assigned = next(
+        p for p in session_service.get_participants(db, session.id)
+        if p.seat_order == reserved.seat_order
+    )
+    assert assigned.character_id == guest.id and assigned.owner_token == "guest-token"
+
+
 def test_claim_rejects_taken_and_wrong_owner(db_factory):
     db = db_factory()
     module, hero, guest = _seed(db)

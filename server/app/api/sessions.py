@@ -133,6 +133,25 @@ def get_session_by_code(
     )
 
 
+@router.post("/{session_id}/join")
+def join_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """进入大厅即预留真人席；角色可稍后选择或导入。"""
+    try:
+        session = session_service.join_session(db, session_id, token or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    module = db.get(Module, session.module_id)
+    payload = _session_payload(
+        session, _chars_map(db, [session]), module.title if module else None, token,
+    )
+    room_hub.broadcast(session_id, _make_chunk("lobby"))
+    return payload
+
+
 @router.post("/{session_id}/claim")
 def claim_seat(
     session_id: str,

@@ -1,16 +1,18 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
-import { api, connectSSE } from '../api/client'
+import { api, connectSSE, getServerUrl, localApi } from '../api/client'
 import type { SessionParticipant } from '../stores/sessionStore'
 import { CharacterPanel } from '../components/character/CharacterPanel'
 import { SeatIcon, seatKind } from '../components/game/SeatIcon'
 import { GiReturnArrow } from 'react-icons/gi'
-import { Copy, Sparkles, Check } from 'lucide-react'
+import { Copy, Sparkles, Check, Eye, ScanSearch } from 'lucide-react'
 
 interface Character {
   id: string
   name: string
+  module_id?: string | null
+  rule_system?: string
   base_attributes: Record<string, number>
   skills: Record<string, number>
   system_data: Record<string, unknown>
@@ -30,6 +32,11 @@ interface RoomData {
 }
 
 interface ChatLine { id: string; name: string; content: string }
+interface CharacterEvaluation {
+  compatible: boolean
+  warnings: string[]
+  suggestions: string[]
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Chunk = { type: string; id?: string; content?: string; actor_name?: string }
@@ -40,10 +47,13 @@ export function RoomLobbyPage() {
   const [room, setRoom] = useState<RoomData | null>(null)
   const [moduleDesc, setModuleDesc] = useState('')
   const [myChars, setMyChars] = useState<Character[]>([])
+  const [localChars, setLocalChars] = useState<Character[]>([])
   const [chat, setChat] = useState<ChatLine[]>([])
   const [chatInput, setChatInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [panelChar, setPanelChar] = useState<Character | null>(null)
+  const [evaluation, setEvaluation] = useState<CharacterEvaluation | null>(null)
+  const [evaluating, setEvaluating] = useState(false)
   const [typingName, setTypingName] = useState('')
   const chatRef = useRef<HTMLDivElement>(null)
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -54,6 +64,7 @@ export function RoomLobbyPage() {
   myNameRef.current = myPlayerSeat?.character_name ?? null
 
   const mySeat = myPlayerSeat
+  const needsCharacter = !!mySeat && mySeat.role === 'human' && !mySeat.character_id
   // 旧 human-KP 房间可能让同一 token 同时拥有 KP/玩家席，保留玩家操作区，避免升级后失去权限。
   const strictKpIdentity = !!myKpSeat && (room?.identity_version ?? 1) >= 2
   const amHost = !!room?.participants.some((p) => p.is_host && p.is_mine)
@@ -105,13 +116,28 @@ export function RoomLobbyPage() {
       const r = await api.get<RoomData>(`/sessions/${sessionId}`)
       if (cancelled) return
       if (r.status === 'active') { navigate(`/game/${sessionId}`, { replace: true }); return }
-      setRoom(r)
+      // 通过房间码进入后，先把 token 写入一个真人席；这样切换页面仍能在游戏列表中找到房间。
+      // 若 KP 席也空着，先让用户选择加入身份；否则默认按真人玩家预留席位。
+      const hasOpenKpSeat = r.participants.some((p) => p.role === 'kp' && !p.claimed)
+      const joined = r.status === 'setup' && !hasOpenKpSeat
+        ? await api.post<RoomData>(`/sessions/${sessionId}/join`)
+        : r
+      if (cancelled) return
+      setRoom(joined)
       const mods = await api.get<{ id: string; description: string }[]>('/modules')
       if (cancelled) return
-      setModuleDesc(mods.find((m) => m.id === r.module_id)?.description || '')
+      setModuleDesc(mods.find((m) => m.id === joined.module_id)?.description || '')
       const mine = await api.get<Character[]>('/characters?available=true&is_player=true&mine=true')
       if (cancelled) return
       setMyChars(mine)
+      if (getServerUrl()) {
+        try {
+          const local = await localApi.get<Character[]>('/characters?available=true&is_player=true&mine=true')
+          if (!cancelled) setLocalChars(local)
+        } catch {
+          // 本机后端不可用时仍可使用房主主机上的角色。
+        }
+      }
       const ev = await api.get<{ events: { id: string; event_type: string; actor_name: string; content: string }[] }>(`/sessions/${sessionId}/events`)
       if (cancelled) return
       setChat(ev.events.filter((e) => e.event_type === 'ooc').map((e) => ({ id: e.id, name: e.actor_name, content: e.content })))
@@ -135,16 +161,50 @@ export function RoomLobbyPage() {
     chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight })
   }, [chat.length])
 
-  const claimWithChar = async (charId: string) => {
-    if (!room) return
-    const seat = room.participants.find((p) => p.role === 'human' && !p.character_id && !p.claimed)
-    if (!seat) { toast.error('房间已满，没有空席'); return }
+  const claimWithChar = async (charId: string, notify = true): Promise<string | null> => {
+    if (!room) return '房间状态尚未加载'
+    const seat = (mySeat && mySeat.role === 'human' && !mySeat.character_id)
+      ? mySeat
+      : room.participants.find((p) => p.role === 'human' && !p.character_id && !p.claimed)
+    if (!seat) {
+      const message = '房间已满，没有空席'
+      if (notify) toast.error(message)
+      setBusy(false)
+      return message
+    }
     setBusy(true)
     try {
       await api.post(`/sessions/${room.id}/claim`, { seat_order: seat.seat_order, character_id: charId })
       await refreshRoom()
+      return null
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : '入座失败')
+      const message = e instanceof Error ? e.message : '入座失败'
+      if (notify) toast.error(message)
+      return message
+    } finally { setBusy(false) }
+  }
+
+  const importAndClaim = async (character: Character) => {
+    if (!room) return
+    setBusy(true)
+    try {
+      const imported = await api.post<Character>('/characters', {
+        name: character.name,
+        module_id: room.module_id,
+        rule_system: character.rule_system || 'coc',
+        is_player: true,
+        base_attributes: character.base_attributes,
+        skills: character.skills,
+        system_data: character.system_data,
+        backstory: character.backstory,
+      })
+      const claimError = await claimWithChar(imported.id, false)
+      if (claimError) {
+        setMyChars((prev) => prev.some((c) => c.id === imported.id) ? prev : [...prev, imported])
+        toast.error(`角色已导入房主主机，但入座失败：${claimError}。可从房主角色列表重试`)
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '导入角色失败')
     } finally { setBusy(false) }
   }
 
@@ -171,15 +231,18 @@ export function RoomLobbyPage() {
         is_player: true, age: draft.age ?? 25, base_attributes: draft.base_attributes,
         skills: draft.skills, system_data: draft.system_data, backstory: draft.backstory ?? '',
       })
-      await claimWithChar(created.id)
+      const claimError = await claimWithChar(created.id, false)
+      if (claimError) {
+        setMyChars((prev) => prev.some((c) => c.id === created.id) ? prev : [...prev, created])
+        toast.error(`角色已生成，但入座失败：${claimError}。可从角色列表重试`)
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'AI 生成角色失败')
-      setBusy(false)
-    }
+    } finally { setBusy(false) }
   }
 
   const toggleReady = async () => {
-    if (!room || !mySeat) return
+    if (!room || !mySeat?.character_id) return
     try {
       await api.post(`/sessions/${room.id}/ready`, { ready: !mySeat.ready })
       await refreshRoom()
@@ -200,7 +263,7 @@ export function RoomLobbyPage() {
 
   const sendChat = async () => {
     const text = chatInput.trim()
-    if (!text || !room || !mySeat) return
+    if (!text || !room || !mySeat?.character_id) return
     setChatInput('')
     try {
       await api.post(`/sessions/${room.id}/ooc`, { content: text, acting_character_id: mySeat.character_id })
@@ -209,7 +272,7 @@ export function RoomLobbyPage() {
 
   const onChatInput = (v: string) => {
     setChatInput(v)
-    if (!room || !mySeat) return
+    if (!room || !mySeat?.character_id) return
     const now = Date.now()
     if (now - lastTypingSent.current > 2000) {
       lastTypingSent.current = now
@@ -226,7 +289,29 @@ export function RoomLobbyPage() {
 
   const viewSeat = async (charId: string | null) => {
     if (!charId) return
-    try { setPanelChar(await api.get<Character>(`/characters/${charId}`)) } catch { /* ignore */ }
+    try {
+      setEvaluation(null)
+      setPanelChar(await api.get<Character>(`/characters/${charId}`))
+    } catch { /* ignore */ }
+  }
+
+  const evaluateSeat = async (charId: string | null) => {
+    if (!charId || !room) return
+    setEvaluating(true)
+    try {
+      const character = await api.get<Character>(`/characters/${charId}`)
+      setPanelChar(character)
+      const systemData = character.system_data || {}
+      const result = await api.post<CharacterEvaluation>('/characters/evaluate', {
+        module_id: room.module_id,
+        name: character.name,
+        occupation: String(systemData.occupation || systemData.profession || ''),
+        backstory: character.backstory,
+      })
+      setEvaluation(result)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '角色适配评估失败')
+    } finally { setEvaluating(false) }
   }
 
   const copyCode = () => {
@@ -290,7 +375,12 @@ export function RoomLobbyPage() {
                 ? (p.ready ? '已准备' : '待准备')
                 : (p.character_id ? '就绪' : '')
               const showDot = p.role === 'human' && p.character_id
-              const canKick = amHost && p.character_id && p.role === 'human' && !p.is_primary
+              const canKick = amHost && p.claimed && p.role === 'human' && !p.is_primary && !p.is_mine
+              const seatLabel = p.character_id
+                ? p.character_name || '未知角色'
+                : p.claimed
+                  ? (p.is_mine ? '已加入，等待选择角色' : '已预留 · 等待玩家选择角色')
+                  : '空席 · 等待真人加入'
               return (
                 <div key={p.seat_order} className="flex items-center gap-2 px-2 py-1.5 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
                   <SeatIcon kind={seatKind(p)} size={15} />
@@ -307,9 +397,30 @@ export function RoomLobbyPage() {
                     className="text-sm text-left flex-1 disabled:cursor-default"
                     style={{ color: p.is_mine ? 'var(--color-text-accent)' : 'var(--color-text-primary)' }}
                   >
-                    {p.character_id ? p.character_name || '未知角色' : '空席 · 等待真人加入'}
+                    {seatLabel}
                     {p.is_host ? ' · 房主' : ''}{p.is_mine ? '（我）' : ''}
                   </button>
+                  {p.character_id && (
+                    <button
+                      onClick={() => viewSeat(p.character_id)}
+                      className="btn-secondary !px-1.5 !py-1"
+                      title="查看角色卡"
+                      aria-label="查看角色卡"
+                    >
+                      <Eye size={13} />
+                    </button>
+                  )}
+                  {p.character_id && p.role === 'human' && (myKpSeat || (room.kp_mode === 'human' && amHost)) && (
+                    <button
+                      onClick={() => void evaluateSeat(p.character_id)}
+                      disabled={evaluating}
+                      className="btn-secondary !px-1.5 !py-1"
+                      title="评估角色是否适合本模组"
+                      aria-label="评估角色适配性"
+                    >
+                      <ScanSearch size={13} />
+                    </button>
+                  )}
                   {readyBadge && (
                     <span className="text-xs inline-flex items-center gap-0.5" style={{ color: p.ready || p.role !== 'human' ? 'var(--color-success)' : 'var(--color-text-secondary)' }}>
                       {(p.ready || p.role !== 'human') && <Check size={12} />}{readyBadge}
@@ -335,7 +446,7 @@ export function RoomLobbyPage() {
                 <span className="text-sm" style={{ color: 'var(--color-text-accent)' }}>你已作为真人 KP 加入</span>
                 {myKpSeat.is_host && <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>房主权限独立于玩家席</span>}
               </div>
-            ) : !mySeat ? (
+            ) : !mySeat || needsCharacter ? (
               <div>
                 {openKpSeat && (
                   <div className="mb-3 flex items-center gap-2">
@@ -352,6 +463,18 @@ export function RoomLobbyPage() {
                       className="px-2.5 py-1 rounded-full text-xs border"
                       style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }}>
                       {c.name}
+                    </button>
+                  ))}
+                  {localChars.length > 0 && (
+                    <span className="basis-full text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                      本机角色（导入到房主主机）
+                    </span>
+                  )}
+                  {localChars.map((c) => (
+                    <button key={`local-${c.id}`} onClick={() => void importAndClaim(c)} disabled={busy}
+                      className="btn-secondary !px-2.5 !py-1 text-xs"
+                      title="复制到房主主机并入座">
+                      {c.name} · 导入
                     </button>
                   ))}
                   <button onClick={generateAndClaim} disabled={busy} className="btn-secondary !px-2 !py-1 text-xs inline-flex items-center gap-1">
@@ -397,11 +520,11 @@ export function RoomLobbyPage() {
                 if (e.nativeEvent.isComposing) return
                 if (e.key === 'Enter') { e.preventDefault(); sendChat() }
               }}
-              placeholder={mySeat ? '说点什么…' : '入座后可发言'}
-              disabled={!mySeat}
+              placeholder={mySeat?.character_id ? '说点什么…' : '选择角色后可发言'}
+              disabled={!mySeat?.character_id}
               className="input flex-1"
             />
-            <button onClick={sendChat} disabled={!mySeat || !chatInput.trim()} className="btn-primary">发送</button>
+            <button onClick={sendChat} disabled={!mySeat?.character_id || !chatInput.trim()} className="btn-primary">发送</button>
           </div>
         </div>
 
@@ -430,6 +553,15 @@ export function RoomLobbyPage() {
             <span>角色卡</span>
             <button onClick={() => setPanelChar(null)} className="btn-secondary !px-2 !py-0.5">关闭</button>
           </div>
+          {evaluation && (
+            <div className="mx-3 mt-3 rounded border p-2 text-xs" style={{ borderColor: evaluation.compatible ? 'var(--color-success)' : 'var(--color-danger)' }}>
+              <div className="font-semibold mb-1" style={{ color: evaluation.compatible ? 'var(--color-success)' : 'var(--color-danger)' }}>
+                {evaluation.compatible ? '适合本模组' : '存在适配风险'}
+              </div>
+              {evaluation.warnings.length > 0 && <div className="mb-1">问题：{evaluation.warnings.join('；')}</div>}
+              {evaluation.suggestions.length > 0 && <div>建议：{evaluation.suggestions.join('；')}</div>}
+            </div>
+          )}
           <CharacterPanel character={panelChar} />
         </aside>
       )}

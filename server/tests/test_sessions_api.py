@@ -112,6 +112,39 @@ def test_legacy_single_player_create_still_works(client):
     assert body["participants"][0]["is_primary"]
 
 
+def test_join_reserves_player_seat_and_persists_session_membership(client):
+    c, ids = client
+    host = {"X-Player-Token": "host-token"}
+    guest = {"X-Player-Token": "guest-token"}
+    created = c.post(
+        "/api/sessions",
+        json={
+            "module_id": ids["module"],
+            "participants": [
+                {"character_id": ids["hero"], "role": "human", "is_primary": True},
+                {"character_id": None, "role": "human"},
+            ],
+        },
+        headers=host,
+    )
+    assert created.status_code == 200, created.text
+    sid = created.json()["id"]
+
+    joined = c.post(f"/api/sessions/{sid}/join", headers=guest)
+    assert joined.status_code == 200, joined.text
+    mine = [p for p in joined.json()["participants"] if p["is_mine"]]
+    assert len(mine) == 1
+    assert mine[0]["claimed"] is True and mine[0]["character_id"] is None
+
+    listed = c.get("/api/sessions", headers=guest)
+    assert listed.status_code == 200, listed.text
+    assert sid in {session["id"] for session in listed.json()}
+
+    joined_again = c.post(f"/api/sessions/{sid}/join", headers=guest)
+    assert joined_again.status_code == 200, joined_again.text
+    assert len([p for p in joined_again.json()["participants"] if p["is_mine"]]) == 1
+
+
 def _make_session(c, ids) -> str:
     resp = c.post(
         "/api/sessions",

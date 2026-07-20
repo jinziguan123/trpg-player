@@ -30,8 +30,8 @@ function authHeaders(extra?: HeadersInit): HeadersInit {
   return { 'X-Player-Token': getPlayerToken(), ...(extra || {}) }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${getApiBase()}${path}`, {
+async function requestAt<T>(base: string, path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${base}${path}`, {
     ...init,
     headers: authHeaders({ 'Content-Type': 'application/json', ...(init?.headers || {}) }),
   })
@@ -45,6 +45,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(msg)
   }
   return res.json()
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  return requestAt<T>(getApiBase(), path, init)
 }
 
 /** multipart 文件上传：走 getApiBase()（客人模式打到房主 IP）+ 带 X-Player-Token；
@@ -77,6 +81,23 @@ export const api = {
     request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined }),
   delete: <T = void>(path: string, body?: unknown) =>
     request<T>(path, { method: 'DELETE', body: body ? JSON.stringify(body) : undefined }),
+}
+
+/**
+ * 始终访问当前前端同源的本机后端。
+ * 客人连接远程房主后，api 会切到房主地址；localApi 保留读取本机角色库的能力，
+ * 用于把本机已有角色导入远程房间。
+ */
+export const localApi = {
+  get: <T>(path: string) => requestAt<T>('/api', path),
+  post: <T>(path: string, body?: unknown) =>
+    requestAt<T>('/api', path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
+  put: <T>(path: string, body?: unknown) =>
+    requestAt<T>('/api', path, { method: 'PUT', body: JSON.stringify(body) }),
+  patch: <T>(path: string, body?: unknown) =>
+    requestAt<T>('/api', path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined }),
+  delete: <T = void>(path: string, body?: unknown) =>
+    requestAt<T>('/api', path, { method: 'DELETE', body: body ? JSON.stringify(body) : undefined }),
 }
 
 async function* parseSSEStream(res: Response) {
