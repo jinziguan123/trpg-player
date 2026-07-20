@@ -45,6 +45,22 @@ def test_human_kp_creates_separate_owned_seat_and_authorizes(tmp_path):
     assert session_service.resolve_actor(db, session.id, "kp-token", hero.id).id == hero.id
 
 
+def test_human_kp_token_uses_player_seat_for_ready_state(tmp_path):
+    db = _db(tmp_path)()
+    _module, _hero, session = _seed(db)
+    parts = session_service.get_participants(db, session.id)
+    kp = next(p for p in parts if p.role == "kp")
+    player = next(p for p in parts if p.role == "human")
+    assert kp.owner_token == player.owner_token == "kp-token"
+    assert kp.ready is True
+
+    session_service.set_ready(db, session.id, "kp-token", False)
+    db.refresh(kp)
+    db.refresh(player)
+    assert kp.ready is True
+    assert player.ready is False
+
+
 def test_human_kp_action_publishes_narration_without_llm(tmp_path):
     db = _db(tmp_path)()
     module, _hero, session = _seed(db)

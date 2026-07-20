@@ -394,8 +394,10 @@ export function GameSessionPage() {
   const [combatLogSince, setCombatLogSince] = useState<number | null>(null)
 
   const primaryId = currentSession?.player_character_id ?? null
-  // 多人：我在本房间认领的角色（无则回退到主角，兼容单人）
-  const myCharId = currentSession?.participants?.find((p) => p.is_mine)?.character_id ?? primaryId
+  // KP 席是控制身份，不是玩家角色；同一 token 同时拥有 KP + 玩家席时，优先取角色席。
+  const myPlayerSeat = currentSession?.participants?.find((p) => p.is_mine && p.role !== 'kp') ?? null
+  // 无 participant 的旧单人会话才回退主角；KP-only 用户不能被误当成主角。
+  const myCharId = myPlayerSeat?.character_id ?? (currentSession?.participants?.length ? null : primaryId)
   const isKp = currentSession?.kp_mode === 'human'
     && !!currentSession.participants?.some((p) => p.role === 'kp' && p.is_mine)
   const shownCharId = panelCharId ?? myCharId
@@ -426,9 +428,9 @@ export function GameSessionPage() {
   const [typingName, setTypingName] = useState('')
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastTypingSent = useRef(0)
-  const myName = currentSession?.participants?.find((p) => p.is_mine)?.character_name ?? null
+  const myName = myPlayerSeat?.character_name ?? null
   // 房主 = 我认领的席位是 0 号（房主锚点）；仅房主可收编临场角色
-  const isHost = currentSession?.participants?.find((p) => p.is_mine)?.seat_order === 0
+  const isHost = myPlayerSeat?.seat_order === 0
   const myNameRef = useRef<string | null>(null)
   myNameRef.current = myName
   const [liveConnected, setLiveConnected] = useState(true)

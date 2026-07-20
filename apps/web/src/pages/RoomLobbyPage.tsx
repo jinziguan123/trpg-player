@@ -48,9 +48,10 @@ export function RoomLobbyPage() {
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastTypingSent = useRef(0)
   const myNameRef = useRef<string | null>(null)
-  myNameRef.current = room?.participants.find((p) => p.is_mine)?.character_name ?? null
+  const myPlayerSeat = room?.participants.find((p) => p.is_mine && p.role !== 'kp') ?? null
+  myNameRef.current = myPlayerSeat?.character_name ?? null
 
-  const mySeat = room?.participants.find((p) => p.is_mine) ?? null
+  const mySeat = myPlayerSeat
   const amHost = !!room?.participants.some((p) => p.is_host && p.is_mine)
 
   const gaps = useCallback((r: RoomData): string[] => {

@@ -403,7 +403,9 @@ def set_ready(
         .filter(
             SessionParticipant.session_id == session_id,
             SessionParticipant.owner_token == token,
+            SessionParticipant.role == "human",
         )
+        .order_by(SessionParticipant.seat_order.asc())
         .first()
     )
     if not token or not seat:
