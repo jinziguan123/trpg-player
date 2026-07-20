@@ -1,0 +1,109 @@
+import { useEffect, useRef, useState } from 'react'
+import { ImageOff, LoaderCircle } from 'lucide-react'
+import { api, getServerUrl } from '@/api/client'
+
+export type ModuleImageKind = 'scene' | 'npc' | 'clue'
+
+interface ModuleImageProps {
+  src?: string
+  moduleId?: string
+  kind: ModuleImageKind
+  itemId: string
+  field: 'image' | 'portrait'
+  alt: string
+  aspectRatio?: string
+  objectFit?: 'cover' | 'contain'
+  className?: string
+  onRegenerated?: (url: string) => void
+}
+
+function absoluteImageUrl(src: string): string {
+  if (/^https?:\/\//i.test(src)) return src
+  return `${getServerUrl()}${src}`
+}
+
+function verificationUrl(src: string): string {
+  const url = absoluteImageUrl(src)
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}verify=${Date.now().toString(36)}`
+}
+
+export function ModuleImage({
+  src,
+  moduleId,
+  kind,
+  itemId,
+  field,
+  alt,
+  aspectRatio = '16 / 9',
+  objectFit = 'cover',
+  className = '',
+  onRegenerated,
+}: ModuleImageProps) {
+  const [imageUrl, setImageUrl] = useState(() => src ? verificationUrl(src) : '')
+  const [status, setStatus] = useState<'loading' | 'ready' | 'regenerating' | 'failed'>('loading')
+  const attemptedRef = useRef(false)
+
+  useEffect(() => {
+    setImageUrl(src ? verificationUrl(src) : '')
+    setStatus('loading')
+  }, [src])
+
+  useEffect(() => {
+    attemptedRef.current = false
+  }, [moduleId, kind, itemId])
+
+  if (!src || !imageUrl) return null
+
+  const handleError = async () => {
+    if (attemptedRef.current || !moduleId) {
+      setStatus('failed')
+      return
+    }
+    attemptedRef.current = true
+    setStatus('regenerating')
+    try {
+      const result = await api.post<{ url: string }>(`/modules/${moduleId}/images/regenerate`, {
+        kind,
+        item_id: itemId,
+        field,
+      })
+      setImageUrl(absoluteImageUrl(result.url))
+      setStatus('loading')
+      onRegenerated?.(result.url)
+    } catch {
+      setStatus('failed')
+    }
+  }
+
+  return (
+    <div
+      className={`relative overflow-hidden rounded-md ${className}`}
+      style={{ aspectRatio, border: '1px solid var(--color-border)', background: 'var(--color-bg-tertiary)' }}
+    >
+      {status !== 'failed' && (
+        <img
+          src={imageUrl}
+          alt={alt}
+          className="block h-full w-full"
+          style={{ objectFit, opacity: status === 'ready' ? 1 : 0.35 }}
+          onLoad={() => setStatus('ready')}
+          onError={handleError}
+        />
+      )}
+      {status === 'regenerating' && (
+        <div className="absolute inset-0 flex items-center justify-center" aria-label="图片重新生成中">
+          <LoaderCircle className="animate-spin" size={22} />
+        </div>
+      )}
+      {status === 'failed' && (
+        <div
+          className="absolute inset-0 flex items-center justify-center gap-2 text-xs"
+          style={{ color: 'var(--color-text-secondary)' }}
+        >
+          <ImageOff size={18} /> 图片暂不可用
+        </div>
+      )}
+    </div>
+  )
+}

@@ -7,11 +7,12 @@ import {
 import dagre from 'dagre'
 import { GiPadlock } from 'react-icons/gi'
 import { X } from 'lucide-react'
+import { ModuleImage, type ModuleImageKind } from './ModuleImage'
 import '@xyflow/react/dist/base.css'
 
-interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[] }
-interface NPC { id: string; name?: string; description?: string; personality?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number> }
-interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string }
+interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[]; image?: string }
+interface NPC { id: string; name?: string; description?: string; personality?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number>; portrait?: string }
+interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string; image?: string }
 interface SceneData extends Record<string, unknown> { name: string; npcs: string[]; clues: string[]; orphan?: boolean }
 
 const NODE_W = 210
@@ -123,7 +124,8 @@ function build(scenes: Scene[], npcs: NPC[], clues: Clue[]): { nodes: Node[]; ed
 }
 
 /** 点击节点弹出的详情面板：场景描述、连接、NPC（含秘密/技能）、线索（含发现条件）。 */
-function DetailPanel({ scene, npcs, clues, sceneNameById, orphan, orphanNpcs, orphanClues, onClose }: {
+function DetailPanel({ moduleId, scene, npcs, clues, sceneNameById, orphan, orphanNpcs, orphanClues, onImageRegenerated, onClose }: {
+  moduleId?: string
   scene?: Scene
   npcs: NPC[]
   clues: Clue[]
@@ -131,6 +133,7 @@ function DetailPanel({ scene, npcs, clues, sceneNameById, orphan, orphanNpcs, or
   orphan?: boolean
   orphanNpcs: NPC[]
   orphanClues: Clue[]
+  onImageRegenerated?: (kind: ModuleImageKind, itemId: string, url: string) => void
   onClose: () => void
 }) {
   const title = orphan ? '未归类' : scene ? sceneName(scene) : ''
@@ -149,6 +152,18 @@ function DetailPanel({ scene, npcs, clues, sceneNameById, orphan, orphanNpcs, or
         <h3 className="font-semibold text-base truncate" style={{ color: 'var(--color-text-accent)' }}>{title}</h3>
         <button onClick={onClose} className="p-1 rounded hover:bg-[var(--color-bg-tertiary)] flex-shrink-0" title="关闭"><X size={16} /></button>
       </div>
+      {!orphan && scene?.image && (
+        <ModuleImage
+          src={scene.image}
+          moduleId={moduleId}
+          kind="scene"
+          itemId={scene.id}
+          field="image"
+          alt={title}
+          className="mb-3"
+          onRegenerated={(url) => onImageRegenerated?.('scene', scene.id, url)}
+        />
+      )}
 
       {!orphan && (
         <PanelBlock label="危险度 / 氛围">
@@ -173,6 +188,19 @@ function DetailPanel({ scene, npcs, clues, sceneNameById, orphan, orphanNpcs, or
         {shownNpcs.length === 0 && <p style={{ color: 'var(--color-text-secondary)', opacity: 0.6 }}>—</p>}
         {shownNpcs.map((n) => (
           <div key={n.id} className="rounded-md p-2 mb-2" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
+            {n.portrait && (
+              <ModuleImage
+                src={n.portrait}
+                moduleId={moduleId}
+                kind="npc"
+                itemId={n.id}
+                field="portrait"
+                alt={n.name || 'NPC'}
+                aspectRatio="3 / 4"
+                className="mb-2"
+                onRegenerated={(url) => onImageRegenerated?.('npc', n.id, url)}
+              />
+            )}
             <div className="font-semibold">{n.name || '(未命名)'}</div>
             {n.description && <p className="whitespace-pre-wrap mt-0.5" style={{ color: 'var(--color-text-primary)' }}>{n.description}</p>}
             {n.personality && <p className="mt-0.5 text-xs" style={{ color: 'var(--color-text-secondary)' }}>性格：{n.personality}</p>}
@@ -195,6 +223,19 @@ function DetailPanel({ scene, npcs, clues, sceneNameById, orphan, orphanNpcs, or
         {shownClues.length === 0 && <p style={{ color: 'var(--color-text-secondary)', opacity: 0.6 }}>—</p>}
         {shownClues.map((c) => (
           <div key={c.id} className="rounded-md p-2 mb-2" style={{ background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border)' }}>
+            {c.image && (
+              <ModuleImage
+                src={c.image}
+                moduleId={moduleId}
+                kind="clue"
+                itemId={c.id}
+                field="image"
+                alt={c.name || '线索'}
+                aspectRatio="4 / 3"
+                className="mb-2"
+                onRegenerated={(url) => onImageRegenerated?.('clue', c.id, url)}
+              />
+            )}
             <div className="font-semibold flex items-center gap-1" style={{ color: 'var(--color-danger)' }}><GiPadlock className="flex-shrink-0" />{c.name || '(未命名)'}</div>
             {c.description && <p className="whitespace-pre-wrap mt-0.5" style={{ color: 'var(--color-danger)' }}>{c.description}</p>}
             {c.trigger_condition && <p className="mt-0.5 text-xs" style={{ color: 'var(--color-text-secondary)' }}>发现条件：{c.trigger_condition}</p>}
@@ -214,7 +255,13 @@ function PanelBlock({ label, children }: { label: string; children: React.ReactN
   )
 }
 
-export function ModuleGraph({ scenes, npcs, clues }: { scenes: Scene[]; npcs: NPC[]; clues: Clue[] }) {
+export function ModuleGraph({ moduleId, scenes, npcs, clues, onImageRegenerated }: {
+  moduleId?: string
+  scenes: Scene[]
+  npcs: NPC[]
+  clues: Clue[]
+  onImageRegenerated?: (kind: ModuleImageKind, itemId: string, url: string) => void
+}) {
   const { nodes, edges } = useMemo(() => build(scenes, npcs, clues), [scenes, npcs, clues])
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
@@ -255,6 +302,7 @@ export function ModuleGraph({ scenes, npcs, clues }: { scenes: Scene[]; npcs: NP
       </ReactFlowProvider>
       {selectedId && (selectedScene || isOrphan) && (
         <DetailPanel
+          moduleId={moduleId}
           scene={selectedScene}
           npcs={panelNpcs}
           clues={panelClues}
@@ -262,6 +310,7 @@ export function ModuleGraph({ scenes, npcs, clues }: { scenes: Scene[]; npcs: NP
           orphan={isOrphan}
           orphanNpcs={orphanNpcs}
           orphanClues={orphanClues}
+          onImageRegenerated={onImageRegenerated}
           onClose={() => setSelectedId(null)}
         />
       )}

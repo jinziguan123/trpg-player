@@ -6,6 +6,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@
 import { GiReturnArrow, GiScrollUnfurled, GiPadlock } from 'react-icons/gi'
 import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch } from 'lucide-react'
 import { ModuleGraph } from '../components/module/ModuleGraph'
+import { ModuleImage, type ModuleImageKind } from '../components/module/ModuleImage'
 import { ModuleTimeline } from '../components/module/ModuleTimeline'
 import { MODULE_DIFFICULTIES } from '../lib/module'
 
@@ -13,9 +14,9 @@ import { MODULE_DIFFICULTIES } from '../lib/module'
 interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string }
 interface NpcState { when?: string[]; personality?: string; initial_location?: string; alive?: boolean }
 interface SceneEvent { trigger?: string; kind?: string; san_loss?: string; skill?: string; damage?: string; note?: string }
-interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[]; events?: SceneEvent[]; states?: SceneState[] }
-interface NPC { id: string; name?: string; description?: string; personality?: string; background?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number>; attributes?: Record<string, number>; hp?: number; armor?: number; weapon?: string; goals?: string[]; states?: NpcState[] }
-interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string }
+interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[]; events?: SceneEvent[]; states?: SceneState[]; image?: string }
+interface NPC { id: string; name?: string; description?: string; personality?: string; background?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number>; attributes?: Record<string, number>; hp?: number; armor?: number; weapon?: string; goals?: string[]; states?: NpcState[]; portrait?: string }
+interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string; image?: string }
 interface Trigger { id: string; when?: string; set_flags?: string[]; clear_flags?: string[]; description?: string }
 interface ModuleData {
   id?: string
@@ -110,6 +111,14 @@ export function ModuleDetailPage() {
   const rmNpcState = (i: number, j: number) =>
     updNpc(i, { states: (data.npcs[i]?.states || []).filter((_, jj) => jj !== j) })
 
+  const onGraphImageRegenerated = useCallback((kind: ModuleImageKind, itemId: string, url: string) => {
+    setData((d) => {
+      if (kind === 'scene') return { ...d, scenes: d.scenes.map((s) => s.id === itemId ? { ...s, image: url } : s) }
+      if (kind === 'npc') return { ...d, npcs: d.npcs.map((n) => n.id === itemId ? { ...n, portrait: url } : n) }
+      return { ...d, clues: d.clues.map((c) => c.id === itemId ? { ...c, image: url } : c) }
+    })
+  }, [])
+
   // 触发器（模组级 triggers）增删改
   const addTrigger = () => setData((d) => ({ ...d, triggers: [...d.triggers, { id: genId('trig'), when: '', set_flags: [], clear_flags: [] }] }))
   const updTrigger = (i: number, patch: Partial<Trigger>) => setData((d) => ({ ...d, triggers: d.triggers.map((t, ii) => ii === i ? { ...t, ...patch } : t) }))
@@ -192,7 +201,7 @@ export function ModuleDetailPage() {
       )}
 
       {view === 'graph' && !edit ? (
-        <ModuleGraph scenes={data.scenes} npcs={data.npcs} clues={data.clues} />
+        <ModuleGraph moduleId={data.id} scenes={data.scenes} npcs={data.npcs} clues={data.clues} onImageRegenerated={onGraphImageRegenerated} />
       ) : view === 'timeline' && !edit ? (
         <ModuleTimeline scenes={data.scenes} npcs={data.npcs} triggers={data.triggers} />
       ) : (
@@ -246,6 +255,7 @@ export function ModuleDetailPage() {
       <Section title={`场景（${data.scenes.length}）`} onAdd={edit ? () => setData((d) => ({ ...d, scenes: [...d.scenes, { id: genId('scene'), name: '', description: '', danger: 'calm', atmosphere: '', connections: [] }] })) : undefined}>
         {data.scenes.map((s, i) => (
           <ItemCard key={s.id || i} onRemove={edit ? () => removeAt('scenes', i) : undefined}>
+            {!edit && s.image && <ModuleImage src={s.image} moduleId={data.id} kind="scene" itemId={s.id} field="image" alt={sceneName(s)} className="mb-3" onRegenerated={(url) => updScene(i, { image: url })} />}
             <Row label="名称">{edit ? <TextInput value={sceneName(s) === '(未命名场景)' ? '' : sceneName(s)} onChange={(v) => updScene(i, { name: v })} /> : <span className="font-semibold">{sceneName(s)}</span>}</Row>
             <Row label="描述">{edit ? <TextInput value={s.description || ''} onChange={(v) => updScene(i, { description: v })} multiline /> : <span className="whitespace-pre-wrap">{s.description || '—'}</span>}</Row>
             <Row label="危险度">{edit ? (
@@ -282,6 +292,7 @@ export function ModuleDetailPage() {
       <Section title={`NPC（${data.npcs.length}）`} onAdd={edit ? () => setData((d) => ({ ...d, npcs: [...d.npcs, { id: genId('npc'), name: '', description: '', personality: '', secrets: [], initial_location: '', skills: {} }] })) : undefined}>
         {data.npcs.map((n, i) => (
           <ItemCard key={n.id || i} onRemove={edit ? () => removeAt('npcs', i) : undefined}>
+            {!edit && n.portrait && <ModuleImage src={n.portrait} moduleId={data.id} kind="npc" itemId={n.id} field="portrait" alt={n.name || 'NPC'} aspectRatio="3 / 4" className="mb-3 max-w-48" onRegenerated={(url) => updNpc(i, { portrait: url })} />}
             <Row label="姓名">{edit ? <TextInput value={n.name || ''} onChange={(v) => updNpc(i, { name: v })} /> : <span className="font-semibold">{n.name || '(未命名)'}</span>}</Row>
             <Row label="描述">{edit ? <TextInput value={n.description || ''} onChange={(v) => updNpc(i, { description: v })} multiline /> : <span className="whitespace-pre-wrap">{n.description || '—'}</span>}</Row>
             <Row label="性格">{edit ? <TextInput value={n.personality || ''} onChange={(v) => updNpc(i, { personality: v })} /> : <span>{n.personality || '—'}</span>}</Row>
@@ -337,6 +348,7 @@ export function ModuleDetailPage() {
       <Section title={`线索（${data.clues.length}）`} onAdd={edit ? () => setData((d) => ({ ...d, clues: [...d.clues, { id: genId('clue'), name: '', description: '', location: '', trigger_condition: '' }] })) : undefined}>
         {data.clues.map((c, i) => (
           <ItemCard key={c.id || i} onRemove={edit ? () => removeAt('clues', i) : undefined}>
+            {!edit && c.image && <ModuleImage src={c.image} moduleId={data.id} kind="clue" itemId={c.id} field="image" alt={c.name || '线索'} aspectRatio="4 / 3" className="mb-3" onRegenerated={(url) => updClue(i, { image: url })} />}
             <Row label="名称">{edit ? <TextInput value={c.name || ''} onChange={(v) => updClue(i, { name: v })} /> : <span className="font-semibold" style={{ color: 'var(--color-danger)' }}>{c.name || '(未命名)'}</span>}</Row>
             <Row label="内容">{edit ? <TextInput value={c.description || ''} onChange={(v) => updClue(i, { description: v })} multiline /> : <span className="whitespace-pre-wrap" style={{ color: 'var(--color-danger)' }}>{c.description || '—'}</span>}</Row>
             <Row label="位置">{edit ? <TextInput value={c.location || ''} onChange={(v) => updClue(i, { location: v })} placeholder="场景 id" /> : <span className="text-xs">{c.location || '—'}</span>}</Row>
