@@ -5568,6 +5568,52 @@
         ]
       }
     },
+    "/api/sessions/{session_id}/kp/source": {
+      "get": {
+        "description": "按需读取真人 KP 专属的模组原文与解析结果。",
+        "operationId": "get_module_source_api_sessions__session_id__kp_source_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Get Module Source",
+        "tags": [
+          "human-kp"
+        ]
+      }
+    },
     "/api/sessions/{session_id}/kp/team-turn": {
       "post": {
         "operationId": "run_team_turn_api_sessions__session_id__kp_team_turn_post",

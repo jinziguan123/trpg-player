@@ -1232,6 +1232,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/kp/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Module Source
+         * @description 按需读取真人 KP 专属的模组原文与解析结果。
+         */
+        get: operations["get_module_source_api_sessions__session_id__kp_source_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/kp/team-turn": {
         parameters: {
             query?: never;
@@ -5106,6 +5126,37 @@ export interface operations {
                 scope: "rule" | "module";
                 q: string;
             };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_module_source_api_sessions__session_id__kp_source_get: {
+        parameters: {
+            query?: never;
             header?: never;
             path: {
                 session_id: string;

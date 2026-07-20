@@ -34,6 +34,7 @@ def _db(tmp_path):
 def _seed(db):
     module = Module(
         title="真人 KP 工作区", rule_system="coc", rag_status="",
+        raw_content="第一幕：门厅的吊灯在午夜熄灭。",
         scenes=[{"id": "s1", "title": "门厅", "description": "枝形吊灯摇晃不止"}],
         npcs=[{"id": "n1", "name": "管家", "description": "穿旧燕尾服", "personality": "警惕"}],
         clues=[{"id": "c1", "name": "铜钥匙", "description": "沾着黑色油污"}],
@@ -63,8 +64,39 @@ def test_workspace_is_private_and_exposes_catalogs(tmp_path):
     payload = human_kp_service.workspace_payload(db, session.id, session, module)
     assert payload["notes"] == "凶手藏在阁楼"
     assert payload["auto_ai_teammates"] is True
+    assert payload["player_missing"] is False
     assert payload["catalogs"]["npcs"] == [{"id": "n1", "name": "管家"}]
     assert "kp_state" not in SessionRead.model_validate(session).model_dump()
+
+
+def test_workspace_without_player_character_returns_warning(tmp_path):
+    db = _db(tmp_path)()
+    module = Module(title="空玩家模组", rule_system="coc", scenes=[])
+    db.add(module)
+    db.commit()
+    session = session_service.create_session(
+        db,
+        module.id,
+        [{"character_id": None, "role": "human", "is_primary": True}],
+        creator_token="kp-token",
+        kp_mode="human",
+    )
+
+    payload = human_kp_service.workspace_payload(db, session.id, session, module)
+
+    assert payload["player_missing"] is True
+    assert "signals" in payload
+
+
+def test_module_source_returns_original_and_parsed_content(tmp_path):
+    db = _db(tmp_path)()
+    module, _hero, _ally, _session = _seed(db)
+
+    source = human_kp_service.module_source_payload(module)
+
+    assert source["raw_content"] == "第一幕：门厅的吊灯在午夜熄灭。"
+    assert source["scenes"][0]["id"] == "s1"
+    assert source["handouts"][0]["content"] == "午夜前不要开门。"
 
 
 def test_advisor_draft_and_plan_never_write_public_events(tmp_path, monkeypatch):
@@ -220,11 +252,23 @@ def test_workspace_api_requires_kp_token(tmp_path):
             headers={"X-Player-Token": "other-token"},
         )
         assert denied.status_code == 403
+        denied_source = client.get(
+            f"/api/sessions/{sid}/kp/source",
+            headers={"X-Player-Token": "other-token"},
+        )
+        assert denied_source.status_code == 403
         allowed = client.get(
             f"/api/sessions/{sid}/kp/workspace",
             headers={"X-Player-Token": "kp-token"},
         )
         assert allowed.status_code == 200
         assert "notes" in allowed.json()
+        source = client.get(
+            f"/api/sessions/{sid}/kp/source",
+            headers={"X-Player-Token": "kp-token"},
+        )
+        assert source.status_code == 200
+        assert source.json()["raw_content"] == "第一幕：门厅的吊灯在午夜熄灭。"
+        assert source.json()["scenes"][0]["id"] == "s1"
     finally:
         app.dependency_overrides.clear()

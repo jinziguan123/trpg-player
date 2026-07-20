@@ -38,7 +38,21 @@ _CONTROL_TAG_RE = re.compile(r"\[(?:[A-Z_]{3,})(?::[^\]]*)?\]")
 def _party(
     db: Session, session_id: str, game_session: GameSession,
 ) -> tuple[Character, list[Character]]:
-    player = db.get(Character, game_session.player_character_id)
+    player = (
+        db.get(Character, game_session.player_character_id)
+        if game_session.player_character_id
+        else None
+    )
+    if player is None:
+        # 真人 KP 新身份模型允许创建者只占 KP 席，主角席暂时为空；
+        # 只要已有真人玩家入座，就用第一名真人角色作为上下文锚点。
+        participant_ids = [
+            p.character_id
+            for p in session_service.get_participants(db, session_id)
+            if p.role == "human" and p.character_id
+        ]
+        if participant_ids:
+            player = db.get(Character, participant_ids[0])
     if player is None:
         raise ValueError("会话缺少主角角色")
     others = session_service.get_party_members(
@@ -120,11 +134,17 @@ def remove_image_suggestion(
 def workspace_payload(
     db: Session, session_id: str, game_session: GameSession, module: Module,
 ) -> dict:
-    player, others = _party(db, session_id, game_session)
+    try:
+        player, others = _party(db, session_id, game_session)
+    except ValueError as error:
+        if str(error) != "会话缺少主角角色":
+            raise
+        player = None
+        others = session_service.get_party_members(db, session_id)
     events = session_service.get_session_events(db, session_id)
     signals = director_signals.compute_signals(
         events, module, game_session.world_state or {},
-        [player.name, *(char.name for char in others)],
+        [*( [player.name] if player else []), *(char.name for char in others)],
     )
     state = _private_state(game_session)
     return {
@@ -136,6 +156,7 @@ def workspace_payload(
         ],
         "has_ai_teammates": bool(session_service.get_ai_teammates(db, session_id)),
         "has_unprocessed_player_turn": has_unprocessed_player_turn(db, session_id, game_session),
+        "player_missing": player is None,
         "signals": asdict(signals),
         "catalogs": {
             "scenes": [
@@ -151,6 +172,25 @@ def workspace_payload(
                 for item in (getattr(module, "handouts", None) or []) if isinstance(item, dict)
             ],
         },
+    }
+
+
+def module_source_payload(module: Module) -> dict:
+    """返回 KP 专属的模组原文与解析结果，避免暴露给普通玩家接口。"""
+    return {
+        "id": module.id,
+        "title": module.title,
+        "description": module.description or "",
+        "raw_content": module.raw_content or "",
+        "world_setting": module.world_setting or {},
+        "truth": module.truth or "",
+        "scenes": module.scenes or [],
+        "npcs": module.npcs or [],
+        "clues": module.clues or [],
+        "triggers": module.triggers or [],
+        "handouts": module.handouts or [],
+        "maps": module.maps or [],
+        "rag_status": module.rag_status or "",
     }
 
 

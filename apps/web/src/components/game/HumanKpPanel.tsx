@@ -31,7 +31,7 @@ type KpAction =
   | 'hp_change'
   | 'start_combat'
 
-type PanelTab = 'tools' | 'advisor' | 'assets' | 'director'
+type PanelTab = 'tools' | 'advisor' | 'assets' | 'director' | 'source'
 
 interface CatalogItem {
   id: string
@@ -60,6 +60,7 @@ interface ImageSuggestion {
 interface Workspace {
   notes: string
   auto_ai_teammates: boolean
+  player_missing?: boolean
   image_suggestions?: ImageSuggestion[]
   has_ai_teammates: boolean
   has_unprocessed_player_turn: boolean
@@ -69,6 +70,42 @@ interface Workspace {
     npcs: CatalogItem[]
     handouts: CatalogItem[]
   }
+}
+
+interface ModuleSource {
+  id: string
+  title: string
+  description: string
+  raw_content: string
+  world_setting: Record<string, unknown>
+  truth: string
+  scenes: unknown[]
+  npcs: unknown[]
+  clues: unknown[]
+  triggers: unknown[]
+  handouts: unknown[]
+  maps: unknown[]
+  rag_status: string
+}
+
+interface KpInputProps {
+  name: string
+  placeholder: string
+  list?: string
+  fields: Record<string, string>
+  onChange: (name: string, value: string) => void
+}
+
+function KpInput({ name, placeholder, list, fields, onChange }: KpInputProps) {
+  return (
+    <input
+      value={fields[name] || ''}
+      onChange={(event) => onChange(name, event.target.value)}
+      placeholder={placeholder}
+      list={list}
+      className="input min-w-0 flex-1 text-xs"
+    />
+  )
 }
 
 interface AdvisorPlan {
@@ -136,6 +173,7 @@ const TABS: Array<{ id: PanelTab; label: string; icon: typeof WandSparkles }> = 
   { id: 'advisor', label: '参谋', icon: Bot },
   { id: 'assets', label: '配图与队友', icon: Image },
   { id: 'director', label: '导演台', icon: NotebookPen },
+  { id: 'source', label: '模组资料', icon: BookOpen },
 ]
 
 function imageUrl(src: string): string {
@@ -150,6 +188,9 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
   const [busy, setBusy] = useState('')
   const [fields, setFields] = useState<Record<string, string>>({})
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
+  const [source, setSource] = useState<ModuleSource | null>(null)
+  const [sourceView, setSourceView] = useState<'raw' | 'parsed'>('raw')
+  const [sourceOpen, setSourceOpen] = useState(false)
   const [notes, setNotes] = useState('')
   const [draftInstruction, setDraftInstruction] = useState('')
   const [draft, setDraft] = useState('')
@@ -173,6 +214,20 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
       setNotes(result.notes)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'KP 工作区加载失败')
+    }
+  }
+
+  const openModuleSource = async (force = false) => {
+    setSourceOpen(true)
+    if (source && !force) return
+    setBusy('source')
+    try {
+      setSource(await api.get<ModuleSource>(`/sessions/${sessionId}/kp/source`))
+    } catch (error) {
+      setSourceOpen(false)
+      toast.error(error instanceof Error ? error.message : '模组资料加载失败')
+    } finally {
+      setBusy('')
     }
   }
 
@@ -391,20 +446,20 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
     }
   }
 
-  const Input = ({ name, placeholder, list }: { name: string; placeholder: string; list?: string }) => (
-    <input
-      value={fields[name] || ''}
-      onChange={(event) => setField(name, event.target.value)}
-      placeholder={placeholder}
-      list={list}
-      className="input min-w-0 flex-1 text-xs"
-    />
-  )
-
   const signals = workspace?.signals
   const sceneLabel = (sceneId: string | null | undefined) => (
     workspace?.catalogs.scenes.find((scene) => scene.id === sceneId)?.name || sceneId || '模组原文片段'
   )
+  const sourceSections: Array<[string, unknown]> = [
+    ['世界设定', source?.world_setting],
+    ['幕后真相', source?.truth],
+    ['场景', source?.scenes],
+    ['NPC', source?.npcs],
+    ['线索', source?.clues],
+    ['触发器', source?.triggers],
+    ['手书', source?.handouts],
+    ['地图', source?.maps],
+  ]
 
   return (
     <section
@@ -419,7 +474,13 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
           <button
             key={id}
             type="button"
-            onClick={() => setTab(id)}
+            onClick={() => {
+              setTab(id)
+              if (id === 'source') {
+                if (sourceOpen) setSourceOpen(false)
+                else void openModuleSource()
+              }
+            }}
             className="btn-secondary inline-flex items-center gap-1 whitespace-nowrap !px-2 !py-1 text-xs"
             style={tab === id ? { borderColor: 'var(--color-accent)', color: 'var(--color-text-accent)' } : undefined}
           >
@@ -447,6 +508,11 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
 
       {!collapsed && tab === 'tools' && (
         <div>
+          {workspace?.player_missing && (
+            <div className="mb-2 rounded border px-2 py-1.5 text-xs" style={{ borderColor: 'var(--color-warning)', color: 'var(--color-warning)' }}>
+              当前还没有真人玩家角色。玩家入座并选择角色后，参谋才能生成针对具体玩家的裁定建议。
+            </div>
+          )}
           <div className="mb-2 flex items-center gap-2">
             <select
               value={action}
@@ -474,7 +540,7 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
               </div>
             )}
             {action === 'dialogue' && <>
-              <Input name="npc_id" placeholder="NPC 名称或 ID" list="kp-npcs" />
+              <KpInput name="npc_id" placeholder="NPC 名称或 ID" list="kp-npcs" fields={fields} onChange={setField} />
               <textarea
                 value={fields.content || ''}
                 onChange={(event) => setField('content', event.target.value)}
@@ -489,26 +555,26 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
               />
             </>}
             {action === 'dice_check' && <>
-              <Input name="skill" placeholder="技能，如 幸运、侦查" />
-              <Input name="char" placeholder="角色，空=主角；在场=群检" />
+              <KpInput name="skill" placeholder="技能，如 幸运、侦查" fields={fields} onChange={setField} />
+              <KpInput name="char" placeholder="角色，空=主角；在场=群检" fields={fields} onChange={setField} />
               <select value={fields.difficulty || 'normal'} onChange={(event) => setField('difficulty', event.target.value)} className="input w-auto text-xs">
                 <option value="normal">普通</option><option value="hard">困难</option><option value="extreme">极难</option>
               </select>
-              <Input name="source" placeholder="目标/来源（可选）" />
+              <KpInput name="source" placeholder="目标/来源（可选）" fields={fields} onChange={setField} />
             </>}
             {action === 'opposed_check' && <>
-              <Input name="a" placeholder="甲方角色" /><Input name="a_skill" placeholder="甲方技能" />
-              <Input name="b" placeholder="乙方角色/NPC" /><Input name="b_skill" placeholder="乙方技能" />
+              <KpInput name="a" placeholder="甲方角色" fields={fields} onChange={setField} /><KpInput name="a_skill" placeholder="甲方技能" fields={fields} onChange={setField} />
+              <KpInput name="b" placeholder="乙方角色/NPC" fields={fields} onChange={setField} /><KpInput name="b_skill" placeholder="乙方技能" fields={fields} onChange={setField} />
             </>}
             {action === 'san_check' && <>
-              <Input name="chars" placeholder="目睹者，空=全队" /><Input name="source" placeholder="恐怖源" />
-              <Input name="success_loss" placeholder="成功损失，如 0" /><Input name="failure_loss" placeholder="失败损失，如 1d6" />
+              <KpInput name="chars" placeholder="目睹者，空=全队" fields={fields} onChange={setField} /><KpInput name="source" placeholder="恐怖源" fields={fields} onChange={setField} />
+              <KpInput name="success_loss" placeholder="成功损失，如 0" fields={fields} onChange={setField} /><KpInput name="failure_loss" placeholder="失败损失，如 1d6" fields={fields} onChange={setField} />
             </>}
-            {action === 'scene_change' && <Input name="scene_id" placeholder="场景 ID 或名称" list="kp-scenes" />}
-            {(action === 'set_flag' || action === 'clear_flag') && <Input name="flag" placeholder="剧情标志" />}
-            {action === 'handout' && <><GiScrollUnfurled size={16} /><Input name="id" placeholder="手书 ID" list="kp-handouts" /></>}
-            {action === 'hp_change' && <><Input name="target" placeholder="角色名" /><Input name="delta" placeholder="变化值，如 -3 或 2" /><Input name="reason" placeholder="原因（可选）" /></>}
-            {action === 'start_combat' && <><Swords size={16} /><Input name="enemies" placeholder="敌人名称，多个用逗号分隔" list="kp-npcs" /><Input name="trigger" placeholder="开战原因（可选）" /></>}
+            {action === 'scene_change' && <KpInput name="scene_id" placeholder="场景 ID 或名称" list="kp-scenes" fields={fields} onChange={setField} />}
+            {(action === 'set_flag' || action === 'clear_flag') && <KpInput name="flag" placeholder="剧情标志" fields={fields} onChange={setField} />}
+            {action === 'handout' && <><GiScrollUnfurled size={16} /><KpInput name="id" placeholder="手书 ID" list="kp-handouts" fields={fields} onChange={setField} /></>}
+            {action === 'hp_change' && <><KpInput name="target" placeholder="角色名" fields={fields} onChange={setField} /><KpInput name="delta" placeholder="变化值，如 -3 或 2" fields={fields} onChange={setField} /><KpInput name="reason" placeholder="原因（可选）" fields={fields} onChange={setField} /></>}
+            {action === 'start_combat' && <><Swords size={16} /><KpInput name="enemies" placeholder="敌人名称，多个用逗号分隔" list="kp-npcs" fields={fields} onChange={setField} /><KpInput name="trigger" placeholder="开战原因（可选）" fields={fields} onChange={setField} /></>}
             <button onClick={() => void submit()} disabled={!!busy} className="btn-primary inline-flex items-center gap-1 text-xs">
               {action === 'dice_check' ? <GiRollingDices size={13} /> : <Send size={13} />}
               {busy ? '处理中…' : ACTION_LABELS[action]}
@@ -646,6 +712,67 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
         <datalist id="kp-npcs">{workspace?.catalogs.npcs.map((item) => <option key={item.id} value={item.name}>{item.id}</option>)}</datalist>
         <datalist id="kp-handouts">{workspace?.catalogs.handouts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</datalist>
       </>}
+
+      {sourceOpen && !collapsed && (
+        <aside
+          className="fixed right-4 top-20 z-50 flex h-[min(78vh,720px)] w-[min(44rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-md border shadow-xl backdrop-blur-md"
+          style={{
+            background: 'color-mix(in srgb, var(--color-bg-secondary) 88%, transparent)',
+            borderColor: 'var(--color-border-strong)',
+          }}
+          aria-label="KP 模组资料"
+        >
+          <div className="flex items-center gap-2 border-b px-3 py-2" style={{ borderColor: 'var(--color-border)' }}>
+            <BookOpen size={15} style={{ color: 'var(--color-text-accent)' }} />
+            <span className="min-w-0 flex-1 truncate text-sm font-semibold">{source?.title || '模组资料'}</span>
+            <button type="button" onClick={() => void openModuleSource(true)} disabled={busy === 'source'} className="btn-secondary !p-1.5" title="刷新模组资料">
+              <RefreshCw size={13} className={busy === 'source' ? 'animate-spin' : ''} />
+            </button>
+            <button type="button" onClick={() => setSourceOpen(false)} className="btn-secondary !p-1.5" title="关闭模组资料">
+              <X size={15} />
+            </button>
+          </div>
+          <div className="flex items-center gap-1 border-b px-3 py-2" style={{ borderColor: 'var(--color-border)' }} role="tablist" aria-label="资料视图">
+            <button type="button" onClick={() => setSourceView('raw')} className="btn-secondary !px-2 !py-1 text-xs" style={sourceView === 'raw' ? { color: 'var(--color-text-accent)' } : undefined} role="tab" aria-selected={sourceView === 'raw'}>原文</button>
+            <button type="button" onClick={() => setSourceView('parsed')} className="btn-secondary !px-2 !py-1 text-xs" style={sourceView === 'parsed' ? { color: 'var(--color-text-accent)' } : undefined} role="tab" aria-selected={sourceView === 'parsed'}>解析内容</button>
+            <span className="ml-auto text-[11px]" style={{ color: 'var(--color-text-secondary)' }}>仅 KP 可见</span>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            {!source ? (
+              <div className="py-12 text-center text-sm" style={{ color: 'var(--color-text-secondary)' }}>正在加载模组资料…</div>
+            ) : sourceView === 'raw' ? (
+              <pre className="whitespace-pre-wrap text-xs leading-6" style={{ color: 'var(--color-text-primary)' }}>{source.raw_content || source.description || '该模组没有保存原文。'}</pre>
+            ) : (
+              <div className="space-y-3">
+                {sourceSections.map(([label, value]) => {
+                  const text = typeof value === 'string' ? value : JSON.stringify(value ?? {}, null, 2)
+                  if (!text || text === '{}' || text === '[]') return null
+                  return (
+                    <section key={label} className="border-b pb-3" style={{ borderColor: 'var(--color-border)' }}>
+                      <div className="mb-1 flex items-center gap-2">
+                        <h4 className="min-w-0 flex-1 text-xs font-semibold" style={{ color: 'var(--color-text-accent)' }}>{label}</h4>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setImagePrompt(text.slice(0, 1500))
+                            setTab('assets')
+                            setSourceOpen(false)
+                          }}
+                          className="btn-secondary inline-flex items-center gap-1 !px-1.5 !py-0.5 text-[11px]"
+                          title="将该段内容带入配图提示"
+                        >
+                          <Image size={11} /> 用于配图
+                        </button>
+                      </div>
+                      <pre className="whitespace-pre-wrap text-xs leading-6" style={{ color: 'var(--color-text-primary)' }}>{text}</pre>
+                    </section>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </aside>
+      )}
 
       {lookupOpen && !collapsed && (
         <div
