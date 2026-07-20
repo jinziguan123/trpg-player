@@ -303,6 +303,33 @@ def test_scene_illustration_first_entry_generates_and_caches(db_factory, monkeyp
     assert len(calls) == 1                                          # 未再生图
 
 
+def test_scene_illustration_discards_missing_cached_file(db_factory, monkeypatch, tmp_path):
+    """模组仍有旧 URL 但文件已被删除时，首入必须重新生成并回写新 URL。"""
+    from app.services import chat_service
+
+    calls, _ = _wire_image_stubs(monkeypatch, db_factory, tmp_path, "rebuilt chapel")
+    db = db_factory()
+    module = Module(
+        title="m", rule_system="coc", npcs=[],
+        scenes=[{"id": "s1", "title": "教堂", "image": "/api/images/deleted.jpg"}],
+    )
+    hero = Character(name="主角", rule_system="coc")
+    db.add_all([module, hero]); db.commit()
+    session = GameSession(module_id=module.id, player_character_id=hero.id, status="active")
+    db.add(session); db.commit()
+
+    async def enter():
+        chunks = chat_service._maybe_scene_illustration(db, session.id, module, "s1")
+        assert len(chunks) == 1 and "/api/images/deleted.jpg" not in chunks[0]
+        await _drain_bg_tasks()
+
+    asyncio.run(enter())
+    saved = db_factory().get(Module, module.id)
+    assert saved.scenes[0]["image"].startswith("/api/images/")
+    assert saved.scenes[0]["image"] != "/api/images/deleted.jpg"
+    assert len(calls) == 1
+
+
 def test_npc_portrait_generates_then_hits_cache(db_factory, monkeypatch, tmp_path):
     """NPC 立绘：首次对话生成+回写 npcs[].portrait+patch；再次对话缓存直挂 metadata、不再生图。"""
     from app.services import chat_service

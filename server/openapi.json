@@ -1034,6 +1034,35 @@
         "title": "InventoryUseRequest",
         "type": "object"
       },
+      "ModuleImageRegenerateRequest": {
+        "properties": {
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "item_id"
+        ],
+        "title": "ModuleImageRegenerateRequest",
+        "type": "object"
+      },
       "ModuleRead": {
         "properties": {
           "clues": {
@@ -2570,6 +2599,57 @@
           }
         },
         "summary": "Update Module",
+        "tags": [
+          "modules"
+        ]
+      }
+    },
+    "/api/modules/{module_id}/images/regenerate": {
+      "post": {
+        "description": "图片文件缺失时重新生成，并回写 scenes/npcs/clues 中的图片 URL。",
+        "operationId": "regenerate_module_image_api_modules__module_id__images_regenerate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module_id",
+            "required": true,
+            "schema": {
+              "title": "Module Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModuleImageRegenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Regenerate Module Image",
         "tags": [
           "modules"
         ]

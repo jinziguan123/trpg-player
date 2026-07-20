@@ -5,11 +5,12 @@ import uuid
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, get_db
 from app.schemas.module import ModuleRead, ModuleUploadResponse, ModuleWrite
-from app.services import module_rag_service, module_service
+from app.services import module_image_service, module_rag_service, module_service
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,12 @@ def _kick_rag_index(background, db: Session, module) -> None:
 
 
 router = APIRouter(prefix="/api/modules", tags=["modules"])
+
+
+class ModuleImageRegenerateRequest(BaseModel):
+    kind: str
+    item_id: str
+    field: str | None = None
 
 
 def _decode_text(content: bytes) -> str:
@@ -369,6 +376,29 @@ def get_module(module_id: str, db: Session = Depends(get_db)):
     if not module:
         raise HTTPException(404, "模组不存在")
     return module
+
+
+@router.post("/{module_id}/images/regenerate")
+async def regenerate_module_image(
+    module_id: str,
+    data: ModuleImageRegenerateRequest,
+    db: Session = Depends(get_db),
+):
+    """图片文件缺失时重新生成，并回写 scenes/npcs/clues 中的图片 URL。"""
+    module = module_service.get_module(db, module_id)
+    if not module:
+        raise HTTPException(404, "模组不存在")
+    try:
+        url = await module_image_service.regenerate_module_image(
+            db, module, data.kind, data.item_id, data.field,
+        )
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    if not url:
+        raise HTTPException(503, "图片重新生成失败，请检查文生图配置后重试")
+    return {"url": url, "kind": data.kind, "item_id": data.item_id}
 
 
 @router.post("/{module_id}/rag/rebuild", response_model=ModuleRead)

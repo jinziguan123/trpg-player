@@ -248,6 +248,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/modules/{module_id}/images/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Regenerate Module Image
+         * @description 图片文件缺失时重新生成，并回写 scenes/npcs/clues 中的图片 URL。
+         */
+        post: operations["regenerate_module_image_api_modules__module_id__images_regenerate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/modules/{module_id}/rag/rebuild": {
         parameters: {
             query?: never;
@@ -2113,6 +2133,15 @@ export interface components {
             /** Item Id */
             item_id: string;
         };
+        /** ModuleImageRegenerateRequest */
+        ModuleImageRegenerateRequest: {
+            /** Field */
+            field?: string | null;
+            /** Item Id */
+            item_id: string;
+            /** Kind */
+            kind: string;
+        };
         /** ModuleRead */
         ModuleRead: {
             /** Clues */
@@ -3031,6 +3060,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regenerate_module_image_api_modules__module_id__images_regenerate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModuleImageRegenerateRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

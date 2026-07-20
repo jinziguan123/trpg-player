@@ -35,6 +35,7 @@ from app.models.session import GameSession
 from app.rules.registry import get_engine
 from app.services import (
     inventory_service,
+    module_image_service,
     module_rag_service,
     rag_stats,
     rulebook_service,
@@ -4362,6 +4363,8 @@ def _maybe_scene_illustration(
         title = str(scene.get("title") or scene.get("name") or "").strip() or scene_id
         meta: dict = {"kind": "illustration", "icat": "scene", "title": title}
         cached = str(scene.get("image") or "").strip()
+        if not module_image_service.image_url_available(cached):
+            cached = ""
         if cached:
             meta["image"] = cached
         ev = session_service.add_event(
@@ -4412,6 +4415,8 @@ def _maybe_clue_illustration(
         name = str(clue.get("name") or "").strip() or clue_id
         meta: dict = {"kind": "illustration", "icat": "clue", "title": name}
         cached = str(clue.get("image") or "").strip()
+        if not module_image_service.image_url_available(cached):
+            cached = ""
         if cached:
             meta["image"] = cached
         ev = session_service.add_event(
@@ -4452,6 +4457,8 @@ def _maybe_encounter_illustration(
         )
         meta: dict = {"kind": "illustration", "icat": "encounter", "title": "遭遇战"}
         cached = str((anchor or {}).get("encounter_image") or "").strip()
+        if not module_image_service.image_url_available(cached):
+            cached = ""
         if cached:
             meta["image"] = cached
         ev = session_service.add_event(
@@ -4505,6 +4512,8 @@ def _attach_npc_portrait(db: Session, session_id: str, module: Module, ev) -> No
         if npc is None:
             return
         cached = str(npc.get("portrait") or "").strip()
+        if not module_image_service.image_url_available(cached):
+            cached = ""
         if cached:
             meta = dict(ev.metadata_ or {})
             if meta.get("portrait") == cached:
