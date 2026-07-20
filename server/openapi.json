@@ -1034,6 +1034,38 @@
         "title": "InventoryUseRequest",
         "type": "object"
       },
+      "KpActionRequest": {
+        "description": "真人 KP 工具桌动作；payload 由动作类型对应的表单字段组成。",
+        "properties": {
+          "action": {
+            "enum": [
+              "narration",
+              "dialogue",
+              "dice_check",
+              "opposed_check",
+              "san_check",
+              "scene_change",
+              "set_flag",
+              "clear_flag",
+              "handout",
+              "hp_change",
+              "start_combat"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "KpActionRequest",
+        "type": "object"
+      },
       "ModuleImageRegenerateRequest": {
         "properties": {
           "field": {
@@ -1054,6 +1086,17 @@
           "kind": {
             "title": "Kind",
             "type": "string"
+          },
+          "visual_state_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visual State Key"
           }
         },
         "required": [
@@ -1310,6 +1353,11 @@
             "title": "Is Host",
             "type": "boolean"
           },
+          "is_kp": {
+            "default": false,
+            "title": "Is Kp",
+            "type": "boolean"
+          },
           "is_mine": {
             "default": false,
             "title": "Is Mine",
@@ -1515,6 +1563,11 @@
       },
       "SessionCreate": {
         "properties": {
+          "kp_mode": {
+            "default": "ai",
+            "title": "Kp Mode",
+            "type": "string"
+          },
           "module_id": {
             "title": "Module Id",
             "type": "string"
@@ -1571,6 +1624,11 @@
           },
           "id": {
             "title": "Id",
+            "type": "string"
+          },
+          "kp_mode": {
+            "default": "ai",
+            "title": "Kp Mode",
             "type": "string"
           },
           "module_id": {
@@ -4959,6 +5017,62 @@
         "summary": "Kick Seat",
         "tags": [
           "sessions"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/kp/action": {
+      "post": {
+        "description": "真人 KP M1 工具桌：执行确定性动作并把结果广播给房间。",
+        "operationId": "kp_action_api_sessions__session_id__kp_action_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KpActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Kp Action",
+        "tags": [
+          "chat"
         ]
       }
     },

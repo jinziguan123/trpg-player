@@ -10,7 +10,7 @@ interface Props {
 /** 游戏页顶部的队伍条：展示主角与在场 AI 队友，点击可在右侧查看其角色卡。 */
 export function PartyRoster({ participants, selectedId, onSelect }: Props) {
   if (!participants || participants.length === 0) return null
-  const sorted = [...participants].sort((a, b) => a.seat_order - b.seat_order)
+  const sorted = participants.filter((p) => p.role !== 'kp').sort((a, b) => a.seat_order - b.seat_order)
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">

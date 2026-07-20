@@ -3,6 +3,8 @@
 用 TestClient + get_db 依赖覆盖，临时 SQLite；掷骰经 monkeypatch 钉死，不触达真实 LLM。
 """
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -119,3 +121,20 @@ def test_post_reaction_disallowed_choice_returns_409(env):
     c, sid, _ = env
     resp = c.post(f"/api/sessions/{sid}/combat/reaction", json={"choice": "cover"})
     assert resp.status_code == 409, resp.text
+
+
+def test_human_kp_mode_disables_combat_ai_and_aftermath(monkeypatch):
+    """真人 KP 下战斗只跑确定性结算，不构建战斗子代理，也不自动生成战后叙事。"""
+    from app.api import combat as combat_api
+    from app.services.generation_manager import generation_manager
+
+    session = SimpleNamespace(kp_mode="human")
+    assert combat_api._combat_agent(None, session) is None
+
+    monkeypatch.setattr(
+        generation_manager, "start",
+        lambda *_args, **_kwargs: pytest.fail("真人 KP 模式不应调度 AI 战斗余波"),
+    )
+    combat_api._schedule_aftermath_if_ended(
+        "session-id", ['data: {"type":"combat_end"}\n\n'], session,
+    )

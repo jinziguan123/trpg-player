@@ -3,7 +3,7 @@ import { api } from '../api/client'
 
 export interface SessionParticipant {
   character_id: string | null
-  role: string // human | ai
+  role: string // human | ai | kp
   is_primary: boolean
   seat_order: number
   claimed: boolean
@@ -11,6 +11,7 @@ export interface SessionParticipant {
   is_mine: boolean
   is_host: boolean
   is_online: boolean
+  is_kp?: boolean
   character_name?: string | null
 }
 
@@ -24,6 +25,7 @@ interface GameSession {
   id: string
   module_id: string
   status: string
+  kp_mode?: 'ai' | 'human'
   player_character_id: string | null
   room_code?: string | null
   current_scene_id: string | null
@@ -69,7 +71,7 @@ interface SessionStore {
   loadingOlder: boolean
   streamingMsgId: string | null
   fetchSessions: () => Promise<void>
-  createSession: (moduleId: string, participants: ParticipantInput[]) => Promise<GameSession>
+  createSession: (moduleId: string, participants: ParticipantInput[], kpMode?: 'ai' | 'human') => Promise<GameSession>
   setCurrentSession: (session: GameSession) => void
   addMessage: (msg: ChatMessage) => void
   removeMessage: (id: string) => void
@@ -122,10 +124,11 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     set({ sessions })
   },
 
-  createSession: async (moduleId, participants) => {
+  createSession: async (moduleId, participants, kpMode = 'ai') => {
     const session = await api.post<GameSession>('/sessions', {
       module_id: moduleId,
       participants,
+      kp_mode: kpMode,
     })
     set((s) => ({ sessions: [session, ...s.sessions], currentSession: session }))
     return session

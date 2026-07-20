@@ -1090,6 +1090,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/kp/action": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Kp Action
+         * @description 真人 KP M1 工具桌：执行确定性动作并把结果广播给房间。
+         */
+        post: operations["kp_action_api_sessions__session_id__kp_action_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/live": {
         parameters: {
             query?: never;
@@ -2133,6 +2153,21 @@ export interface components {
             /** Item Id */
             item_id: string;
         };
+        /**
+         * KpActionRequest
+         * @description 真人 KP 工具桌动作；payload 由动作类型对应的表单字段组成。
+         */
+        KpActionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "narration" | "dialogue" | "dice_check" | "opposed_check" | "san_check" | "scene_change" | "set_flag" | "clear_flag" | "handout" | "hp_change" | "start_combat";
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            };
+        };
         /** ModuleImageRegenerateRequest */
         ModuleImageRegenerateRequest: {
             /** Field */
@@ -2141,6 +2176,8 @@ export interface components {
             item_id: string;
             /** Kind */
             kind: string;
+            /** Visual State Key */
+            visual_state_key?: string | null;
         };
         /** ModuleRead */
         ModuleRead: {
@@ -2293,6 +2330,11 @@ export interface components {
              */
             is_host: boolean;
             /**
+             * Is Kp
+             * @default false
+             */
+            is_kp: boolean;
+            /**
              * Is Mine
              * @default false
              */
@@ -2386,6 +2428,11 @@ export interface components {
         };
         /** SessionCreate */
         SessionCreate: {
+            /**
+             * Kp Mode
+             * @default ai
+             */
+            kp_mode: string;
             /** Module Id */
             module_id: string;
             /** Participants */
@@ -2404,6 +2451,11 @@ export interface components {
             current_scene_id: string | null;
             /** Id */
             id: string;
+            /**
+             * Kp Mode
+             * @default ai
+             */
+            kp_mode: string;
             /** Module Id */
             module_id: string;
             /**
@@ -4580,6 +4632,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    kp_action_api_sessions__session_id__kp_action_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KpActionRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

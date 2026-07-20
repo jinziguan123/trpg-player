@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import random
@@ -17,7 +18,13 @@ from app.ai.agents import backstage_agent
 from app.ai.agents.kp_agent import _CHECK_TURN_TEMPERATURE, KPAgent
 from app.ai.agents.npc_agent import NPCAgent
 from app.ai.agents.team_agent import TeamAgent
-from app.ai.context import build_kp_context, build_npc_context, build_team_context
+from app.ai.context import (
+    _active_flags,
+    _resolve_state,
+    build_kp_context,
+    build_npc_context,
+    build_team_context,
+)
 from app.ai import usage_tracker
 from app.ai.llm_factory import get_fast_llm, get_llm
 from app.ai.prompts.kp_system import (
@@ -3316,6 +3323,14 @@ async def run_roll_generation(session_id: str, check_id: str) -> None:
             + (f"（针对：{source}）" if source else "")
             + f"：{result.description}{heal_note}"
         )
+        if game_session.kp_mode == "human":
+            # 真人 KP 模式下掷骰只完成确定性结算，不自动生成后续叙事；KP 可据结果手动发布。
+            room_hub.broadcast(
+                session_id,
+                _make_chunk("kp_roll_ready", "检定已结算，等待真人 KP 处理后果", metadata={"description": desc}),
+            )
+            room_hub.broadcast(session_id, _make_chunk("done"))
+            return
         # 恐怖多在**检定成功**时才被揭示（看清那具尸体…）；仅成功时才在叙事后补跑 planner
         # 判理智（失败不多花这次调用）。失败若也揭示了恐怖，仍可由 KP 自发 [SAN_CHECK] 兜底。
         # 大失败则可能有**身体反噬**（踢燃烧瓶被烧等）→ 开 mishap 守卫，叙事后据 planner 确定性扣血。
@@ -3413,6 +3428,39 @@ async def run_opening_generation(session_id: str) -> None:
             if hint else "（开场生成中断，请点「重试开场」或刷新。）"
         )
         _persist_error_notice(db, session_id, msg)
+        room_hub.broadcast(session_id, _make_chunk("done"))
+    finally:
+        db.close()
+
+
+async def initialize_human_session(session_id: str) -> None:
+    """真人 KP 开局初始化：落公开导语与首场景卡，但绝不调用 AI 生成叙事。"""
+    await _drain_housekeeping(session_id)
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        game_session = db.get(GameSession, session_id)
+        if not game_session or game_session.kp_mode != "human":
+            return
+        module = db.get(Module, game_session.module_id)
+        if module is None:
+            return
+        events = session_service.get_session_events(db, session_id)
+        if not any((e.metadata_ or {}).get("kind") == "module_intro" for e in events):
+            intro = _persist_module_intro(db, session_id, module)
+            if intro:
+                room_hub.broadcast(session_id, intro)
+        for chunk in _maybe_scene_illustration(
+            db, session_id, module, game_session.current_scene_id,
+        ):
+            room_hub.broadcast(session_id, chunk)
+        room_hub.broadcast(session_id, _make_chunk("done"))
+    except asyncio.CancelledError:
+        logger.info("真人 KP 开局初始化被取消: session=%s", session_id)
+    except Exception:
+        logger.exception("真人 KP 开局初始化失败: session=%s", session_id)
+        _persist_error_notice(db, session_id, "（真人 KP 开局初始化中断，请重试）")
         room_hub.broadcast(session_id, _make_chunk("done"))
     finally:
         db.close()
@@ -4126,11 +4174,21 @@ async def _exec_scene_change(
 def _exec_flag(
     db: Session, session_id: str, game_session: GameSession, flag: str, value: bool,
 ) -> list[str]:
-    """置/清剧情标志，并刷新内存里的 world_state 使后续处理立即可见。返回 chunks。"""
+    """置/清剧情标志，并刷新内存里的 world_state 使后续处理立即可见。
+
+    如果当前场景的视觉状态因此发生变化，立即落一张状态配图卡；没有视觉影响的
+    flag 不会产生额外图片。
+    """
     session_service.set_flag(db, session_id, flag, value)
     db.refresh(game_session)
     label = "剧情推进" if value else "剧情状态解除"
-    return [_make_chunk("system", f"{label}：{flag}")]
+    chunks = [_make_chunk("system", f"{label}：{flag}")]
+    module = db.get(Module, game_session.module_id)
+    if module is not None:
+        chunks.extend(_maybe_scene_illustration(
+            db, session_id, module, game_session.current_scene_id,
+        ))
+    return chunks
 
 
 async def _exec_handout(
@@ -4183,6 +4241,139 @@ async def _exec_handout(
     except Exception:  # noqa: BLE001 — 配图判定失败不影响发放
         logger.exception("手书配图任务启动失败（忽略）")
     return chunks, f"手书 {hid} 已发放（正文已由系统以卡片呈现给玩家，续写时不要复述正文）。"
+
+
+async def execute_human_kp_action(
+    db: Session,
+    session_id: str,
+    game_session: GameSession,
+    module: Module,
+    action: str,
+    payload: dict,
+) -> tuple[list[str], str]:
+    """真人 KP M1 工具桌：把表单动作路由到既有确定性执行器。
+
+    这里不生成 AI 叙事，也不复制骰子、场景、战斗和库存规则；只负责把真人 KP 的
+    触发转换为现有执行器调用，并返回待广播的 chunks 与简短结果。
+    """
+    player_char = db.get(Character, game_session.player_character_id)
+    if player_char is None:
+        raise ValueError("会话缺少主角角色，无法执行 KP 动作")
+    teammates = session_service.get_party_members(
+        db, session_id, exclude_id=player_char.id,
+    )
+    action = str(action or "").strip()
+    payload = payload if isinstance(payload, dict) else {}
+
+    if action == "narration":
+        content = str(payload.get("content") or "").strip()
+        if not content:
+            raise ValueError("叙事内容不能为空")
+        ev = session_service.add_event(
+            db, session_id, "narration", content, actor_name="KP",
+            metadata={"kp_manual": True},
+        )
+        return [event_to_chunk(ev)], "叙事已发布"
+
+    if action == "dialogue":
+        ref = str(payload.get("npc_id") or payload.get("actor_name") or "").strip()
+        content = str(payload.get("content") or "").strip()
+        if not ref or not content:
+            raise ValueError("NPC 与台词内容不能为空")
+        npc = next(
+            (
+                n for n in (module.npcs or [])
+                if str(n.get("id") or "") == ref or str(n.get("name") or "") == ref
+            ),
+            None,
+        )
+        actor_id = str(npc.get("id")) if npc and npc.get("id") else None
+        actor_name = str(npc.get("name") or ref) if npc else ref
+        ev = session_service.add_event(
+            db, session_id, "dialogue", content,
+            actor_id=actor_id, actor_name=actor_name,
+            metadata={"kp_manual": True},
+        )
+        if npc:
+            _attach_npc_portrait(db, session_id, module, ev)
+        metadata = {"portrait": (ev.metadata_ or {}).get("portrait")} if (ev.metadata_ or {}).get("portrait") else None
+        return [
+            _make_chunk(
+                "dialogue", content, actor_name=actor_name, actor_id=actor_id,
+                event_id=ev.id, metadata=metadata,
+            )
+        ], "NPC 台词已发布"
+
+    if action == "dice_check":
+        kv = {str(k): str(v) for k, v in payload.items() if v is not None}
+        if not kv.get("skill", "").strip():
+            raise ValueError("检定技能不能为空")
+        chunks, descs, pending = await _exec_dice_check(
+            db, session_id, game_session, module, kv, player_char, teammates,
+        )
+        return chunks, "已发起待投检定" if pending else ("；".join(descs) or "检定已结算")
+
+    if action == "opposed_check":
+        descs: list[str] = []
+        chunks = [
+            c async for c in _resolve_opposed(
+                db, session_id, payload, get_engine(module.rule_system),
+                module, player_char, teammates, descs,
+            )
+        ]
+        if not descs:
+            raise ValueError("对抗检定至少需要双方角色与技能")
+        return chunks, "；".join(descs)
+
+    if action == "scene_change":
+        chunks, sid, note = await _exec_scene_change(
+            db, session_id, game_session, module,
+            str(payload.get("scene_id") or payload.get("scene") or "").strip(),
+            player_char, teammates,
+        )
+        return chunks, note or (f"已切换至 {_scene_name(module, sid)}" if sid else "场景未变化")
+
+    if action in ("set_flag", "clear_flag"):
+        flag = str(payload.get("flag") or "").strip()
+        if not flag:
+            raise ValueError("剧情标志不能为空")
+        return _exec_flag(db, session_id, game_session, flag, action == "set_flag"), "剧情标志已更新"
+
+    if action == "handout":
+        hid = str(payload.get("id") or payload.get("handout_id") or "").strip()
+        if not hid:
+            raise ValueError("手书 ID 不能为空")
+        return await _exec_handout(
+            db, session_id, game_session, module, hid, player_char, teammates,
+        )
+
+    if action == "hp_change":
+        chunks = await _exec_hp_change(
+            db, session_id, player_char,
+            str(payload.get("target") or ""), str(payload.get("delta") or ""),
+            str(payload.get("reason") or ""), module=module, teammates=teammates,
+        )
+        if not chunks:
+            raise ValueError("HP 目标或变化值无效")
+        return chunks, "HP 已结算"
+
+    if action == "san_check":
+        chunks, descs = await _exec_san_check(
+            db, session_id, game_session, payload, player_char, teammates,
+        )
+        return chunks, "；".join(descs) if descs else "本次理智检定无需重复结算"
+
+    if action == "start_combat":
+        enemies = str(payload.get("enemies") or "").strip()
+        if not enemies:
+            raise ValueError("至少指定一个敌人")
+        chunks = await _exec_start_combat(
+            db, session_id, game_session, module, player_char, teammates,
+            None, enemies, str(payload.get("trigger") or "真人 KP 发起战斗"),
+        )
+        return chunks, "已切入结构化战斗"
+
+    raise ValueError(f"不支持的 KP 动作：{action}")
 
 
 # 全部配图的统一画风后缀（确定性追加在快模型产出的提示词之后，保证风格一致）：
@@ -4336,6 +4527,34 @@ def _module_list_cache_writer(module_id: str, list_field: str, item_id: str, key
     return _write
 
 
+def _scene_variant_cache_writer(module_id: str, scene_id: str, visual_state_key: str):
+    """把场景状态图写入 image_variants，基础状态仍写 scenes[].image。"""
+    def _write(url: str) -> None:
+        from app.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            module = db.get(Module, module_id)
+            if module is None:
+                return
+            scenes = [dict(value) if isinstance(value, dict) else value for value in (module.scenes or [])]
+            for scene in scenes:
+                if not isinstance(scene, dict) or str(scene.get("id") or "") != scene_id:
+                    continue
+                if visual_state_key == "base":
+                    scene["image"] = url
+                else:
+                    variants = dict(scene.get("image_variants") or {})
+                    variants[visual_state_key] = url
+                    scene["image_variants"] = variants
+                break
+            module.scenes = scenes
+            db.commit()
+        finally:
+            db.close()
+    return _write
+
+
 def _module_era(module: Module) -> str:
     """模组年代标签（1920s/现代/维多利亚…），生图提示词素材；缺省沿用全站惯例 1920s。"""
     return str((module.world_setting or {}).get("era") or "1920s")
@@ -4347,6 +4566,40 @@ _SCENE_ILLUST_PROMPT_SYS = (
     "（如 abandoned train car, flickering lights）。危险度越高画面越阴沉压抑。画风词不用写，系统会统一追加。"
     "不要出现人物面孔与真实人名，不要引号，只输出提示词本身。"
 )
+
+_SCENE_ILLUST_INFLIGHT: set[tuple[str, str]] = set()
+
+_SCENE_VISUAL_FIELDS = (
+    "title", "name", "description", "danger", "atmosphere", "map", "visual_variant", "visual_prompt",
+)
+
+
+def _scene_visual_state(
+    module: Module, game_session: GameSession, scene_id: str,
+) -> tuple[str, dict]:
+    """返回稳定视觉状态键与按剧情 flag 解析后的场景。"""
+    base = next(
+        (s for s in (module.scenes or []) if isinstance(s, dict) and s.get("id") == scene_id),
+        None,
+    )
+    if base is None:
+        return "base", {}
+    resolved = _resolve_state(base, _active_flags(game_session))
+    explicit = str(resolved.get("visual_variant") or "").strip()
+    base_payload = {key: base.get(key) for key in _SCENE_VISUAL_FIELDS}
+    resolved_payload = {key: resolved.get(key) for key in _SCENE_VISUAL_FIELDS}
+    if explicit:
+        return explicit, resolved
+    if base_payload == resolved_payload:
+        return "base", resolved
+    digest = hashlib.sha256(
+        json.dumps(resolved_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"v1-{digest}", resolved
+
+
+def _scene_card_key(scene_id: str, visual_state_key: str) -> str:
+    return f"{scene_id}|{visual_state_key}"
 
 _NPC_PORTRAIT_PROMPT_SYS = (
     "你是文生图提示词工程师。把给定的 TRPG NPC 转成一行**英文** Stable Diffusion 提示词："
@@ -4371,19 +4624,12 @@ _ENCOUNTER_ILLUST_PROMPT_SYS = (
 def _maybe_scene_illustration(
     db: Session, session_id: str, module: Module, scene_id: str | None,
 ) -> list[str]:
-    """场景首入配图卡：本会话**首次**抵达某场景时落一条 illustration 系统事件并返回待广播 chunks。
-
-    防重用自记的 ``world_state.scene_cards``（不用 visited_scenes——它在位置更新时已被追加，
-    到这里已无法区分「首次」）。模组 ``scenes[].image`` 有缓存则 metadata 直接带图秒出；
-    无缓存起后台生图，成功回写模组缓存（跨会话复用）并 patch 事件。整体 fail-open。
-    """
+    """按「场景 + 视觉状态」落配图卡；状态卡存在但图片失效时修复原卡，不重复落卡。"""
     try:
         if not scene_id:
             return []
         game_session = db.get(GameSession, session_id)
         if game_session is None:
-            return []
-        if scene_id in set((game_session.world_state or {}).get("scene_cards") or []):
             return []
         scene = next(
             (s for s in (module.scenes or []) if isinstance(s, dict) and s.get("id") == scene_id),
@@ -4391,36 +4637,81 @@ def _maybe_scene_illustration(
         )
         if scene is None:
             return []
-        title = str(scene.get("title") or scene.get("name") or "").strip() or scene_id
-        meta: dict = {
-            "kind": "illustration", "icat": "scene", "title": title,
-            "image_kind": "scene", "image_item_id": scene_id, "image_field": "image",
-        }
-        cached = str(scene.get("image") or "").strip()
+        visual_state_key, resolved_scene = _scene_visual_state(module, game_session, scene_id)
+        card_key = _scene_card_key(scene_id, visual_state_key)
+        scene_cards = set((game_session.world_state or {}).get("scene_cards") or [])
+        base_seen = scene_id in scene_cards  # 兼容旧会话只记录 scene_id 的基础卡
+        seen = card_key in scene_cards or (visual_state_key == "base" and base_seen)
+        variants = dict(scene.get("image_variants") or {})
+        cached = str(
+            scene.get("image") if visual_state_key == "base" else variants.get(visual_state_key)
+            or ""
+        ).strip()
         if not module_image_service.image_url_available(cached):
             cached = ""
+
+        existing = next(
+            (
+                event for event in session_service.get_session_events(db, session_id)
+                if (event.metadata_ or {}).get("kind") == "illustration"
+                and (event.metadata_ or {}).get("icat") == "scene"
+                and str((event.metadata_ or {}).get("image_item_id") or "") == scene_id
+                and str((event.metadata_ or {}).get("visual_state_key") or ("base" if visual_state_key == "base" else "")) == visual_state_key
+            ),
+            None,
+        )
+        # 后台任务可能刚回写数据库，而当前请求仍持有旧 Module 对象；事件 metadata 是本卡的
+        # 最新快照，命中有效图片时不要因对象陈旧再次启动一张相同状态图。
+        if not cached and existing is not None:
+            event_image = str((existing.metadata_ or {}).get("image") or "").strip()
+            if module_image_service.image_url_available(event_image):
+                cached = event_image
+        title = str(resolved_scene.get("title") or resolved_scene.get("name") or "").strip() or scene_id
+        prompt_user = (
+            f"场景：{title}\n年代：{_module_era(module)}\n"
+            f"危险度：{resolved_scene.get('danger') or ''}\n氛围：{resolved_scene.get('atmosphere') or ''}\n"
+            f"描述：{str(resolved_scene.get('description') or '')[:600]}"
+        )
+
+        def repair(event) -> None:
+            if cached or event is None:
+                return
+            inflight_key = (session_id, card_key)
+            if inflight_key in _SCENE_ILLUST_INFLIGHT:
+                return
+            _SCENE_ILLUST_INFLIGHT.add(inflight_key)
+            _spawn_illustration(
+                session_id, event.id, _SCENE_ILLUST_PROMPT_SYS, prompt_user,
+                cache_write=_scene_variant_cache_writer(module.id, scene_id, visual_state_key),
+                on_done=lambda _key=inflight_key: _SCENE_ILLUST_INFLIGHT.discard(_key),
+            )
+
+        if seen:
+            repair(existing)
+            return []
+
+        meta: dict = {
+            "kind": "illustration", "icat": "scene", "title": title,
+            "image_kind": "scene", "image_item_id": scene_id,
+            "image_field": "image" if visual_state_key == "base" else "image_variant",
+            "visual_state_key": visual_state_key,
+        }
         if cached:
             meta["image"] = cached
         ev = session_service.add_event(
-            db, session_id, "system", f"—— 抵达 {title} ——", actor_name="系统", metadata=meta,
+            db, session_id, "system",
+            f"—— 抵达 {title} ——" if visual_state_key == "base" else f"—— 场景状态变化：{title} ——",
+            actor_name="系统", metadata=meta,
         )
-        # 先记防重再起任务：即使生图失败，同场景也不再反复出卡（卡片本身只该有一张）。
+        # 先记防重再起任务：即使生图失败，同一视觉状态也不重复出卡。
         _apply_world_memory(
             db, game_session,
-            lambda ws, _sid=scene_id: {
-                **ws, "scene_cards": [*(ws.get("scene_cards") or []), _sid],
+            lambda ws, _key=card_key: {
+                **ws, "scene_cards": [*(ws.get("scene_cards") or []), _key],
             },
         )
         if not cached:
-            _spawn_illustration(
-                session_id, ev.id, _SCENE_ILLUST_PROMPT_SYS,
-                (
-                    f"场景：{title}\n年代：{_module_era(module)}\n"
-                    f"危险度：{scene.get('danger') or ''}\n氛围：{scene.get('atmosphere') or ''}\n"
-                    f"描述：{str(scene.get('description') or '')[:600]}"
-                ),
-                cache_write=_module_list_cache_writer(module.id, "scenes", scene_id, "image"),
-            )
+            repair(ev)
         return [_make_chunk("system", ev.content, metadata=ev.metadata_, event_id=ev.id)]
     except Exception:  # noqa: BLE001 — 配图卡是增强件，任何失败都不许影响场景切换
         logger.exception("场景配图卡落卡失败（忽略）：session=%s scene=%s", session_id, scene_id)
@@ -4699,9 +4990,10 @@ async def _exec_start_combat(
     scene_hint = _scene_title(module, game_session.current_scene_id)
     # 遭遇配图卡先落先播（战斗态 chunks 紧随其后）：卡先出、图异步补挂，不阻塞开战
     illust_chunks = _maybe_encounter_illustration(db, session_id, module, enemies)
+    agent = CombatAgent(llm) if llm is not None else None
     _state, chunks = await combat_service.start(
         db, session_id, party, enemies, human_ids, trigger,
-        agent=CombatAgent(llm), scene_hint=scene_hint,
+        agent=agent, scene_hint=scene_hint,
     )
     return illust_chunks + chunks
 

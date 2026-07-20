@@ -29,6 +29,7 @@ export function useGameSetup() {
   const [heroes, setHeroes] = useState<SetupCharacter[]>([])
   const [allies, setAllies] = useState<SetupCharacter[]>([])
   const [moduleId, setModuleId] = useState('')
+  const [kpMode, setKpMode] = useState<'ai' | 'human'>('ai')
   const [seats, setSeats] = useState<SetupSeat[]>([])
   const [seatHints, setSeatHints] = useState<Record<number, string>>({})
   const [generatingSeat, setGeneratingSeat] = useState<number | null>(null)
@@ -192,7 +193,7 @@ export function useGameSetup() {
         role: seat.role,
         is_primary: index === 0,
       }))
-      const session = await createSession(moduleId, participants)
+      const session = await createSession(moduleId, participants, kpMode)
       if (session.status === 'setup') navigate(`/room/${session.id}`)
       else navigate(`/game/${session.id}`, { state: { isNew: true } })
     } catch (reason: unknown) {
@@ -224,6 +225,8 @@ export function useGameSetup() {
     setFilter,
     resetFilters: () => setFilters(createEmptyModuleFilters()),
     moduleId,
+    kpMode,
+    setKpMode,
     selectedModule,
     range,
     minSeats,

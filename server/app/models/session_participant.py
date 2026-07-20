@@ -22,7 +22,7 @@ class SessionParticipant(Base, UUIDMixin, TimestampMixin):
         ForeignKey("characters.id"), index=True, nullable=True
     )
     role: Mapped[str] = mapped_column(
-        Enum("human", "ai", name="participant_role"), default="human"
+        Enum("human", "ai", "kp", name="participant_role"), default="human"
     )
     seat_order: Mapped[int] = mapped_column(default=0)
     is_primary: Mapped[bool] = mapped_column(default=False)

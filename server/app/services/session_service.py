@@ -60,6 +60,9 @@ def _normalize_participants(participants: list[dict]) -> list[dict]:
     seats: list[dict] = []
     for p in participants:
         cid = p.get("character_id")
+        role = p.get("role", "ai")
+        if role not in ("human", "ai"):
+            raise ValueError("玩家席位 role 只能是 human 或 ai")
         if cid:
             if cid in seen:
                 raise ValueError("同一角色不能在同一会话中占据多个席位")
@@ -67,7 +70,7 @@ def _normalize_participants(participants: list[dict]) -> list[dict]:
         seats.append(
             {
                 "character_id": cid,
-                "role": p.get("role", "ai"),
+                "role": role,
                 "is_primary": bool(p.get("is_primary", False)),
             }
         )
@@ -98,6 +101,7 @@ def create_session(
     module_id: str,
     participants: list[dict],
     creator_token: str | None = None,
+    kp_mode: str = "ai",
     *,
     commit: bool = True,
 ) -> GameSession:
@@ -106,6 +110,8 @@ def create_session(
         raise ValueError("模组不存在")
     if not participants:
         raise ValueError("必须至少提供一个主角席位")
+    if kp_mode not in ("ai", "human"):
+        raise ValueError("kp_mode 必须是 ai 或 human")
 
     seats = _normalize_participants(participants)
 
@@ -139,6 +145,7 @@ def create_session(
         module_id=module_id,
         player_character_id=primary_id,
         status=status,
+        kp_mode=kp_mode,
         room_code=_gen_room_code(db),
         current_scene_id=first_scene_id,
         world_state={"visited_scenes": [first_scene_id] if first_scene_id else []},
@@ -158,6 +165,19 @@ def create_session(
                 claimed=claimed,
                 owner_token=owner,
                 ready=ready,
+            )
+        )
+    if kp_mode == "human":
+        # 创建者同时拥有 KP 席和主角席，后续若要拆成独立 KP 只需转移该席 owner_token。
+        game_session.participants.append(
+            SessionParticipant(
+                character_id=None,
+                role="kp",
+                is_primary=False,
+                seat_order=len(seats),
+                owner_token=creator_token,
+                claimed=True,
+                ready=True,
             )
         )
     db.add(game_session)
@@ -250,6 +270,36 @@ def is_host(db: Session, session_id: str, token: str | None) -> bool:
     """房主 = 主角席的 owner_token 持有者（建房者）。"""
     seat = _primary_seat(db, session_id)
     return bool(token and seat and seat.owner_token == token)
+
+
+def is_kp(db: Session, session_id: str, token: str | None) -> bool:
+    """真人 KP 授权：只认 role=kp 的席位，不把普通房主权限隐式升级为 KP。"""
+    if not token:
+        return False
+    seat = (
+        db.query(SessionParticipant)
+        .filter(
+            SessionParticipant.session_id == session_id,
+            SessionParticipant.role == "kp",
+            SessionParticipant.owner_token == token,
+        )
+        .first()
+    )
+    return seat is not None
+
+
+def authorize_kp(db: Session, session_id: str, token: str | None) -> GameSession:
+    """返回可由真人 KP 操作的会话；失败统一抛出业务错误供 API 转换。"""
+    session = db.get(GameSession, session_id)
+    if session is None:
+        raise ValueError("房间不存在")
+    if session.kp_mode != "human":
+        raise ValueError("该会话未启用真人 KP 模式")
+    if not is_kp(db, session_id, token):
+        raise ValueError("只有真人 KP 席位可以执行该操作")
+    if session.status != "active":
+        raise ValueError("会话未处于活跃状态")
+    return session
 
 
 # ── 结束模组：全体非AI玩家共识投票 ──────────────────────────────────
@@ -368,7 +418,9 @@ def lobby_gaps(db: Session, session_id: str) -> list[str]:
     """返回开局门槛缺口；空列表代表满足开局条件。"""
     parts = get_participants(db, session_id)
     gaps: list[str] = []
-    empty = [p for p in parts if not p.character_id]
+    # KP 席位是无角色的控制席，不能被当作待认领的玩家席位。
+    player_parts = [p for p in parts if p.role != "kp"]
+    empty = [p for p in player_parts if not p.character_id]
     if empty:
         gaps.append(f"还有 {len(empty)} 个空席未填角色")
     not_ready = [

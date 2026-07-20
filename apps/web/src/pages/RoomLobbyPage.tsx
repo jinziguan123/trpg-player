@@ -24,6 +24,7 @@ interface RoomData {
   status: string
   room_code?: string | null
   module_title?: string
+  kp_mode?: 'ai' | 'human'
   participants: SessionParticipant[]
 }
 
@@ -54,9 +55,10 @@ export function RoomLobbyPage() {
 
   const gaps = useCallback((r: RoomData): string[] => {
     const out: string[] = []
-    const empty = r.participants.filter((p) => !p.character_id).length
+    const playerSeats = r.participants.filter((p) => p.role !== 'kp')
+    const empty = playerSeats.filter((p) => !p.character_id).length
     if (empty) out.push(`还有 ${empty} 个空席未填角色`)
-    const notReady = r.participants.filter((p) => p.character_id && p.role === 'human' && !p.ready).length
+    const notReady = playerSeats.filter((p) => p.character_id && p.role === 'human' && !p.ready).length
     if (notReady) out.push(`还有 ${notReady} 名玩家未准备`)
     return out
   }, [])
@@ -215,7 +217,7 @@ export function RoomLobbyPage() {
   }
 
   const seatGaps = gaps(room)
-  const seats = [...room.participants].sort((a, b) => a.seat_order - b.seat_order)
+  const seats = room.participants.filter((p) => p.role !== 'kp').sort((a, b) => a.seat_order - b.seat_order)
 
   return (
     <div className="flex h-full gap-0">
@@ -226,6 +228,7 @@ export function RoomLobbyPage() {
           </button>
           <span className="text-sm font-semibold" style={{ color: 'var(--color-text-accent)' }}>
             房间大厅 · {room.module_title || '未知模组'}
+            {room.kp_mode === 'human' && <span className="badge ml-2 text-xs">真人 KP</span>}
           </span>
           {room.room_code && (
             <button onClick={copyCode} className="ml-auto badge inline-flex items-center gap-1" title="点击复制房间码">

@@ -331,6 +331,82 @@ def test_scene_illustration_discards_missing_cached_file(db_factory, monkeypatch
     assert len(calls) == 1
 
 
+def test_scene_visual_state_creates_one_variant_card_and_reuses_it(db_factory, monkeypatch, tmp_path):
+    """视觉字段随 flag 改变时生成状态图；同一状态再次进入不重复出卡。"""
+    from app.services import chat_service
+
+    calls, _sent = _wire_image_stubs(monkeypatch, db_factory, tmp_path, "flooded chapel")
+    db = db_factory()
+    module = Module(
+        title="m", rule_system="coc", npcs=[],
+        scenes=[{
+            "id": "s1", "title": "教堂", "description": "空旷的教堂",
+            "atmosphere": "安静", "states": [{
+                "when": ["flooded"], "visual_variant": "flooded", "atmosphere": "齐腰黑水",
+            }],
+        }],
+    )
+    hero = Character(name="主角", rule_system="coc")
+    db.add_all([module, hero]); db.commit()
+    session = GameSession(
+        module_id=module.id, player_character_id=hero.id, status="active",
+        current_scene_id="s1", world_state={"flags": {}},
+    )
+    db.add(session); db.commit()
+
+    async def run():
+        assert len(chat_service._maybe_scene_illustration(db, session.id, module, "s1")) == 1
+        await _drain_bg_tasks()
+        db.refresh(session)
+        assert len(chat_service._exec_flag(db, session.id, session, "flooded", True)) == 2
+        db.refresh(session)
+        m2 = db.get(Module, module.id)
+        await _drain_bg_tasks()
+        assert chat_service._maybe_scene_illustration(db, session.id, m2, "s1") == []
+
+    asyncio.run(run())
+    fresh = db_factory()
+    cards = [
+        e for e in session_service.get_session_events(fresh, session.id)
+        if (e.metadata_ or {}).get("icat") == "scene"
+    ]
+    assert len(cards) == 2
+    assert {e.metadata_.get("visual_state_key") for e in cards} == {"base", "flooded"}
+    variants = fresh.get(Module, module.id).scenes[0].get("image_variants") or {}
+    assert variants.get("flooded", "").startswith("/api/images/")
+    assert len(calls) == 2
+
+
+def test_missing_scene_file_repairs_existing_card_without_duplicate(db_factory, monkeypatch, tmp_path):
+    """当前会话已有场景卡但文件被删时，修复原卡而不是新增第二张。"""
+    from app.services import chat_service, image_store
+
+    calls, _sent = _wire_image_stubs(monkeypatch, db_factory, tmp_path, "repaired chapel")
+    db = db_factory()
+    module = Module(title="m", rule_system="coc", npcs=[], scenes=[{"id": "s1", "title": "教堂"}])
+    hero = Character(name="主角", rule_system="coc")
+    db.add_all([module, hero]); db.commit()
+    session = GameSession(module_id=module.id, player_character_id=hero.id, status="active")
+    db.add(session); db.commit()
+
+    async def run():
+        chat_service._maybe_scene_illustration(db, session.id, module, "s1")
+        await _drain_bg_tasks()
+        url = db_factory().get(Module, module.id).scenes[0]["image"]
+        (image_store.IMAGES_DIR / url.rsplit("/", 1)[-1]).unlink()
+        db.expire_all()
+        m2 = db.get(Module, module.id)
+        assert chat_service._maybe_scene_illustration(db, session.id, m2, "s1") == []
+        await _drain_bg_tasks()
+
+    asyncio.run(run())
+    fresh = db_factory()
+    cards = [e for e in session_service.get_session_events(fresh, session.id) if (e.metadata_ or {}).get("icat") == "scene"]
+    assert len(cards) == 1
+    assert fresh.get(Module, module.id).scenes[0]["image"] != "/api/images/deleted.jpg"
+    assert len(calls) == 2
+
+
 def test_npc_portrait_generates_then_hits_cache(db_factory, monkeypatch, tmp_path):
     """NPC 立绘：首次对话生成+回写 npcs[].portrait+patch；再次对话缓存直挂 metadata、不再生图。"""
     from app.services import chat_service

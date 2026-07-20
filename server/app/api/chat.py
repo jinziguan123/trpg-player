@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import (
     player_token,
     require_session_actor,
+    require_session_kp,
     require_session_manager,
     require_session_token_actor,
     require_session_viewer,
@@ -19,9 +20,12 @@ from app.schemas.event import (
     RollRequest,
     TravelRequest,
 )
+from app.schemas.session import KpActionRequest
 from app.services import session_service
 from app.services.chat_service import (
     _make_chunk,
+    commit_pending_travel,
+    execute_human_kp_action,
     event_to_chunk,
     run_chat_generation,
     run_check_request_generation,
@@ -121,6 +125,35 @@ async def chat(
     return {"ok": True}
 
 
+@router.post("/{session_id}/kp/action")
+async def kp_action(
+    session_id: str,
+    data: KpActionRequest,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    """真人 KP M1 工具桌：执行确定性动作并把结果广播给房间。"""
+    session = require_session_kp(db, session_id, token)
+    if generation_manager.is_generating(session_id):
+        raise HTTPException(409, "当前仍有动作处理中，请稍候")
+    module = db.get(Module, session.module_id)
+    if module is None:
+        raise HTTPException(404, "模组不存在")
+    try:
+        chunks, result = await execute_human_kp_action(
+            db, session_id, session, module, data.action, data.payload,
+        )
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    for chunk in chunks:
+        room_hub.broadcast(session_id, chunk)
+    room_hub.broadcast(
+        session_id,
+        _make_chunk("kp_action", result, metadata={"action": data.action}),
+    )
+    return {"ok": True, "result": result}
+
+
 @router.post("/{session_id}/check")
 async def check(
     session_id: str,
@@ -155,6 +188,15 @@ async def check(
         actor_id=actor.id, actor_name=actor.name,
     )
     room_hub.broadcast(session_id, event_to_chunk(ev))
+    if game_session.kp_mode == "human":
+        room_hub.broadcast(
+            session_id,
+            _make_chunk(
+                "kp_request", "玩家申请了一次检定，等待真人 KP 裁定",
+                metadata={"skill": skill, "intent": intent, "actor_id": actor.id},
+            ),
+        )
+        return {"ok": True, "waiting_for_kp": True}
     room_hub.broadcast(session_id, _make_chunk("generating"))
     generation_manager.start(
         session_id,
@@ -209,6 +251,8 @@ async def regenerate(
     game_session = db.get(GameSession, session_id)
     if game_session.status != "active":
         raise HTTPException(400, "会话未处于活跃状态")
+    if game_session.kp_mode == "human":
+        raise HTTPException(400, "真人 KP 模式不支持 AI 叙事重生成，请由 KP 重新发布内容")
 
     # ①打断卡住/进行中的旧生成（其半截叙事会先落库，②随后被回滚清掉）
     await generation_manager.cancel(session_id)
@@ -246,10 +290,18 @@ async def advance(
     room_hub.broadcast(session_id, _make_chunk("turn_state", metadata=state))
 
     if state["ready"]:
-        # 所有在线真人已确认：暂存发言转正 + 清确认，然后触发一轮（队友回合 + KP）。
+        # 所有在线真人已确认：暂存发言转正；真人 KP 模式只通知 KP，不启动 AI 生成。
         session_service.commit_turn(db, session_id)
-        room_hub.broadcast(session_id, _make_chunk("generating"))
-        generation_manager.start(session_id, run_chat_generation(session_id))
+        if game_session.kp_mode == "human":
+            # 真人 KP 不会进入 AI 生成管线，因此必须在此处完成前往动作的位置同步。
+            commit_pending_travel(db, session_id)
+            room_hub.broadcast(
+                session_id,
+                _make_chunk("kp_turn_ready", "玩家回合已提交，等待真人 KP 处理"),
+            )
+        else:
+            room_hub.broadcast(session_id, _make_chunk("generating"))
+            generation_manager.start(session_id, run_chat_generation(session_id))
     return {"ok": True, "ready": state["ready"]}
 
 
@@ -275,9 +327,14 @@ async def force_advance(
     if generation_manager.is_generating(session_id):
         raise HTTPException(409, "KP 正在叙事，请稍候")
     session_service.commit_turn(db, session_id)
+    if game_session.kp_mode == "human":
+        commit_pending_travel(db, session_id)
     room_hub.broadcast(session_id, _make_chunk("turn_state", metadata={"confirmed_ids": [], "total": 0, "ready": True}))
-    room_hub.broadcast(session_id, _make_chunk("generating"))
-    generation_manager.start(session_id, run_chat_generation(session_id))
+    if game_session.kp_mode == "human":
+        room_hub.broadcast(session_id, _make_chunk("kp_turn_ready", "玩家回合已提交，等待真人 KP 处理"))
+    else:
+        room_hub.broadcast(session_id, _make_chunk("generating"))
+        generation_manager.start(session_id, run_chat_generation(session_id))
     return {"ok": True, "ready": True}
 
 
@@ -434,9 +491,9 @@ async def travel(
 
     scene_name = _sname(scene_id)
 
-    if data.stash:
+    if data.stash or game_session.kp_mode == "human":
         # 暂存模式：把「前往」作为本回合暂存动作加入（与发言同批）。位置的确定性同步 + 抵达叙述
-        # 延到推进本回合时随 run_chat_generation 一起执行——不再单独触发一次生成、也不必手动点图。
+        # 延到推进本回合时随 AI KP 或真人 KP 处理——不再单独触发一次生成、也不必手动点图。
         ev = session_service.add_event(
             db, session_id, "action", f"（前往：{scene_name}）",
             actor_id=actor.id, actor_name=actor.name,

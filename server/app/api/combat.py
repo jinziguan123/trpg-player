@@ -61,7 +61,7 @@ async def combat_action(
                 chunks += drive_chunks
         for chunk in chunks:
             room_hub.broadcast(session_id, chunk)
-        _schedule_aftermath_if_ended(session_id, chunks)
+        _schedule_aftermath_if_ended(session_id, chunks, session)
         return {"ok": True}
     try:
         agent = _combat_agent(db, session)
@@ -73,7 +73,7 @@ async def combat_action(
         raise HTTPException(409, str(e))
     for chunk in chunks:
         room_hub.broadcast(session_id, chunk)
-    _schedule_aftermath_if_ended(session_id, chunks)
+    _schedule_aftermath_if_ended(session_id, chunks, session)
     return {"ok": True}
 
 
@@ -94,7 +94,7 @@ async def combat_roll(
         raise HTTPException(409, str(e))
     for chunk in chunks:
         room_hub.broadcast(session_id, chunk)
-    _schedule_aftermath_if_ended(session_id, chunks)
+    _schedule_aftermath_if_ended(session_id, chunks, session)
     return {"ok": True}
 
 
@@ -119,12 +119,14 @@ async def combat_reaction(
         raise HTTPException(409, str(e))
     for chunk in chunks:
         room_hub.broadcast(session_id, chunk)
-    _schedule_aftermath_if_ended(session_id, chunks)
+    _schedule_aftermath_if_ended(session_id, chunks, session)
     return {"ok": True}
 
 
 def _combat_agent(db: Session, session):
     """构建战斗子代理（有可用 AI 配置时）；无则 None → 纯机械结算。"""
+    if session is not None and getattr(session, "kp_mode", "ai") == "human":
+        return None
     try:
         from app.ai.agents.combat_agent import CombatAgent
         from app.ai.llm_factory import get_llm
@@ -133,12 +135,14 @@ def _combat_agent(db: Session, session):
         return None
 
 
-def _schedule_aftermath_if_ended(session_id: str, chunks: list[str]) -> None:
+def _schedule_aftermath_if_ended(session_id: str, chunks: list[str], session=None) -> None:
     """本次行动使战斗/追逐结束（chunks 含 combat_end 或 chase_end）→ 主动调度一次主 KP 余波生成。
 
     不必等玩家先开口：KP 读 combat_result（战斗与追逐共用此折回通道）承接后果、把场面交还调查员。
     已有生成在跑则跳过（下一玩家回合仍会折回，不丢）。
     """
+    if getattr(session, "kp_mode", "ai") == "human":
+        return
     if not any(('"combat_end"' in c or '"chase_end"' in c) for c in chunks):
         return
     from app.services.chat_service import _make_chunk, run_combat_aftermath_generation
@@ -176,14 +180,15 @@ async def chase_action(
 ):
     """玩家推进一轮追逐（奔逃/闯障）。结算后广播 dice/chase/system chunks。"""
     require_session_token_actor(db, session_id, token)
+    session = session_service.get_session(db, session_id)
     try:
         chunks = await chase_service.resolve_chase_round(
             db, session_id, data.model_dump(exclude_none=True),
-            agent=_combat_agent(db, None), scene_hint="",
+            agent=_combat_agent(db, session), scene_hint="",
         )
     except ValueError as e:
         raise HTTPException(409, str(e))
     for chunk in chunks:
         room_hub.broadcast(session_id, chunk)
-    _schedule_aftermath_if_ended(session_id, chunks)
+    _schedule_aftermath_if_ended(session_id, chunks, session)
     return {"ok": True}

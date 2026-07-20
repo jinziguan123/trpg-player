@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, model_validator
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class ParticipantInput(BaseModel):
@@ -12,7 +14,7 @@ class ParticipantInput(BaseModel):
     """
 
     character_id: str | None = None
-    role: str = "ai"  # human | ai
+    role: str = "ai"  # human | ai；KP 席由 kp_mode=human 自动创建
     is_primary: bool = False
 
 
@@ -27,6 +29,7 @@ class ParticipantRead(BaseModel):
     is_mine: bool = False  # 该席位是否归当前请求 token 所有（由端点按 token 计算）
     is_host: bool = False  # 该席位是否房主（主角席 + 有 owner_token），端点按 token 计算
     is_online: bool = False  # 该席位玩家是否有活跃 /live 连接（端点按在线 token 计算）
+    is_kp: bool = False  # 该席位是否为真人 KP
 
     model_config = {"from_attributes": True}
 
@@ -36,11 +39,14 @@ class SessionCreate(BaseModel):
     # 旧单人路径：只传主角；新多席位路径：传 participants（含主角 + AI 队友 + 空席）
     player_character_id: str | None = None
     participants: list[ParticipantInput] | None = None
+    kp_mode: str = "ai"  # ai | human
 
     @model_validator(mode="after")
     def _require_seat(self) -> "SessionCreate":
         if not self.participants and not self.player_character_id:
             raise ValueError("必须至少提供一个主角席位")
+        if self.kp_mode not in ("ai", "human"):
+            raise ValueError("kp_mode 必须是 ai 或 human")
         return self
 
 
@@ -48,6 +54,7 @@ class SessionRead(BaseModel):
     id: str
     module_id: str
     status: str
+    kp_mode: str = "ai"
     player_character_id: str | None
     room_code: str | None = None
     current_scene_id: str | None
@@ -77,3 +84,14 @@ class EndVoteRequest(BaseModel):
     """结束模组投票：以哪个真人席角色发起 / 同意；缺省取主角席。"""
 
     acting_character_id: str | None = None
+
+
+class KpActionRequest(BaseModel):
+    """真人 KP 工具桌动作；payload 由动作类型对应的表单字段组成。"""
+
+    action: Literal[
+        "narration", "dialogue", "dice_check", "opposed_check", "san_check",
+        "scene_change", "set_flag", "clear_flag", "handout", "hp_change",
+        "start_combat",
+    ]
+    payload: dict = Field(default_factory=dict)

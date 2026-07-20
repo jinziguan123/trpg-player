@@ -94,7 +94,8 @@ class InventoryGiveRequest(BaseModel):
 class StreamChunk(BaseModel):
     type: Literal[
         "narration", "dialogue", "action", "dice", "system",
-        "check_request", "thinking", "done",
+        "check_request", "thinking", "done", "kp_request", "kp_action",
+        "kp_turn_ready", "kp_roll_ready",
     ]
     actor_name: str | None = None
     content: str = ""

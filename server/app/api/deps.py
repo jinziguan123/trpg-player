@@ -101,3 +101,15 @@ def require_session_host(
     if not session_service.is_host(db, session_id, token):
         raise HTTPException(403, detail)
     return session
+
+
+def require_session_kp(
+    db: Session,
+    session_id: str,
+    token: str | None,
+) -> GameSession:
+    """真人 KP 专用授权；KP 席与普通玩家席位权限严格分离。"""
+    try:
+        return session_service.authorize_kp(db, session_id, token)
+    except ValueError as error:
+        _raise_actor_error(error)

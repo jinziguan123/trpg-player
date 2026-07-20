@@ -20,6 +20,8 @@ export function NewGamePanel({ setup }: { setup: GameSetupState }) {
     setFilter,
     resetFilters,
     moduleId,
+    kpMode,
+    setKpMode,
     selectedModule,
     range,
     minSeats,
@@ -161,6 +163,28 @@ export function NewGamePanel({ setup }: { setup: GameSetupState }) {
 
       {moduleId && (
         <>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium">KP 模式</span>
+            <button
+              type="button"
+              onClick={() => setKpMode('ai')}
+              className="btn-secondary !px-2.5 !py-1 text-xs"
+              style={kpMode === 'ai' ? { borderColor: 'var(--color-accent)', color: 'var(--color-text-accent)' } : undefined}
+            >
+              AI KP
+            </button>
+            <button
+              type="button"
+              onClick={() => setKpMode('human')}
+              className="btn-secondary !px-2.5 !py-1 text-xs"
+              style={kpMode === 'human' ? { borderColor: 'var(--color-accent)', color: 'var(--color-text-accent)' } : undefined}
+            >
+              真人 KP
+            </button>
+            <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+              {kpMode === 'human' ? '创建者同时拥有 KP 席，可用工具桌主持剧情。' : '由 AI 自动主持剧情。'}
+            </span>
+          </div>
           <div className="mb-1 flex items-center gap-2">
             <span className="text-sm font-medium">玩家人数</span>
             <button
@@ -187,7 +211,7 @@ export function NewGamePanel({ setup }: { setup: GameSetupState }) {
             </button>
           </div>
           <p className="mb-3 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-            本模组推荐 {range.min}–{range.max} 人 · KP 由 AI 担任 · 你 1 人 + AI 队友{' '}
+            本模组推荐 {range.min}–{range.max} 人 · {kpMode === 'human' ? '真人 KP' : 'AI KP'} · 你 1 人 + AI 队友{' '}
             {Math.max(seats.length - 1, 0)} 人
             {range.min === 1 && range.max === 6 && !selectedModule?.world_setting?.player_count
               ? '（模组未标注人数，按默认范围）'

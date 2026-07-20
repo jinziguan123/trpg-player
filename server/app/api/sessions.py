@@ -23,7 +23,11 @@ from app.schemas.session import (
     SessionStatusUpdate,
 )
 from app.services import session_service
-from app.services.chat_service import _make_chunk, run_opening_generation
+from app.services.chat_service import (
+    _make_chunk,
+    initialize_human_session,
+    run_opening_generation,
+)
 from app.services.generation_manager import generation_manager
 from app.services.room_hub import room_hub, stream_room
 
@@ -42,6 +46,7 @@ def _session_payload(
         p["is_mine"] = bool(token and sp.owner_token and sp.owner_token == token)
         p["is_host"] = bool(sp.is_primary and sp.owner_token)
         p["is_online"] = bool(sp.owner_token and sp.owner_token in online)
+        p["is_kp"] = sp.role == "kp"
     return {
         **data,
         "module_title": module_title,
@@ -80,7 +85,9 @@ def create_session(
             {"character_id": data.player_character_id, "role": "human", "is_primary": True}
         ]
     try:
-        session = session_service.create_session(db, data.module_id, seats, creator_token=token)
+        session = session_service.create_session(
+            db, data.module_id, seats, creator_token=token, kp_mode=data.kp_mode,
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -181,11 +188,17 @@ async def start_game(
         session = session_service.start_game(db, session_id, token)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    # 推进到 active 后触发开场（fire-and-forget，输出经 /live 下发）
+    # 推进到 active 后触发开场（fire-and-forget，输出经 /live 下发）。真人 KP 模式只初始化
+    # 背景/场景卡，不调用 AI 直接生成玩家可见叙事。
     room_hub.broadcast(session_id, _make_chunk("started"))
     if not generation_manager.is_generating(session_id):
         room_hub.broadcast(session_id, _make_chunk("generating"))
-        generation_manager.start(session_id, run_opening_generation(session_id))
+        opening = (
+            run_opening_generation(session_id)
+            if session.kp_mode == "ai"
+            else initialize_human_session(session_id)
+        )
+        generation_manager.start(session_id, opening)
     module = db.get(Module, session.module_id)
     return _session_payload(
         session, _chars_map(db, [session]), module.title if module else None, token,
@@ -523,7 +536,12 @@ async def trigger_opening(
         return {"ok": True, "already_generating": True}
 
     room_hub.broadcast(session_id, _make_chunk("generating"))
-    generation_manager.start(session_id, run_opening_generation(session_id))
+    opening = (
+        run_opening_generation(session_id)
+        if game_session.kp_mode == "ai"
+        else initialize_human_session(session_id)
+    )
+    generation_manager.start(session_id, opening)
     return {"ok": True}
 
 

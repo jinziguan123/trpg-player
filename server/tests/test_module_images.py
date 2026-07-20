@@ -132,3 +132,36 @@ def test_encounter_image_uses_encounter_prompt(tmp_path, monkeypatch):
     monkeypatch.setattr(module_image_service, "get_llm", lambda: ImageLLM())
     url = asyncio.run(module_image_service.regenerate_module_image(db, module, "npc", "n1", "encounter_image"))
     assert url and db.get(Module, module.id).npcs[0]["encounter_image"] == url
+
+
+def test_regenerate_scene_visual_variant_updates_variant_cache(tmp_path, monkeypatch):
+    from app.services import image_store, module_image_service
+
+    monkeypatch.setattr(image_store, "IMAGES_DIR", tmp_path / "images")
+    engine = create_engine(f"sqlite:///{tmp_path / 'scene-variant.db'}")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    module = Module(
+        title="m", rule_system="coc",
+        scenes=[{"id": "s1", "title": "教堂", "image_variants": {}}],
+    )
+    db.add(module)
+    db.commit()
+
+    class PromptLLM:
+        async def complete(self, messages, **kwargs):
+            return "flooded chapel"
+
+    class ImageLLM:
+        def supports_image_gen(self):
+            return True
+
+        async def generate_image(self, prompt, size="1024x1024"):
+            return _png_b64()
+
+    monkeypatch.setattr(module_image_service, "get_fast_llm", lambda: PromptLLM())
+    monkeypatch.setattr(module_image_service, "get_llm", lambda: ImageLLM())
+    url = asyncio.run(module_image_service.regenerate_module_image(
+        db, module, "scene", "s1", "image_variant", "flooded",
+    ))
+    assert url and db.get(Module, module.id).scenes[0]["image_variants"]["flooded"] == url

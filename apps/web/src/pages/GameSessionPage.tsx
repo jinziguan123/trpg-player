@@ -17,6 +17,7 @@ import { InvestigationBoard } from '../components/game/InvestigationBoard'
 import { ImprovisedNpcModal } from '../components/game/ImprovisedNpcModal'
 import { CombatStage, type CombatState, type PendingReaction, type CombatLogEntry, type CombatResultView } from '../components/game/CombatStage'
 import { ChasePanel, type ChaseState } from '../components/game/ChasePanel'
+import { HumanKpPanel } from '../components/game/HumanKpPanel'
 import { Modal } from '../components/ui/modal'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter, GiCrossedSwords, GiLaurelCrown, GiAncientRuins, GiMagnifyingGlass } from 'react-icons/gi'
 import { Copy, Bot, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
@@ -86,6 +87,7 @@ function LiveModuleImage({
   className = '',
   onClick,
   onRegenerated,
+  visualStateKey,
 }: {
   src: string
   moduleId?: string
@@ -96,13 +98,15 @@ function LiveModuleImage({
   className?: string
   onClick?: () => void
   onRegenerated?: (url: string) => void
+  visualStateKey?: string
 }) {
   const image = useRepairableImage({
     src,
     moduleId,
     kind: (kind || 'scene') as ModuleImageKind,
     itemId: itemId || '',
-    field: (field || 'image') as 'image' | 'portrait' | 'encounter_image',
+    field: (field || 'image') as 'image' | 'image_variant' | 'portrait' | 'encounter_image',
+    visualStateKey,
     onRegenerated,
   })
   if (!image.imageUrl || image.status === 'failed') return null
@@ -391,6 +395,8 @@ export function GameSessionPage() {
   const primaryId = currentSession?.player_character_id ?? null
   // 多人：我在本房间认领的角色（无则回退到主角，兼容单人）
   const myCharId = currentSession?.participants?.find((p) => p.is_mine)?.character_id ?? primaryId
+  const isKp = currentSession?.kp_mode === 'human'
+    && !!currentSession.participants?.some((p) => p.role === 'kp' && p.is_mine)
   const shownCharId = panelCharId ?? myCharId
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
@@ -670,6 +676,11 @@ export function GameSessionPage() {
     if (t === 'replay_done') return
     if (t === 'generating') { setStreaming(true); setThinking(true); return }
     if (t === 'turn_state') { setTurnState((chunk.metadata as { confirmed_ids: string[]; total: number; ready: boolean }) || null); return }
+    if (t === 'kp_request' || t === 'kp_turn_ready' || t === 'kp_roll_ready') {
+      if (isKp && chunk.content) toast.info(chunk.content)
+      return
+    }
+    if (t === 'kp_action') return
     if (t === 'combat_start') {
       // 新战斗：日志下限取后端透传的 started_seq（本场开打前最大 seq），抽屉只收本场结算、不掺上一场；
       // 后端未带时回退到客户端已见最大 seq。
@@ -782,7 +793,7 @@ export function GameSessionPage() {
       const cid = String((chunk.metadata as Record<string, unknown> | undefined)?.id ?? '')
       if (cid) setOptimisticPending((s) => new Set(s).add(cid))
     }
-  }, [addMessage, removeMessage, updateMessage, patchMessageMetadata, appendToStream, endStream, startStreamMessage, resyncHistory, refetchSession])
+  }, [addMessage, removeMessage, updateMessage, patchMessageMetadata, appendToStream, endStream, startStreamMessage, resyncHistory, refetchSession, isKp])
 
   useEffect(() => {
     if (!sessionId) return
@@ -1227,6 +1238,9 @@ export function GameSessionPage() {
           <span className="text-sm font-semibold whitespace-nowrap" style={{ color: 'var(--color-text-accent)' }}>
             {currentSession.module_title || '游戏中'}
           </span>
+          {currentSession.kp_mode === 'human' && (
+            <span className="badge text-xs" style={{ color: 'var(--color-text-accent)' }}>真人 KP</span>
+          )}
           {currentSession.room_code && (
             <button
               onClick={() => { navigator.clipboard?.writeText(currentSession.room_code || ''); toast.success(`房间码 ${currentSession.room_code} 已复制`) }}
@@ -1682,6 +1696,7 @@ export function GameSessionPage() {
                           field={String(msg.metadata?.image_field || '')}
                           className="block w-full rounded mb-3"
                           onRegenerated={(url) => msg.id && patchMessageMetadata(msg.id, { image: url })}
+                          visualStateKey={String(msg.metadata?.visual_state_key || '') || undefined}
                         />
                       ) : isFresh(msg) ? (
                         // 图片尚未生成完：低调一行小字占位（若最终没图，这行也只在新鲜卡片上出现）
@@ -1877,7 +1892,7 @@ export function GameSessionPage() {
             {typingName} 正在输入…
           </div>
         )}
-        {aiConfigured === false && (
+        {aiConfigured === false && currentSession.kp_mode !== 'human' && (
           <div
             className="mx-3 mb-1 flex items-center justify-between gap-2 rounded px-3 py-2 text-xs"
             style={{
@@ -1895,6 +1910,7 @@ export function GameSessionPage() {
             </button>
           </div>
         )}
+        {isKp && <HumanKpPanel sessionId={currentSession.id} />}
         {!streaming && (
           <div className="px-3 pb-1 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -1907,9 +1923,11 @@ export function GameSessionPage() {
                   color: 'var(--color-on-accent)',
                   opacity: (turnState && myCharId && turnState.confirmed_ids.includes(myCharId)) ? 0.5 : 1,
                 }}
-                title="所有真人都点「推进」后，本回合发言才整批交给 KP"
+                title={currentSession.kp_mode === 'human' ? '所有真人都提交后，真人 KP 会收到本回合行动' : '所有真人都点「推进」后，本回合发言才整批交给 KP'}
               >
-                {turnState && myCharId && turnState.confirmed_ids.includes(myCharId) ? '已确认 · 等待其他人' : '推进本回合'}
+                {turnState && myCharId && turnState.confirmed_ids.includes(myCharId)
+                  ? '已提交 · 等待其他人'
+                  : currentSession.kp_mode === 'human' ? '提交给 KP' : '推进本回合'}
               </button>
               {turnState && turnState.total > 0 && (
                 <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>

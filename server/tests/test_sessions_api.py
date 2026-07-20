@@ -651,6 +651,55 @@ def test_travel_stash_adds_pending_turn_and_commits_location(tmp_path, monkeypat
         app.dependency_overrides.clear()
 
 
+def test_human_kp_travel_commits_location_without_ai_generation(client):
+    """真人 KP 模式不进入 AI 生成管线时，推进仍要确定性提交移动位置。"""
+    c, ids = client
+    gen = app.dependency_overrides[get_db]()
+    db = next(gen)
+    try:
+        module = db.get(Module, ids["module"])
+        module.scenes = [
+            {"id": "a", "title": "门厅"},
+            {"id": "b", "title": "图书馆"},
+        ]
+        db.commit()
+    finally:
+        gen.close()
+
+    created = c.post(
+        "/api/sessions",
+        json={
+            "module_id": ids["module"],
+            "kp_mode": "human",
+            "participants": [{"character_id": ids["hero"], "is_primary": True}],
+        },
+    )
+    assert created.status_code == 200, created.text
+    sid = created.json()["id"]
+
+    gen = app.dependency_overrides[get_db]()
+    db = next(gen)
+    try:
+        session = db.get(GameSession, sid)
+        session.world_state = {"visited_scenes": ["a", "b"]}
+        db.commit()
+    finally:
+        gen.close()
+
+    travel = c.post(f"/api/sessions/{sid}/travel", json={"scene_id": "b"})
+    assert travel.status_code == 200 and travel.json().get("stashed") is True
+    advance = c.post(f"/api/sessions/{sid}/advance", json={})
+    assert advance.status_code == 200 and advance.json()["ready"] is True
+
+    gen = app.dependency_overrides[get_db]()
+    db = next(gen)
+    try:
+        session = db.get(GameSession, sid)
+        assert session.world_state["party_locations"][ids["hero"]] == "b"
+    finally:
+        gen.close()
+
+
 def test_travel_connectivity_gate(tmp_path, monkeypatch):
     """大地图前往的连通校验：不连通的已知地点 → 400 并提示可直达邻居；
     不相邻但连通（多跳）→ 放行（KP 会叙述途经）；模组没建图时行为不变（另有既有测试覆盖）。"""

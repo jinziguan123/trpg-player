@@ -9,12 +9,13 @@ interface ModuleImageProps {
   moduleId?: string
   kind: ModuleImageKind
   itemId: string
-  field: 'image' | 'portrait' | 'encounter_image'
+  field: 'image' | 'image_variant' | 'portrait' | 'encounter_image'
   alt: string
   aspectRatio?: string
   objectFit?: 'cover' | 'contain'
   className?: string
   onRegenerated?: (url: string) => void
+  visualStateKey?: string
 }
 
 export interface RepairableImageOptions {
@@ -22,8 +23,9 @@ export interface RepairableImageOptions {
   moduleId?: string
   kind: ModuleImageKind
   itemId: string
-  field: 'image' | 'portrait' | 'encounter_image'
+  field: 'image' | 'image_variant' | 'portrait' | 'encounter_image'
   onRegenerated?: (url: string) => void
+  visualStateKey?: string
 }
 
 function absoluteImageUrl(src: string): string {
@@ -48,8 +50,9 @@ export function ModuleImage({
   objectFit = 'cover',
   className = '',
   onRegenerated,
+  visualStateKey,
 }: ModuleImageProps) {
-  const image = useRepairableImage({ src, moduleId, kind, itemId, field, onRegenerated })
+  const image = useRepairableImage({ src, moduleId, kind, itemId, field, onRegenerated, visualStateKey })
   if (!src || !image.imageUrl) return null
 
   return (
@@ -84,7 +87,7 @@ export function ModuleImage({
   )
 }
 
-export function useRepairableImage({ src, moduleId, kind, itemId, field, onRegenerated }: RepairableImageOptions) {
+export function useRepairableImage({ src, moduleId, kind, itemId, field, onRegenerated, visualStateKey }: RepairableImageOptions) {
   const [imageUrl, setImageUrl] = useState(() => src ? verificationUrl(src) : '')
   const [status, setStatus] = useState<'loading' | 'ready' | 'regenerating' | 'failed'>('loading')
   const attemptedRef = useRef(false)
@@ -110,6 +113,7 @@ export function useRepairableImage({ src, moduleId, kind, itemId, field, onRegen
         kind,
         item_id: itemId,
         field,
+        visual_state_key: visualStateKey,
       })
       setImageUrl(absoluteImageUrl(result.url))
       setStatus('loading')

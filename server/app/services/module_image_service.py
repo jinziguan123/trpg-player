@@ -56,7 +56,10 @@ def _target(module: Module, kind: str, item_id: str, field: str | None = None) -
     if config is None:
         raise ValueError("不支持的图片类型")
     list_field, expected_field, prompt_sys = config
-    allowed_fields = ("portrait", "encounter_image") if kind == "npc" else (expected_field,)
+    allowed_fields = (
+        ("portrait", "encounter_image") if kind == "npc"
+        else ((expected_field, "image_variant") if kind == "scene" else (expected_field,))
+    )
     if field and field not in allowed_fields:
         raise ValueError("图片字段与类型不匹配")
     target_field = field or expected_field
@@ -110,10 +113,18 @@ async def regenerate_module_image(
     kind: str,
     item_id: str,
     field: str | None = None,
+    visual_state_key: str | None = None,
 ) -> str | None:
     """重新生成一个失效的模组图片，并将新 URL 原子地写回模组 JSON。"""
     item, list_field, expected_field, prompt_sys = _target(module, kind, item_id, field)
-    cached = str(item.get(expected_field) or "").strip()
+    if kind == "scene" and expected_field == "image_variant":
+        state_key = str(visual_state_key or "").strip()
+        if not state_key or state_key == "base":
+            raise ValueError("状态图片缺少 visual_state_key")
+        cached = str((item.get("image_variants") or {}).get(state_key) or "").strip()
+    else:
+        state_key = ""
+        cached = str(item.get(expected_field) or "").strip()
     if image_url_available(cached):
         return cached
 
@@ -142,7 +153,12 @@ async def regenerate_module_image(
         updated = False
         for value in items:
             if isinstance(value, dict) and str(value.get("id") or "") == str(item_id):
-                value[expected_field] = url
+                if kind == "scene" and expected_field == "image_variant":
+                    variants = dict(value.get("image_variants") or {})
+                    variants[state_key] = url
+                    value["image_variants"] = variants
+                else:
+                    value[expected_field] = url
                 updated = True
                 break
         if not updated:

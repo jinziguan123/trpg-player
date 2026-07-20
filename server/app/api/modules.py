@@ -70,6 +70,7 @@ class ModuleImageRegenerateRequest(BaseModel):
     kind: str
     item_id: str
     field: str | None = None
+    visual_state_key: str | None = None
 
 
 def _decode_text(content: bytes) -> str:
@@ -391,6 +392,7 @@ async def regenerate_module_image(
     try:
         url = await module_image_service.regenerate_module_image(
             db, module, data.kind, data.item_id, data.field,
+            data.visual_state_key,
         )
     except LookupError as e:
         raise HTTPException(404, str(e)) from e
