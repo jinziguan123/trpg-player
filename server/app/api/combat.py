@@ -7,21 +7,17 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import player_token, require_session_viewer
+from app.api.deps import (
+    player_token,
+    require_session_token_actor,
+    require_session_viewer,
+)
 from app.database import get_db
 from app.schemas.combat import ChaseActionRequest, CombatActionRequest, ReactionRequest
 from app.services import chase_service, combat_service, session_service
 from app.services.room_hub import room_hub
 
 router = APIRouter(prefix="/api/sessions", tags=["combat"])
-
-
-def _actor_char_id(db: Session, session_id: str, token: str | None) -> str | None:
-    """token 对应的席位角色 id（即战斗参战方 id）。"""
-    for p in session_service.get_participants(db, session_id):
-        if p.owner_token and token and p.owner_token == token:
-            return p.character_id
-    return None
 
 
 @router.get("/{session_id}/combat")
@@ -47,14 +43,9 @@ async def combat_action(
 ):
     """提交一个战斗行动（attack/dodge/fight_back/flee/first_aid/observe/maneuver/reload/aim/other）。
     仅当轮到本玩家时有效。"""
+    actor = require_session_token_actor(db, session_id, token)
     session = session_service.get_session(db, session_id)
-    if not session:
-        raise HTTPException(404, "会话不存在")
-    char_id = _actor_char_id(db, session_id, token)
-    # 兼容纯本机会话（无 token 归属）：回落到会话主角
-    actor_id = char_id or session.player_character_id
-    if not actor_id:
-        raise HTTPException(403, "无法确定行动角色")
+    actor_id = actor.id
     # 方格移动：常规移动(move)不推进先攻、同回合仍可攻击；冲刺(dash)独占本回合 → 推进先攻并续跑 NPC 驱动。
     if data.type in ("move", "dash"):
         dash = data.type == "dash"
@@ -93,12 +84,9 @@ async def combat_roll(
     token: str | None = Depends(player_token),
 ):
     """两段式攻击第二段：玩家亲自掷伤害。仅当有属于本玩家的 pending_roll 时有效。"""
+    actor = require_session_token_actor(db, session_id, token)
     session = session_service.get_session(db, session_id)
-    if not session:
-        raise HTTPException(404, "会话不存在")
-    actor_id = _actor_char_id(db, session_id, token) or session.player_character_id
-    if not actor_id:
-        raise HTTPException(403, "无法确定行动角色")
+    actor_id = actor.id
     try:
         chunks = await combat_service.resolve_combat_roll(
             db, session_id, actor_id, agent=_combat_agent(db, session), scene_hint="")
@@ -121,13 +109,9 @@ async def combat_reaction(
 
     结算这一击并续跑驱动，广播新的 combat_state/dice/narration。
     """
+    actor = require_session_token_actor(db, session_id, token)
     session = session_service.get_session(db, session_id)
-    if not session:
-        raise HTTPException(404, "会话不存在")
-    # 兼容纯本机会话（无 token 归属）：回落到会话主角
-    actor_id = _actor_char_id(db, session_id, token) or session.player_character_id
-    if not actor_id:
-        raise HTTPException(403, "无法确定行动角色")
+    actor_id = actor.id
     try:
         chunks = await combat_service.resolve_reaction(
             db, session_id, actor_id, data.choice, agent=_combat_agent(db, session))
@@ -191,8 +175,7 @@ async def chase_action(
     token: str | None = Depends(player_token),
 ):
     """玩家推进一轮追逐（奔逃/闯障）。结算后广播 dice/chase/system chunks。"""
-    if not session_service.get_session(db, session_id):
-        raise HTTPException(404, "会话不存在")
+    require_session_token_actor(db, session_id, token)
     try:
         chunks = await chase_service.resolve_chase_round(
             db, session_id, data.model_dump(exclude_none=True),

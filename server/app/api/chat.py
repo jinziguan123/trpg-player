@@ -1,7 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import player_token, require_session_viewer
+from app.api.deps import (
+    player_token,
+    require_session_actor,
+    require_session_manager,
+    require_session_token_actor,
+    require_session_viewer,
+)
 from app.database import get_db
 from app.models.module import Module
 from app.models.session import GameSession
@@ -42,12 +48,9 @@ def post_ooc(
     game_session = db.get(GameSession, session_id)
     if not game_session:
         raise HTTPException(404, "会话不存在")
-    try:
-        actor = session_service.resolve_actor(
-            db, session_id, token, data.acting_character_id,
-        )
-    except ValueError as e:
-        raise HTTPException(403, str(e))
+    actor = require_session_actor(
+        db, session_id, token, data.acting_character_id,
+    )
 
     _, ooc = split_ooc(data.content)
     text = ooc or data.content.strip()
@@ -75,12 +78,9 @@ async def chat(
     if generation_manager.is_generating(session_id):
         raise HTTPException(409, "KP 正在叙事，请稍候")
 
-    try:
-        player_char = session_service.resolve_actor(
-            db, session_id, token, data.acting_character_id,
-        )
-    except ValueError as e:
-        raise HTTPException(403, str(e))
+    player_char = require_session_actor(
+        db, session_id, token, data.acting_character_id,
+    )
 
     in_character, ooc = split_ooc(data.content)
     if not in_character:
@@ -141,12 +141,9 @@ async def check(
     if not data.skill.strip():
         raise HTTPException(400, "未指定检定技能")
 
-    try:
-        actor = session_service.resolve_actor(
-            db, session_id, token, data.acting_character_id,
-        )
-    except ValueError as e:
-        raise HTTPException(403, str(e))
+    actor = require_session_actor(
+        db, session_id, token, data.acting_character_id,
+    )
 
     skill = data.skill.strip()
     intent = data.intent.strip()
@@ -174,15 +171,19 @@ async def roll(
     token: str | None = Depends(player_token),
 ):
     """玩家点『投骰』：对一个待定检定掷骰，结果交 KP 据达成等级续写（fire-and-forget）。"""
+    actor = require_session_token_actor(db, session_id, token)
     game_session = db.get(GameSession, session_id)
-    if not game_session:
-        raise HTTPException(404, "会话不存在")
     if game_session.status != "active":
         raise HTTPException(400, "会话未处于活跃状态")
     if generation_manager.is_generating(session_id):
         raise HTTPException(409, "KP 正在叙事，请稍候")
     if not data.check_id.strip():
         raise HTTPException(400, "未指定检定")
+    pending = session_service.get_pending_check(
+        db, session_id, data.check_id.strip(),
+    )
+    if pending and pending.get("char_id") not in (None, actor.id):
+        raise HTTPException(403, "无权提交其他角色的检定")
 
     room_hub.broadcast(session_id, _make_chunk("generating"))
     generation_manager.start(
@@ -204,17 +205,10 @@ async def regenerate(
     高风险操作（可能明显改变剧情走向），前端须二次确认后才调用；只作用于「最新一轮」——回滚逻辑
     天然只清理事件流尾部的 KP 产物。
     """
+    require_session_token_actor(db, session_id, token)
     game_session = db.get(GameSession, session_id)
-    if not game_session:
-        raise HTTPException(404, "会话不存在")
     if game_session.status != "active":
         raise HTTPException(400, "会话未处于活跃状态")
-    # 鉴权：本桌任一真人席位均可触发（无归属的本机会话放行；有归属则须 token 匹配某真人席位）
-    human_seats = [p for p in session_service.get_participants(db, session_id) if p.role == "human"]
-    if human_seats and not any(
-        (not p.owner_token) or (token and p.owner_token == token) for p in human_seats
-    ):
-        raise HTTPException(403, "无权操作该会话")
 
     # ①打断卡住/进行中的旧生成（其半截叙事会先落库，②随后被回滚清掉）
     await generation_manager.cancel(session_id)
@@ -241,10 +235,9 @@ async def advance(
         raise HTTPException(400, "会话未处于活跃状态")
     if generation_manager.is_generating(session_id):
         raise HTTPException(409, "KP 正在叙事，请稍候")
-    try:
-        actor = session_service.resolve_actor(db, session_id, token, data.acting_character_id)
-    except ValueError as e:
-        raise HTTPException(403, str(e))
+    actor = require_session_actor(
+        db, session_id, token, data.acting_character_id,
+    )
 
     session_service.set_turn_confirm(db, session_id, actor.id, True)
     # 掉线豁免：按在线 token 计算需确认者（并入本次确认者，防其 /live 恰好瞬断被漏算）。
@@ -276,8 +269,9 @@ async def force_advance(
         raise HTTPException(404, "会话不存在")
     if game_session.status != "active":
         raise HTTPException(400, "会话未处于活跃状态")
-    if not session_service.can_manage_session(db, session_id, token):
-        raise HTTPException(403, "只有房主可以强制推进")
+    require_session_manager(
+        db, session_id, token, detail="只有房主可以强制推进",
+    )
     if generation_manager.is_generating(session_id):
         raise HTTPException(409, "KP 正在叙事，请稍候")
     session_service.commit_turn(db, session_id)
@@ -304,10 +298,9 @@ async def edit_event(
     content = data.content.strip()
     if not content:
         raise HTTPException(400, "内容不能为空")
-    try:
-        actor = session_service.resolve_actor(db, session_id, token, data.acting_character_id)
-    except ValueError as e:
-        raise HTTPException(403, str(e))
+    actor = require_session_actor(
+        db, session_id, token, data.acting_character_id,
+    )
 
     if not session_service.update_pending_event(db, session_id, event_id, actor.id, content):
         raise HTTPException(403, "只能修改自己本回合尚未推进的发言")
@@ -334,10 +327,9 @@ async def delete_event(
         raise HTTPException(404, "会话不存在")
     if generation_manager.is_generating(session_id):
         raise HTTPException(409, "KP 正在叙事，请稍候")
-    try:
-        actor = session_service.resolve_actor(db, session_id, token, acting_character_id)
-    except ValueError as e:
-        raise HTTPException(403, str(e))
+    actor = require_session_actor(
+        db, session_id, token, acting_character_id,
+    )
 
     if not session_service.delete_pending_event(db, session_id, event_id, actor.id):
         raise HTTPException(403, "只能删除自己本回合尚未推进的发言")
@@ -411,10 +403,9 @@ async def travel(
         raise HTTPException(400, "会话未处于活跃状态")
     if generation_manager.is_generating(session_id):
         raise HTTPException(409, "KP 正在叙事，请稍候")
-    try:
-        actor = session_service.resolve_actor(db, session_id, token, data.acting_character_id)
-    except ValueError as e:
-        raise HTTPException(403, str(e))
+    actor = require_session_actor(
+        db, session_id, token, data.acting_character_id,
+    )
 
     module = db.get(Module, game_session.module_id)
     scene_id = (data.scene_id or "").strip()

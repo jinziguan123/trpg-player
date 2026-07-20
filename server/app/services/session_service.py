@@ -443,6 +443,48 @@ def resolve_actor(
     return char
 
 
+def resolve_token_actor(
+    db: Session,
+    session_id: str,
+    token: str | None,
+) -> Character:
+    """按 token 解析当前真人角色；纯本机旧会话回落到主角。"""
+    session = db.get(GameSession, session_id)
+    if not session:
+        raise ValueError("房间不存在")
+
+    parts = get_participants(db, session_id)
+    if token:
+        seat = next(
+            (
+                p
+                for p in parts
+                if p.owner_token == token and p.role == "human" and p.character_id
+            ),
+            None,
+        )
+        if seat:
+            char = db.get(Character, seat.character_id)
+            if not char:
+                raise ValueError("角色不存在")
+            return char
+
+    # 只要会话已有任何席位归属，就不能把缺失或错误 token 回退成主角。
+    if any(p.owner_token for p in parts):
+        raise ValueError("无权以该角色行动")
+
+    target_id = session.player_character_id
+    if not target_id:
+        raise ValueError("未指定行动角色")
+    seat = next((p for p in parts if p.character_id == target_id), None)
+    if seat and seat.role != "human":
+        raise ValueError("只能以真人席位行动")
+    char = db.get(Character, target_id)
+    if not char:
+        raise ValueError("角色不存在")
+    return char
+
+
 def get_party_members(
     db: Session, session_id: str, exclude_id: str | None = None,
 ) -> list[Character]:
@@ -489,6 +531,20 @@ def add_pending_check(db: Session, session_id: str, check: dict) -> None:
     ws["pending_checks"] = pending
     session.world_state = ws
     db.commit()
+
+
+def get_pending_check(
+    db: Session,
+    session_id: str,
+    check_id: str,
+) -> dict | None:
+    """按 id 读取待投检定，不移除状态。"""
+    session = db.get(GameSession, session_id)
+    if not session:
+        return None
+    pending = (session.world_state or {}).get("pending_checks") or {}
+    check = pending.get(check_id)
+    return dict(check) if isinstance(check, dict) else None
 
 
 def find_pending_check(

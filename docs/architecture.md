@@ -247,6 +247,7 @@ Tauri 窗口
 
 - `event_logs(session_id, sequence_num)` 已增加数据库唯一约束，迁移会先检查历史重复值，写入冲突会回滚重试，回合重排使用临时序号区间。
 - 会话级读权限已收敛到 `require_session_viewer()` / `can_view_session()`，覆盖历史、搜索、地点、战报、成长、库存、战斗、追逐和 SSE；setup 阶段仍保留空席大厅的受控访客例外。
+- 核心写权限已收敛到 `require_session_actor()`、`require_session_token_actor()` 和 `require_session_manager()`；战斗/追逐不再在错误 token 下回退主角，成长结算、战报生成和开场重试会在副作用前校验真人席位。
 - REST 契约已由 `server/openapi.json` 和生成的 `apps/web/src/api/generated.ts` 维护，未使用且已漂移的 `packages/shared` 已删除。
 
 ### P0：必须先控制的风险
@@ -263,7 +264,7 @@ Tauri 窗口
 | `chat_service.py` 是事实上的“上帝模块” | 约 5,042 行，包含输入解析、AI 编排、工具执行、规则补偿、事件持久化、广播、RAG、后台收尾等职责；首批事件顺序逻辑已提取到 `turn_event_order.py` | 修改一个规则或提示链路容易影响实时、数据库和其他回合入口；难以建立稳定测试边界 | 按《chat_service 增量拆分纪律》逐簇拆为 `turn_orchestrator`、`narration_pipeline`、`tool_executor`、`event_writer`、`generation_hooks`；先保持同一进程和同一数据库 |
 | 会话服务边界过宽 | `session_service.py` 约 1,171 行，同时处理席位、权限、事件、场景图、回合确认、世界状态写入 | 领域模型、授权策略和持久化细节相互耦合 | 把“房间/席位”“事件仓库”“场景导航”“授权策略”拆为独立模块，统一由 application service 编排 |
 | `world_state` 过度承载异构状态 | `GameSession.world_state` JSON 同时存战斗、剧情、记忆、统计、战报等；适配器文档也承认旧调用点仍未迁移 | 难以校验、查询、迁移和做并发合并；任意键名变化都可能成为隐性兼容问题 | 将战斗、追逐、回合、用量、RAG 统计等高频/强一致状态拆成表；剧情记忆保留 JSON，但建立 Pydantic schema 与版本迁移 |
-| 会话写授权策略仍按端点分散 | `resolve_actor`、`is_host`、直接 session 存在性检查和角色归属检查分别散落在聊天、战斗、成长、投票、开场等入口 | 新增写入口容易漏掉房主/席位/角色归属校验，策略可能与统一读权限再次漂移 | 继续抽出 `authorize_actor / authorize_host / authorize_session_manager`，让 API 只调用应用层授权入口 |
+| 少量大厅/投票写授权仍由领域函数各自处理 | 聊天、战斗、追逐、库存、成长、战报、开场和管理入口已使用统一依赖；`start_game`、`kick_seat`、结束投票等仍在服务函数内部解释 host/actor 规则 | 授权基线已形成，但新增大厅用例仍可能绕开统一入口或产生不同错误语义 | 下一步把 lobby/vote 的 host/actor 策略也迁入统一授权端口，并让领域服务只处理业务不变量 |
 | REST 契约已统一但强类型覆盖不完整 | OpenAPI 已生成；部分接口仍返回裸 `dict`、动态 metadata，`/live` 是手写 SSE | 生成类型不能覆盖匿名响应和流式协议，前端仍需手写协议 DTO | 为稳定 REST 响应补充 Pydantic `response_model`；为 SSE 定义版本、事件 id、generation id 和游标语义 |
 | 页面和状态容器过大 | `GameSessionPage.tsx`、`CharacterPage.tsx`、`SettingsPage.tsx` 均超过千行 | UI 变更、API 调整、状态回放和测试耦合在同一文件 | 按 feature/use-case 拆分 query、command、view model 和展示组件；页面只负责路由级组合 |
 | 生成完成与后台收尾存在隐含时序 | `_finish_generation()` 先广播 `done`，再后台执行摘要/幕后推演；下一轮入口再 `_drain_housekeeping()` | 客户端看到 done 时，部分世界记忆可能尚未更新；异常恢复依赖进程内 task | 将生成状态、收尾状态、游标和失败原因显式化；对外返回 generation id 与阶段状态 |
@@ -320,7 +321,7 @@ API Adapter
 ### 阶段 A：一致性与安全基线
 
 - **已完成**：增加 `event_logs(session_id, sequence_num)` 唯一约束、迁移前重复检查、冲突重试与并发回归测试。
-- **已完成读路径**：统一 `authorize_session_viewer` 语义，覆盖 REST、SSE、搜索和战报；写路径的 actor/host/manager 授权仍需继续收敛。
+- **已完成核心读写路径**：统一 viewer、actor、token actor 和 manager 语义，覆盖 REST、SSE、聊天、战斗、追逐、库存、成长、战报、开场和管理入口；大厅与投票内部授权仍需继续收敛。
 - **已完成**：删除 `packages/shared`，以 OpenAPI 导出和 CI diff 作为 REST 契约基线。
 - 明确只支持单进程运行，给生成任务和 SSE 增加 generation id、心跳和断线恢复语义。
 - 给 `world_state` 建立 Pydantic 子模型、版本迁移入口和写入审计日志。
@@ -360,7 +361,7 @@ API Adapter
 
 真正需要收敛的是“边界”：
 
-- 读安全边界已收敛为统一授权代码，写入侧的 actor/host/manager 策略仍需继续统一；
+- 核心读写安全边界已收敛为统一授权代码，大厅与投票的历史内部校验仍需迁移；
 - 事务边界要从“多数情况下能工作”变成可验证的不变量；
 - 服务边界要从超大文件中的约定变成可独立测试的应用服务；
 - REST 数据契约已经以 OpenAPI 为单一真源，匿名响应和 SSE 协议仍需继续类型化；

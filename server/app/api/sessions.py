@@ -2,7 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import player_token, require_session_viewer
+from app.api.deps import (
+    player_token,
+    require_session_actor,
+    require_session_manager,
+    require_session_token_actor,
+    require_session_viewer,
+)
 from app.database import get_db
 from app.models.character import Character
 from app.models.module import Module
@@ -208,16 +214,10 @@ def typing(
     token: str | None = Depends(player_token),
 ):
     """大厅/游戏：广播'正在输入'（短暂、ephemeral，不入库）。"""
-    seat = next(
-        (p for p in session_service.get_participants(db, session_id) if p.owner_token == token and token),
-        None,
-    )
-    if not seat or not seat.character_id:
-        return {"ok": True}
-    char = db.get(Character, seat.character_id)
+    char = require_session_token_actor(db, session_id, token)
     room_hub.broadcast(
         session_id,
-        _make_chunk("typing", actor_name=char.name if char else "玩家"),
+        _make_chunk("typing", actor_name=char.name),
     )
     return {"ok": True}
 
@@ -286,7 +286,7 @@ async def generate_recap(
     """生成一份章节战报并存入 world_state.recaps；生成失败返回 502（不落库）。"""
     from app.services import recap_service
 
-    require_session_viewer(db, session_id, token)
+    require_session_token_actor(db, session_id, token)
     entry = await recap_service.generate_and_store_recap(db, session_id)
     if entry is None:
         raise HTTPException(502, "战报生成失败（可能无事件或模型未配置），请稍后重试")
@@ -329,6 +329,7 @@ def growth_settle(
     character_id = (body or {}).get("character_id")
     if not character_id:
         raise HTTPException(400, "缺少 character_id")
+    require_session_actor(db, session_id, token, character_id)
     result = growth_service.settle_growth(db, session_id, character_id)
     if result is None:
         raise HTTPException(404, "会话或角色不存在")
@@ -405,10 +406,9 @@ def update_status(
 ):
     if data.status not in _ALLOWED_STATUSES:
         raise HTTPException(400, f"非法状态：{data.status}")
-    if not session_service.get_session(db, session_id):
-        raise HTTPException(404, "会话不存在")
-    if not session_service.can_manage_session(db, session_id, token):
-        raise HTTPException(403, "只有房主可以变更会话状态")
+    require_session_manager(
+        db, session_id, token, detail="只有房主可以变更会话状态",
+    )
     session = session_service.update_session_status(db, session_id, data.status)
     if not session:
         raise HTTPException(404, "会话不存在")
@@ -490,18 +490,22 @@ def delete_session(
     db: Session = Depends(get_db),
     token: str | None = Depends(player_token),
 ):
-    if not session_service.get_session(db, session_id):
-        raise HTTPException(404, "会话不存在")
-    if not session_service.can_delete_session(db, session_id, token):
-        raise HTTPException(403, "只有房主可以删除该会话")
+    require_session_manager(
+        db, session_id, token, detail="只有房主可以删除该会话",
+    )
     if not session_service.delete_session(db, session_id):
         raise HTTPException(404, "会话不存在")
     return {"ok": True}
 
 
 @router.post("/{session_id}/opening")
-async def trigger_opening(session_id: str, db: Session = Depends(get_db)):
+async def trigger_opening(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
     """fire-and-forget 触发开场生成；输出经 /live 下发。幂等由生成逻辑保证。"""
+    require_session_token_actor(db, session_id, token)
     game_session = session_service.get_session(db, session_id)
     if not game_session:
         raise HTTPException(404, "会话不存在")

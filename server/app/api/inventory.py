@@ -9,10 +9,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import player_token, require_session_viewer
+from app.api.deps import (
+    player_token,
+    require_session_actor,
+    require_session_viewer,
+)
 from app.database import get_db
 from app.models.character import Character
-from app.models.session import GameSession
 from app.schemas.event import (
     InventoryDropRequest,
     InventoryGiveRequest,
@@ -56,21 +59,14 @@ def get_inventory(
     return {"items": inventory_service.get_inventory(char)}
 
 
-def _resolve(db: Session, session_id: str, token: str | None, acting_id: str | None) -> Character:
-    if not db.get(GameSession, session_id):
-        raise HTTPException(404, "会话不存在")
-    try:
-        return session_service.resolve_actor(db, session_id, token, acting_id)
-    except ValueError as e:
-        raise HTTPException(403, str(e))
-
-
 @router.post("/{session_id}/inventory/use")
 def use_item(
     session_id: str, data: InventoryUseRequest, db: Session = Depends(get_db),
     token: str | None = Depends(player_token),
 ):
-    actor = _resolve(db, session_id, token, data.acting_character_id)
+    actor = require_session_actor(
+        db, session_id, token, data.acting_character_id,
+    )
     used = inventory_service.use_item(db, actor, data.item_id)
     if used is None:
         raise HTTPException(400, "该物品不在你的库存中")
@@ -93,7 +89,9 @@ def drop_item(
     session_id: str, data: InventoryDropRequest, db: Session = Depends(get_db),
     token: str | None = Depends(player_token),
 ):
-    actor = _resolve(db, session_id, token, data.acting_character_id)
+    actor = require_session_actor(
+        db, session_id, token, data.acting_character_id,
+    )
     removed = inventory_service.remove_item(db, actor, data.item_id, qty=data.qty)
     if removed is None:
         raise HTTPException(400, "该物品不在你的库存中")
@@ -106,7 +104,9 @@ def give_item(
     session_id: str, data: InventoryGiveRequest, db: Session = Depends(get_db),
     token: str | None = Depends(player_token),
 ):
-    actor = _resolve(db, session_id, token, data.acting_character_id)
+    actor = require_session_actor(
+        db, session_id, token, data.acting_character_id,
+    )
     # 收礼方必须是本会话同队角色
     party_ids = {c.id for c in session_service.get_party_members(db, session_id)}
     if data.to_character_id not in party_ids:
