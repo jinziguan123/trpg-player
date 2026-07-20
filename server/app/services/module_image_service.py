@@ -32,6 +32,12 @@ NPC_PROMPT_SYS = (
     "描绘气质与神态。画风词不用写，系统会统一追加。不要出现真实人名，不要引号，只输出提示词本身。"
 )
 
+ENCOUNTER_PROMPT_SYS = (
+    "你是文生图提示词工程师。把给定的 TRPG 遭遇战敌人转成一行**英文** Stable Diffusion 提示词："
+    "描绘紧张的遭遇场面（horror creature encounter, dramatic composition），按敌方"
+    "描述刻画其形貌与压迫感，按给定年代取环境质感。不要出现真实人名，不要引号，只输出提示词本身。"
+)
+
 CLUE_PROMPT_SYS = (
     "你是文生图提示词工程师。把给定的 TRPG 线索转成一行**英文** Stable Diffusion 提示词："
     "描绘这件线索物证本身的特写画面——材质、细节、陈放环境与年代质感（evidence close-up, "
@@ -56,7 +62,9 @@ def _target(module: Module, kind: str, item_id: str, field: str | None = None) -
     target_field = field or expected_field
     for item in getattr(module, list_field, None) or []:
         if isinstance(item, dict) and str(item.get("id") or "") == str(item_id):
-            return item, list_field, target_field, prompt_sys
+            return item, list_field, target_field, (
+                ENCOUNTER_PROMPT_SYS if target_field == "encounter_image" else prompt_sys
+            )
     raise LookupError("模组图片条目不存在")
 
 
@@ -69,7 +77,7 @@ def image_url_available(url: str | None) -> bool:
     return bool(_IMAGE_NAME_RE.fullmatch(name)) and (image_store.IMAGES_DIR / name).is_file()
 
 
-def _prompt_user(kind: str, item: dict, module: Module) -> str:
+def _prompt_user(kind: str, item: dict, module: Module, field: str) -> str:
     era = str((module.world_setting or {}).get("era") or "1920s")
     if kind == "scene":
         return (
@@ -79,6 +87,12 @@ def _prompt_user(kind: str, item: dict, module: Module) -> str:
             f"描述：{str(item.get('description') or '')[:600]}"
         )
     if kind == "npc":
+        if field == "encounter_image":
+            return (
+                f"敌方：{item.get('name') or item.get('id') or ''}\n年代：{era}\n"
+                f"形貌与能力：{str(item.get('description') or '')[:400]}\n"
+                f"武器/攻击方式：{str(item.get('weapon') or '')[:200]}"
+            )
         return (
             f"NPC：{item.get('name') or item.get('id') or ''}\n年代：{era}\n"
             f"外貌与身份：{str(item.get('description') or '')[:400]}\n"
@@ -110,7 +124,7 @@ async def regenerate_module_image(
         raw = await get_fast_llm().complete(
             [
                 {"role": "system", "content": prompt_sys},
-                {"role": "user", "content": _prompt_user(kind, item, module)},
+                {"role": "user", "content": _prompt_user(kind, item, module, expected_field)},
             ],
             temperature=0.7,
         )

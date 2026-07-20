@@ -99,3 +99,36 @@ def test_regenerate_reuses_existing_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr(module_image_service, "get_llm", lambda: NoLLM())
     assert asyncio.run(module_image_service.regenerate_module_image(db, module, "scene", "s1")) == url
+
+
+def test_encounter_image_uses_encounter_prompt(tmp_path, monkeypatch):
+    from app.services import image_store, module_image_service
+
+    monkeypatch.setattr(image_store, "IMAGES_DIR", tmp_path / "images")
+    engine = create_engine(f"sqlite:///{tmp_path / 'encounter-images.db'}")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    module = Module(
+        title="m", rule_system="coc",
+        npcs=[{"id": "n1", "name": "怪物", "description": "触手", "weapon": "撕咬", "encounter_image": "/api/images/deleted.jpg"}],
+    )
+    db.add(module)
+    db.commit()
+
+    class PromptLLM:
+        async def complete(self, messages, **kwargs):
+            assert "遭遇战敌人" in messages[0]["content"]
+            assert "武器/攻击方式：撕咬" in messages[1]["content"]
+            return "monster encounter"
+
+    class ImageLLM:
+        def supports_image_gen(self):
+            return True
+
+        async def generate_image(self, prompt, size="1024x1024"):
+            return _png_b64()
+
+    monkeypatch.setattr(module_image_service, "get_fast_llm", lambda: PromptLLM())
+    monkeypatch.setattr(module_image_service, "get_llm", lambda: ImageLLM())
+    url = asyncio.run(module_image_service.regenerate_module_image(db, module, "npc", "n1", "encounter_image"))
+    assert url and db.get(Module, module.id).npcs[0]["encounter_image"] == url
