@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import player_token
+from app.api.deps import player_token, require_session_viewer
 from app.database import get_db
 from app.models.character import Character
 from app.models.session import GameSession
@@ -39,6 +39,16 @@ def get_inventory(
     惰性播种：旧存档/未开场角色的活库存为空时，从角色卡静态 equipment 播种一次——
     这样开场前建的会话也能立刻有带 id 的活库存（可用/给/丢），无需先走一回合。
     """
+    session = require_session_viewer(db, session_id, token)
+    party_ids = {
+        p.character_id
+        for p in session_service.get_participants(db, session_id)
+        if p.character_id
+    }
+    if session.player_character_id:
+        party_ids.add(session.player_character_id)
+    if char_id not in party_ids:
+        raise HTTPException(403, "角色不属于该会话")
     char = db.get(Character, char_id)
     if char is None:
         raise HTTPException(404, "角色不存在")

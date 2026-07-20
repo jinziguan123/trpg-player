@@ -113,12 +113,12 @@ cd server && .venv/bin/python -m evals.run --smoke
 
 ```text
 apps/web/          React 前端
-packages/shared/   共享 TypeScript 类型
 server/app/        FastAPI、服务、AI、规则和数据模型
 server/tests/      后端测试
 server/evals/      叙事与指令评估
 src-tauri/         桌面外壳
-docs/              设计、实施和打包文档
+server/openapi.json  REST OpenAPI 契约真源
+docs/              架构决策、设计、实施和打包文档
 ```
 
 ## 许可证与内容边界

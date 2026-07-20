@@ -39,6 +39,7 @@ from app.services import (
     rag_stats,
     rulebook_service,
     session_service,
+    turn_event_order,
     world_memory,
 )
 from app.services.room_hub import room_hub
@@ -1478,51 +1479,8 @@ def _record_chunk_event(event_order: list, chunk: str, offset: int) -> None:
 def _reorder_turn_events(
     db: Session, session_id: str, event_order: list, base_seq: int
 ) -> None:
-    """按广播顺序（偏移）重排本轮所有展示事件的 sequence_num，使 resync 顺序 == 直播顺序。
-
-    tool-loop 里工具事件（骰子/检定/NPC 台词…）在 loop 内即时落库、拿到较小序号，而旁白在收尾
-    才落库、序号更大——resync 后它们会被甩到旁白前面/成堆。本函数把本轮（seq > base_seq）的
-    这些事件按偏移稳定排序后，重写为连续序号，恢复「旁白→骰子→旁白→台词」的交错。
-    """
-    if not event_order:
-        return
-    # 稳定按偏移排序；同偏移保持捕获顺序（loop 内事件先于收尾旁白追加，≈广播先后）。
-    # event_order 只记录带广播 id 的事件；把本轮其余事件按原 sequence 追加，避免唯一约束下
-    # 出现「部分事件被重排、另一部分占据目标序号」的隐性冲突。
-    order: list[str] = []
-    seen: set[str] = set()
-    for _off, eid in sorted(event_order, key=lambda m: m[0]):
-        if eid not in seen:
-            seen.add(eid)
-            order.append(eid)
-
-    candidates = (
-        db.query(EventLog)
-        .filter(
-            EventLog.session_id == session_id,
-            EventLog.sequence_num > base_seq,
-        )
-        .order_by(EventLog.sequence_num.asc(), EventLog.id.asc())
-        .all()
-    )
-    by_id = {ev.id: ev for ev in candidates}
-    ordered = [by_id[eid] for eid in order if eid in by_id]
-    ordered_ids = {ev.id for ev in ordered}
-    ordered.extend(ev for ev in candidates if ev.id not in ordered_ids)
-    if not ordered:
-        return
-
-    # 交换序号时直接写最终值会触发 UNIQUE(session_id, sequence_num) 的瞬时冲突。
-    # 先把本批事件移到当前会话最小序号以下的临时区间，再写连续最终序号。
-    min_seq = min((ev.sequence_num for ev in candidates), default=0)
-    temp_start = min_seq - len(ordered) - 1
-    for offset, ev in enumerate(ordered):
-        ev.sequence_num = temp_start + offset
-    db.flush()
-
-    for offset, ev in enumerate(ordered, start=1):
-        ev.sequence_num = base_seq + offset
-    db.commit()
+    """兼容旧调用点；实际实现位于独立的回合事件顺序服务。"""
+    turn_event_order.reorder_turn_events(db, session_id, event_order, base_seq)
 
 
 def _current_turn_events(events: list) -> list:

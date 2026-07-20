@@ -422,13 +422,13 @@ def test_end_module_single_player_one_click_and_reaches_growth(client):
                json={"acting_character_id": ids["hero"]}, headers=host)
     assert r.status_code == 200, r.text
     assert r.json()["ended"] is True
-    assert c.get(f"/api/sessions/{sid}").json()["status"] == "ended"
+    assert c.get(f"/api/sessions/{sid}", headers=host).json()["status"] == "ended"
     # 已结束再投 → 400
     assert c.post(f"/api/sessions/{sid}/end-vote",
                   json={"acting_character_id": ids["hero"]}, headers=host).status_code == 400
     # 成长入口据 ended 出现
     assert c.get(f"/api/sessions/{sid}/growth",
-                 params={"character_id": ids["hero"]}).status_code == 200
+                 params={"character_id": ids["hero"]}, headers=host).status_code == 200
 
 
 def test_end_module_multi_human_needs_all_agree(client):
@@ -449,7 +449,7 @@ def test_end_module_multi_human_needs_all_agree(client):
     assert r1.status_code == 200 and r1.json()["ended"] is False
     v = r1.json()["vote"]
     assert v["agreed_count"] == 1 and v["total"] == 2 and v["open"] is True
-    assert c.get(f"/api/sessions/{sid}").json()["status"] != "ended"
+    assert c.get(f"/api/sessions/{sid}", headers=host).json()["status"] != "ended"
 
     # 撤销 → 清空（ally 席未认领，可无 token 撤）
     rc = c.request("DELETE", f"/api/sessions/{sid}/end-vote",
@@ -461,7 +461,7 @@ def test_end_module_multi_human_needs_all_agree(client):
            json={"acting_character_id": ids["hero"]}, headers=host)
     r2 = c.post(f"/api/sessions/{sid}/end-vote", json={"acting_character_id": ids["ally"]})
     assert r2.status_code == 200 and r2.json()["ended"] is True
-    assert c.get(f"/api/sessions/{sid}").json()["status"] == "ended"
+    assert c.get(f"/api/sessions/{sid}", headers=host).json()["status"] == "ended"
 
 
 def test_end_vote_rejects_impersonating_owned_seat(client):

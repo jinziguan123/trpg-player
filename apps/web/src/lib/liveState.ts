@@ -9,6 +9,13 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
+function isCombatGrid(value: unknown): value is NonNullable<CombatState['grid']> {
+  if (!isRecord(value)) return false
+  return typeof value.cols === 'number'
+    && typeof value.rows === 'number'
+    && typeof value.cell_m === 'number'
+}
+
 function isCombatant(value: unknown): value is CombatState['order'][number] {
   if (!isRecord(value)) return false
   return typeof value.id === 'string'
@@ -33,7 +40,7 @@ export function parseCombatState(value: unknown): CombatState | null {
     order: value.order,
     ...(value.started_seq === undefined ? {} : { started_seq: value.started_seq }),
     ...(pendingRoll ? { pending_roll: pendingRoll } : {}),
-    ...(isRecord(value.grid) ? { grid: value.grid as CombatState['grid'] } : {}),
+    ...(isCombatGrid(value.grid) ? { grid: value.grid } : {}),
   }
 }
 

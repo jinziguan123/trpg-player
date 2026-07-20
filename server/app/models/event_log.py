@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, Enum, ForeignKey, Text, func
+from sqlalchemy import JSON, Enum, ForeignKey, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, UUIDMixin
@@ -8,6 +8,14 @@ from app.models.base import Base, UUIDMixin
 
 class EventLog(Base, UUIDMixin):
     __tablename__ = "event_logs"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "sequence_num",
+            name="uq_event_logs_session_sequence",
+        ),
+    )
 
     session_id: Mapped[str] = mapped_column(
         ForeignKey("game_sessions.id"), index=True

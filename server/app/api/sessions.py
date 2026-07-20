@@ -2,11 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import player_token
+from app.api.deps import player_token, require_session_viewer
 from app.database import get_db
 from app.models.character import Character
 from app.models.module import Module
-from app.models.session import GameSession
 from app.schemas.event import EventRead
 from app.schemas.session import (
     ClaimSeatRequest,
@@ -229,9 +228,7 @@ def get_session(
     db: Session = Depends(get_db),
     token: str | None = Depends(player_token),
 ):
-    session = session_service.get_session(db, session_id)
-    if not session:
-        raise HTTPException(404, "会话不存在")
+    session = require_session_viewer(db, session_id, token)
     module = db.get(Module, session.module_id)
     return _session_payload(
         session, _chars_map(db, [session]), module.title if module else None, token,
@@ -247,6 +244,7 @@ def get_context_estimate(
     """预估下一回合 KP 上下文的 token 占用与模型窗口占比，供判断能否继续跑团。"""
     from app.services.context_estimate import estimate_session_context
 
+    require_session_viewer(db, session_id, token)
     result = estimate_session_context(db, session_id)
     if result is None:
         raise HTTPException(404, "会话不存在或缺少模组/角色")
@@ -262,9 +260,7 @@ def get_rag_stats(
     """本局 RAG（规则书/模组原文检索）用量与命中质量统计——评估检索对跑团的实际帮助。"""
     from app.services import rag_stats
 
-    session = db.get(GameSession, session_id)
-    if session is None:
-        raise HTTPException(404, "会话不存在")
+    session = require_session_viewer(db, session_id, token)
     return rag_stats.summarize(session.world_state or {})
 
 
@@ -277,8 +273,7 @@ def list_recaps(
     """列出本局已生成的战报（world_state.recaps）。"""
     from app.services import recap_service
 
-    if not session_service.get_session(db, session_id):
-        raise HTTPException(404, "会话不存在")
+    require_session_viewer(db, session_id, token)
     return {"recaps": recap_service.list_recaps(db, session_id)}
 
 
@@ -291,8 +286,7 @@ async def generate_recap(
     """生成一份章节战报并存入 world_state.recaps；生成失败返回 502（不落库）。"""
     from app.services import recap_service
 
-    if not session_service.get_session(db, session_id):
-        raise HTTPException(404, "会话不存在")
+    require_session_viewer(db, session_id, token)
     entry = await recap_service.generate_and_store_recap(db, session_id)
     if entry is None:
         raise HTTPException(502, "战报生成失败（可能无事件或模型未配置），请稍后重试")
@@ -309,8 +303,16 @@ def growth_eligible(
     """列出某角色本局可成长的技能（成功用过的技能）。"""
     from app.services import growth_service
 
-    if not session_service.get_session(db, session_id):
-        raise HTTPException(404, "会话不存在")
+    session = require_session_viewer(db, session_id, token)
+    party_ids = {
+        p.character_id
+        for p in session_service.get_participants(db, session_id)
+        if p.character_id
+    }
+    if session.player_character_id:
+        party_ids.add(session.player_character_id)
+    if character_id not in party_ids:
+        raise HTTPException(403, "角色不属于该会话")
     return {"skills": growth_service.eligible_skills(db, session_id, character_id)}
 
 
@@ -342,8 +344,7 @@ def list_improvised_npcs(
     """列出本局临场 NPC（KP 临时添加的开口龙套）及其是否已转正，供房主决定收编。"""
     from app.services import promote_service
 
-    if not session_service.get_session(db, session_id):
-        raise HTTPException(404, "会话不存在")
+    require_session_viewer(db, session_id, token)
     return {"improvised_npcs": promote_service.list_improvised(db, session_id)}
 
 
@@ -384,8 +385,7 @@ async def export_replay(
     """把整局改写成小说体/剧本体 markdown 团记（离线批处理，逐窗改写）。"""
     from app.services import replay_service
 
-    if not session_service.get_session(db, session_id):
-        raise HTTPException(404, "会话不存在")
+    require_session_viewer(db, session_id, token)
     result = await replay_service.export_replay(db, session_id, style)
     if result is None:
         raise HTTPException(404, "会话无可导出的事件")
@@ -472,7 +472,9 @@ def get_events(
     limit: int = 50,
     before_seq: int | None = None,
     db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
 ):
+    require_session_viewer(db, session_id, token)
     events, has_more = session_service.get_latest_events(
         db, session_id, limit=limit, before_seq=before_seq,
     )
@@ -512,26 +514,30 @@ async def trigger_opening(session_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{session_id}/generating")
-async def check_generating(session_id: str):
+async def check_generating(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
+    require_session_viewer(db, session_id, token)
     return {"generating": generation_manager.is_generating(session_id)}
 
 
 @router.get("/{session_id}/live")
-async def live(session_id: str, token: str | None = Depends(player_token)):
+async def live(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
     """房间级常驻 SSE（仅实时增量）：所有成员订阅，跨多次生成存活。
 
     历史与重连对齐沿用 ``GET /events``（保留 seq 分页）；本端点只负责实时广播：
     玩家行动、KP 叙事 token、检定、OOC、入座/在场等。客户端先开本连接、再拉历史，
     按事件 id 去重，避免开连接与拉历史之间的竞态丢事件。
     """
-    from app.database import SessionLocal
-
-    db = SessionLocal()
-    try:
-        if not session_service.get_session(db, session_id):
-            raise HTTPException(404, "会话不存在")
-    finally:
-        db.close()
+    require_session_viewer(db, session_id, token)
+    # SSE 会话可能持续数小时，不要让依赖注入的数据库连接贯穿整个流生命周期。
+    db.close()
 
     # subscribe 会把当前生成的 in-flight buffer 立即重放给中途接入者
     q = room_hub.subscribe(session_id, token)

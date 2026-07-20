@@ -6,6 +6,9 @@
     "dev:server": "cd server && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
     "dev:server:win": "cd server && .venv\\Scripts\\python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
     "build:web": "pnpm --filter web build",
+    "api:spec": "cd server && .venv/bin/python scripts/export_openapi.py",
+    "api:types": "openapi-typescript server/openapi.json -o apps/web/src/api/generated.ts",
+    "api:generate": "pnpm api:spec && pnpm api:types",
     "predev": "lsof -ti:5173,8000 | xargs kill -9 2>/dev/null; true",
     "dev": "concurrently \"pnpm dev:web\" \"pnpm dev:server\"",
     "dev:win": "concurrently \"pnpm dev:web\" \"pnpm dev:server:win\"",
@@ -13,6 +16,7 @@
     "desktop:build": "bash scripts/build-desktop.sh"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "openapi-typescript": "^7.9.1"
   }
 }

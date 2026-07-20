@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -628,6 +629,35 @@ def list_sessions_for_token(
     return out
 
 
+def can_view_session(
+    db: Session,
+    session_id: str,
+    token: str | None,
+    *,
+    allow_open_lobby: bool = True,
+) -> bool:
+    """判断请求方是否可以读取会话级资源。
+
+    读取权限与 ``list_sessions_for_token`` 保持同一套口径：
+    - 旧存档/纯本机会话没有任何 owner token，保持匿名可读；
+    - 有归属的会话必须命中任一席位 owner token；
+    - setup 阶段仍有空真人席时，允许访客读取大厅所需资源，认领后自动收紧。
+    """
+    session = db.get(GameSession, session_id)
+    if session is None:
+        return False
+
+    participants = get_participants(db, session_id)
+    owner_tokens = {p.owner_token for p in participants if p.owner_token}
+    if not owner_tokens:
+        return True
+    if token and token in owner_tokens:
+        return True
+    if allow_open_lobby and session.status == "setup":
+        return any(p.role == "human" and not p.claimed for p in participants)
+    return False
+
+
 def update_session_status(db: Session, session_id: str, status: str) -> GameSession | None:
     session = db.get(GameSession, session_id)
     if not session:
@@ -831,7 +861,6 @@ def add_event(
     metadata: dict | None = None,
     group: str | None = None,
 ) -> EventLog:
-    seq = get_next_sequence_num(db, session_id)
     meta = dict(metadata or {})
     # 分头行动：同一回合里不同分组/场景的内容，用 group 标签分栏渲染（KP 经 [GROUP] 标注）。
     if group:
@@ -842,20 +871,38 @@ def add_event(
         sess = db.get(GameSession, session_id)
         if sess and sess.current_scene_id:
             meta["scene_id"] = sess.current_scene_id
-    event = EventLog(
-        session_id=session_id,
-        sequence_num=seq,
-        event_type=event_type,
-        actor_id=actor_id,
-        actor_name=actor_name,
-        content=content,
-        visibility=visibility or [],
-        metadata_=meta,
-    )
-    db.add(event)
-    db.commit()
-    db.refresh(event)
-    return event
+
+    # sequence_num 由「读最大值 + 1」生成，多个请求并发时可能同时读到同一个值。
+    # 唯一约束负责兜底，遇到撞号只回滚本次 INSERT 并重新取最大值；其它完整性错误原样抛出。
+    for attempt in range(3):
+        event = EventLog(
+            session_id=session_id,
+            sequence_num=get_next_sequence_num(db, session_id),
+            event_type=event_type,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            content=content,
+            visibility=visibility or [],
+            metadata_=meta,
+        )
+        db.add(event)
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            message = str(exc).lower()
+            is_sequence_conflict = (
+                "uq_event_logs_session_sequence" in message
+                or "event_logs.session_id, event_logs.sequence_num" in message
+            )
+            if not is_sequence_conflict or attempt == 2:
+                raise
+            continue
+        db.refresh(event)
+        return event
+
+    # 理论上第三次尝试会在 attempt == 2 时直接抛出；保留显式异常避免静态分析认为无返回。
+    raise RuntimeError("事件序号分配失败")
 
 
 def set_event_group(db: Session, event: EventLog, group: str) -> None:

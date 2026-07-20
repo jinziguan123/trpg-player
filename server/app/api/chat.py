@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import player_token
+from app.api.deps import player_token, require_session_viewer
 from app.database import get_db
 from app.models.module import Module
 from app.models.session import GameSession
@@ -351,11 +351,14 @@ async def delete_event(
 
 
 @router.get("/{session_id}/search")
-def search_history(session_id: str, q: str = "", db: Session = Depends(get_db)):
+def search_history(
+    session_id: str,
+    q: str = "",
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
     """在本局历史里模糊检索，返回匹配事件（含 sequence_num 供前端定位/跳转）。"""
-    game_session = db.get(GameSession, session_id)
-    if not game_session:
-        raise HTTPException(404, "会话不存在")
+    require_session_viewer(db, session_id, token)
     rows = session_service.search_events(db, session_id, q)
     return {
         "results": [
@@ -372,11 +375,14 @@ def search_history(session_id: str, q: str = "", db: Session = Depends(get_db)):
 
 
 @router.get("/{session_id}/locations")
-def locations(session_id: str, char_id: str | None = None, db: Session = Depends(get_db)):
+def locations(
+    session_id: str,
+    char_id: str | None = None,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
     """大地图/调查板：已知地点列表（含当前所在、相互连接、队友分布；未探索的不显示）。"""
-    game_session = db.get(GameSession, session_id)
-    if not game_session:
-        raise HTTPException(404, "会话不存在")
+    game_session = require_session_viewer(db, session_id, token)
     module = db.get(Module, game_session.module_id)
     if not module:
         raise HTTPException(404, "模组不存在")

@@ -27,6 +27,10 @@ jobs:
         run: pytest -q
       - name: Evals 冒烟（零 LLM 费用：验 fixture 可重建 / 上下文可构建 / ORM）
         run: python -m evals.run --smoke
+      - name: 导出 OpenAPI 契约
+        run: python scripts/export_openapi.py
+      - name: OpenAPI 契约无未提交变化
+        run: git diff --exit-code -- openapi.json
 
   frontend:
     name: 前端（tsc + build + oxlint）
@@ -42,6 +46,10 @@ jobs:
           cache: pnpm
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
+      - name: 生成 OpenAPI TypeScript 类型
+        run: pnpm api:types
+      - name: OpenAPI 类型无未提交变化
+        run: git diff --exit-code -- apps/web/src/api/generated.ts
       - name: 类型检查
         run: pnpm --filter web exec tsc --noEmit
       - name: 构建

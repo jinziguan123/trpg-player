@@ -7,7 +7,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import player_token
+from app.api.deps import player_token, require_session_viewer
 from app.database import get_db
 from app.schemas.combat import ChaseActionRequest, CombatActionRequest, ReactionRequest
 from app.services import chase_service, combat_service, session_service
@@ -25,11 +25,13 @@ def _actor_char_id(db: Session, session_id: str, token: str | None) -> str | Non
 
 
 @router.get("/{session_id}/combat")
-def get_combat(session_id: str, db: Session = Depends(get_db)):
+def get_combat(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
     """当前战斗态（无则 {active:false}），供前端渲染战斗视图与断线重连对齐。"""
-    session = session_service.get_session(db, session_id)
-    if not session:
-        raise HTTPException(404, "会话不存在")
+    session = require_session_viewer(db, session_id, token)
     state = combat_service.get_combat(session)
     if not state:
         return {"active": False}
@@ -168,11 +170,13 @@ def _schedule_aftermath_if_ended(session_id: str, chunks: list[str]) -> None:
 
 
 @router.get("/{session_id}/chase")
-def get_chase(session_id: str, db: Session = Depends(get_db)):
+def get_chase(
+    session_id: str,
+    db: Session = Depends(get_db),
+    token: str | None = Depends(player_token),
+):
     """当前追逐态（无则 {active:false}），供前端渲染距离轨与重连对齐。"""
-    session = session_service.get_session(db, session_id)
-    if not session:
-        raise HTTPException(404, "会话不存在")
+    session = require_session_viewer(db, session_id, token)
     state = chase_service.get_chase(session)
     if not state:
         return {"active": False}
