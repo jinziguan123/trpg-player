@@ -757,8 +757,15 @@
       "ClaimSeatRequest": {
         "properties": {
           "character_id": {
-            "title": "Character Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Character Id"
           },
           "seat_order": {
             "title": "Seat Order",
@@ -766,8 +773,7 @@
           }
         },
         "required": [
-          "seat_order",
-          "character_id"
+          "seat_order"
         ],
         "title": "ClaimSeatRequest",
         "type": "object"
@@ -1726,6 +1732,11 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "identity_version": {
+            "default": 1,
+            "title": "Identity Version",
+            "type": "integer"
           },
           "kp_mode": {
             "default": "ai",

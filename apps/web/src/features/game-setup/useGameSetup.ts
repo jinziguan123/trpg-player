@@ -29,7 +29,7 @@ export function useGameSetup() {
   const [heroes, setHeroes] = useState<SetupCharacter[]>([])
   const [allies, setAllies] = useState<SetupCharacter[]>([])
   const [moduleId, setModuleId] = useState('')
-  const [kpMode, setKpMode] = useState<'ai' | 'human'>('ai')
+  const [kpMode, setKpModeState] = useState<'ai' | 'human'>('ai')
   const [seats, setSeats] = useState<SetupSeat[]>([])
   const [seatHints, setSeatHints] = useState<Record<number, string>>({})
   const [generatingSeat, setGeneratingSeat] = useState<number | null>(null)
@@ -169,6 +169,8 @@ export function useGameSetup() {
   }
 
   const allSeatsFilled = seats.length > 0 && seats.every((seat, index) => {
+    // 真人 KP 创建者不占玩家席：首个真人席留空，进大厅后由另一枚 token 认领。
+    if (kpMode === 'human' && index === 0) return true
     if (index === 0) return Boolean(seat.charId)
     if (seat.role === 'human') return true
     return Boolean(seat.charId)
@@ -187,9 +189,7 @@ export function useGameSetup() {
     setError('')
     try {
       const participants = seats.map((seat, index) => ({
-        character_id: index > 0 && seat.role === 'human' && !seat.charId
-          ? null
-          : seat.charId,
+        character_id: seat.charId || null,
         role: seat.role,
         is_primary: index === 0,
       }))
@@ -198,6 +198,16 @@ export function useGameSetup() {
       else navigate(`/game/${session.id}`, { state: { isNew: true } })
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : '创建游戏失败')
+    }
+  }
+
+  const setKpMode = (mode: 'ai' | 'human') => {
+    setKpModeState(mode)
+    if (mode === 'human') {
+      // 清掉创建者之前选中的玩家角色，确保同一 token 不会同时占 KP/玩家席。
+      setSeats((current) => current.map((seat, index) => (
+        index === 0 ? { ...seat, role: 'human', charId: '' } : seat
+      )))
     }
   }
 

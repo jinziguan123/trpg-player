@@ -100,6 +100,58 @@ def test_human_kp_open_player_seat_can_start_without_counting_kp_seat(tmp_path):
     assert session_service.start_game(db, session.id, "kp-token").status == "active"
 
 
+def test_new_human_kp_creator_only_owns_kp_and_token_cannot_claim_player(tmp_path):
+    db_factory = _db(tmp_path)
+    db = db_factory()
+    module = Module(title="严格身份模型", rule_system="coc", scenes=[])
+    guest = Character(name="玩家", rule_system="coc", is_player=True)
+    db.add_all([module, guest])
+    db.commit()
+    session = session_service.create_session(
+        db, module.id,
+        [{"character_id": None, "role": "human", "is_primary": True}],
+        creator_token="kp-token", kp_mode="human",
+    )
+    parts = session_service.get_participants(db, session.id)
+    player = next(p for p in parts if p.role == "human")
+    kp = next(p for p in parts if p.role == "kp")
+    assert session.identity_version == 2
+    assert session.host_token == "kp-token"
+    assert player.owner_token is None and not player.claimed and not player.ready
+    assert kp.owner_token == "kp-token" and kp.claimed and kp.ready
+    assert session_service.is_host(db, session.id, "kp-token")
+    assert not session_service.is_host(db, session.id, "player-token")
+
+    with pytest.raises(ValueError, match="只能占用一个席位"):
+        session_service.claim_seat(db, session.id, player.seat_order, guest.id, "kp-token")
+
+    session_service.claim_seat(db, session.id, player.seat_order, guest.id, "player-token")
+    session_service.set_ready(db, session.id, "player-token", True)
+    assert session_service.start_game(db, session.id, "kp-token").status == "active"
+
+
+def test_kp_seat_can_be_claimed_without_character(tmp_path):
+    db_factory = _db(tmp_path)
+    db = db_factory()
+    module = Module(title="KP 认领", rule_system="coc", scenes=[])
+    db.add(module)
+    db.commit()
+    session = session_service.create_session(
+        db, module.id,
+        [{"character_id": None, "role": "human", "is_primary": True}],
+        creator_token="owner-token", kp_mode="human",
+    )
+    kp = next(p for p in session_service.get_participants(db, session.id) if p.role == "kp")
+    kp.owner_token = None
+    kp.claimed = False
+    session.host_token = None
+    db.commit()
+
+    session_service.claim_seat(db, session.id, kp.seat_order, None, "new-kp-token")
+    claimed = next(p for p in session_service.get_participants(db, session.id) if p.role == "kp")
+    assert claimed.claimed and claimed.ready and claimed.owner_token == "new-kp-token"
+
+
 def test_human_opening_only_initializes_public_cards(tmp_path, monkeypatch):
     db_factory = _db(tmp_path)
     db = db_factory()

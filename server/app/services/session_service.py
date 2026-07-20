@@ -54,8 +54,14 @@ def active_character_ids(
     return ids
 
 
-def _normalize_participants(participants: list[dict]) -> list[dict]:
-    """补全主角标记并强制主角为 human，去重保序。"""
+def _normalize_participants(
+    participants: list[dict], *, allow_empty_primary: bool = False,
+) -> list[dict]:
+    """补全主角标记并强制主角为 human，去重保序。
+
+    真人 KP 新建房间时，主角席可以暂时为空，等待另一枚 token 认领；旧模式仍要求
+    主角席带角色，避免旧客户端误建出无法行动的房间。
+    """
     seen: set[str] = set()
     seats: list[dict] = []
     for p in participants:
@@ -83,13 +89,17 @@ def _normalize_participants(participants: list[dict]) -> list[dict]:
     if not primaries:
         # 取第一个有角色的席位作主角
         filled = [s for s in seats if s["character_id"]]
-        if not filled:
+        if not filled and allow_empty_primary and seats:
+            seats[0]["is_primary"] = True
+            primaries = [seats[0]]
+        elif not filled:
             raise ValueError("必须至少有一个已填角色的主角席位")
-        filled[0]["is_primary"] = True
-        primaries = [filled[0]]
+        else:
+            filled[0]["is_primary"] = True
+            primaries = [filled[0]]
     elif len(primaries) > 1:
         raise ValueError("只能有一个主角席位")
-    if not primaries[0]["character_id"]:
+    if not primaries[0]["character_id"] and not allow_empty_primary:
         raise ValueError("主角席位必须填入角色")
     # 主角必为真人
     primaries[0]["role"] = "human"
@@ -113,7 +123,17 @@ def create_session(
     if kp_mode not in ("ai", "human"):
         raise ValueError("kp_mode 必须是 ai 或 human")
 
-    seats = _normalize_participants(participants)
+    # 旧客户端在真人 KP 模式下仍会把创建者角色提交到主角席；保留这类已存在的
+    # 调用为 legacy identity，避免升级后剥夺旧房间的双席位权限。新客户端传空主角席，
+    # 才启用严格的 KP/玩家分离模型。
+    requested_primary = next(
+        (p for p in participants if p.get("is_primary")), participants[0]
+    )
+    legacy_human_kp = kp_mode == "human" and bool(requested_primary.get("character_id"))
+    seats = _normalize_participants(
+        participants,
+        allow_empty_primary=kp_mode == "human" and not legacy_human_kp,
+    )
 
     for seat in seats:
         if seat["character_id"] and not db.get(Character, seat["character_id"]):
@@ -141,21 +161,28 @@ def create_session(
     )
     status = "setup" if has_open_seat else "active"
 
+    identity_version = 1 if legacy_human_kp else 2
     game_session = GameSession(
         module_id=module_id,
         player_character_id=primary_id,
         status=status,
         kp_mode=kp_mode,
+        host_token=None if legacy_human_kp else creator_token,
+        identity_version=identity_version,
         room_code=_gen_room_code(db),
         current_scene_id=first_scene_id,
         world_state={"visited_scenes": [first_scene_id] if first_scene_id else []},
     )
     for order, seat in enumerate(seats):
         claimed = bool(seat["character_id"])
-        # 主角席归创建者 token；其它已填真人席暂不预设归属（留给认领或本机）
-        owner = creator_token if seat["is_primary"] else None
+        # 真人 KP 新模型中创建者只占 KP 席；AI KP/旧兼容模型的创建者占主角席。
+        owner = (
+            creator_token
+            if seat["is_primary"] and not (kp_mode == "human" and not legacy_human_kp)
+            else None
+        )
         # AI 席与房主席默认就绪；空/待认领的真人席需手动准备
-        ready = seat["role"] == "ai" or seat["is_primary"]
+        ready = seat["role"] == "ai" or (seat["is_primary"] and claimed)
         game_session.participants.append(
             SessionParticipant(
                 character_id=seat["character_id"],
@@ -165,10 +192,11 @@ def create_session(
                 claimed=claimed,
                 owner_token=owner,
                 ready=ready,
+                identity_version=identity_version,
             )
         )
     if kp_mode == "human":
-        # 创建者同时拥有 KP 席和主角席，后续若要拆成独立 KP 只需转移该席 owner_token。
+        # 新模型中创建者只拥有 KP 席；legacy 请求保留旧双席位以兼容已有客户端。
         game_session.participants.append(
             SessionParticipant(
                 character_id=None,
@@ -176,13 +204,14 @@ def create_session(
                 is_primary=False,
                 seat_order=len(seats),
                 owner_token=creator_token,
-                claimed=True,
+                claimed=bool(creator_token),
                 ready=True,
+                identity_version=identity_version,
             )
         )
     db.add(game_session)
     # 创建者的主角绑定到其 token
-    if creator_token and primary_id:
+    if creator_token and primary_id and not (kp_mode == "human" and not legacy_human_kp):
         char = db.get(Character, primary_id)
         if char and not char.owner_token:
             char.owner_token = creator_token
@@ -203,9 +232,9 @@ def get_session_by_code(db: Session, room_code: str) -> GameSession | None:
 
 
 def claim_seat(
-    db: Session, session_id: str, seat_order: int, character_id: str, token: str,
+    db: Session, session_id: str, seat_order: int, character_id: str | None, token: str,
 ) -> GameSession:
-    """玩家用 token 认领一个空 human 席并带角色入座。"""
+    """用 token 认领一个空席：human 席绑定角色，KP 席不绑定角色。"""
     if not token:
         raise ValueError("缺少玩家身份")
     session = db.get(GameSession, session_id)
@@ -222,10 +251,42 @@ def claim_seat(
     )
     if not seat:
         raise ValueError("席位不存在")
-    if seat.role != "human":
-        raise ValueError("只能认领真人席位")
+    if seat.role not in ("human", "kp"):
+        raise ValueError("只能认领真人或 KP 席位")
     if seat.claimed:
         raise ValueError("该席位已被认领")
+
+    strict_identity = session.host_token is not None or seat.identity_version >= 2
+    if strict_identity:
+        already_owned = (
+            db.query(SessionParticipant)
+            .filter(
+                SessionParticipant.session_id == session_id,
+                SessionParticipant.owner_token == token,
+                SessionParticipant.identity_version >= 2,
+            )
+            .first()
+        )
+        if already_owned:
+            raise ValueError("同一个 token 在本房间只能占用一个席位")
+
+    if seat.role == "kp":
+        seat.owner_token = token
+        seat.claimed = True
+        seat.ready = True
+        seat.identity_version = 2 if strict_identity else seat.identity_version
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            if "uq_session_participant_token_v2" in str(exc).lower():
+                raise ValueError("同一个 token 在本房间只能占用一个席位") from exc
+            raise
+        db.refresh(session)
+        return session
+
+    if not character_id:
+        raise ValueError("真人玩家席位必须选择角色")
 
     char = db.get(Character, character_id)
     if not char:
@@ -240,8 +301,16 @@ def claim_seat(
     seat.character_id = character_id
     seat.owner_token = token
     seat.claimed = True
+    if strict_identity:
+        seat.identity_version = 2
     char.owner_token = token
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if "uq_session_participant_token_v2" in str(exc).lower():
+            raise ValueError("同一个 token 在本房间只能占用一个席位") from exc
+        raise
     db.refresh(session)
     return session
 
@@ -267,7 +336,10 @@ def _primary_seat(db: Session, session_id: str) -> SessionParticipant | None:
 
 
 def is_host(db: Session, session_id: str, token: str | None) -> bool:
-    """房主 = 主角席的 owner_token 持有者（建房者）。"""
+    """房主身份独立保存；旧房间回落到主角席 owner_token。"""
+    session = db.get(GameSession, session_id)
+    if session and session.host_token is not None:
+        return bool(token and token == session.host_token)
     seat = _primary_seat(db, session_id)
     return bool(token and seat and seat.owner_token == token)
 
@@ -418,11 +490,17 @@ def set_ready(
 
 def lobby_gaps(db: Session, session_id: str) -> list[str]:
     """返回开局门槛缺口；空列表代表满足开局条件。"""
+    session = db.get(GameSession, session_id)
     parts = get_participants(db, session_id)
     gaps: list[str] = []
     # KP 席位是无角色的控制席，不能被当作待认领的玩家席位。
     player_parts = [p for p in parts if p.role != "kp"]
-    empty = [p for p in player_parts if not p.character_id]
+    # 新真人 KP 房间允许预留多个真人空席，但 AI 席必须在开局前填入角色。
+    # 这使创建者不需要伪造一个玩家角色，也不会因为预留席位阻塞开局。
+    if session and session.kp_mode == "human" and session.identity_version >= 2:
+        empty = [p for p in player_parts if p.role == "ai" and not p.character_id]
+    else:
+        empty = [p for p in player_parts if not p.character_id]
     if empty:
         gaps.append(f"还有 {len(empty)} 个空席未填角色")
     not_ready = [
@@ -456,7 +534,10 @@ def kick_seat(
     )
     if not seat:
         raise ValueError("席位不存在")
-    if seat.is_primary:
+    # 旧房间主角席就是房主，不能踢；新模型房主可能在 KP 席，主角席是普通玩家，允许被踢。
+    if seat.is_primary and (
+        session.host_token is None or seat.owner_token == session.host_token
+    ):
         raise ValueError("不能移出房主自己")
     if seat.role != "human":
         raise ValueError("只能移出真人玩家")
@@ -1048,6 +1129,9 @@ def set_event_group(db: Session, event: EventLog, group: str) -> None:
 def can_manage_session(db: Session, session_id: str, token: str | None) -> bool:
     """房主管理权（结束会话、删除等破坏性/房主操作）：房主本人；或纯本机/旧会话
     （主角席无归属）时的本机用户。有主会话只允许房主，防同网段他人越权。"""
+    session = db.get(GameSession, session_id)
+    if session and session.host_token is not None:
+        return bool(token and token == session.host_token)
     seat = _primary_seat(db, session_id)
     if seat is None:
         return False

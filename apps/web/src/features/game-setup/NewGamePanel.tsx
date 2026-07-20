@@ -182,7 +182,7 @@ export function NewGamePanel({ setup }: { setup: GameSetupState }) {
               真人 KP
             </button>
             <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-              {kpMode === 'human' ? '创建者同时拥有 KP 席，可用工具桌主持剧情。' : '由 AI 自动主持剧情。'}
+              {kpMode === 'human' ? '创建者只占 KP 席；玩家席等待其他真人用房间码加入。' : '由 AI 自动主持剧情。'}
             </span>
           </div>
           <div className="mb-1 flex items-center gap-2">
@@ -211,7 +211,7 @@ export function NewGamePanel({ setup }: { setup: GameSetupState }) {
             </button>
           </div>
           <p className="mb-3 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-            本模组推荐 {range.min}–{range.max} 人 · {kpMode === 'human' ? '真人 KP' : 'AI KP'} · 你 1 人 + AI 队友{' '}
+            本模组推荐 {range.min}–{range.max} 人 · {kpMode === 'human' ? '真人 KP' : 'AI KP'} · {kpMode === 'human' ? '真人玩家席' : '你 1 人'} + AI 队友{' '}
             {Math.max(seats.length - 1, 0)} 人
             {range.min === 1 && range.max === 6 && !selectedModule?.world_setting?.player_count
               ? '（模组未标注人数，按默认范围）'
@@ -220,7 +220,7 @@ export function NewGamePanel({ setup }: { setup: GameSetupState }) {
 
           <div className="mb-3">
             {seats.map((seat, index) => {
-              const emptyHuman = index > 0 && seat.role === 'human'
+              const emptyHuman = seat.role === 'human' && (index > 0 || kpMode === 'human')
               return (
                 <div key={index} className="mb-2">
                   <div className="flex items-center gap-2">
@@ -231,15 +231,19 @@ export function NewGamePanel({ setup }: { setup: GameSetupState }) {
                         color: 'var(--color-text-accent)',
                       } : undefined}
                     >
-                      <SeatIcon kind={index === 0 ? 'me' : emptyHuman ? 'empty' : 'ai'} size={12} />
-                      {index === 0 ? '你（真人）' : emptyHuman ? `真人 ${index}` : `AI 队友 ${index}`}
+                      <SeatIcon kind={emptyHuman ? 'empty' : index === 0 ? 'me' : 'ai'} size={12} />
+                      {kpMode === 'human' && index === 0
+                        ? '真人玩家 1'
+                        : index === 0 ? '你（真人）' : emptyHuman ? `真人 ${index + 1}` : `AI 队友 ${index}`}
                     </span>
                     {emptyHuman ? (
                       <span
                         className="flex-1 text-xs italic"
                         style={{ color: 'var(--color-text-secondary)' }}
                       >
-                        留空 · 开局后分享房间码，等真人加入认领
+                        {kpMode === 'human' && index === 0
+                          ? '留空 · 创建者以 KP 身份进入，等待真人玩家加入认领'
+                          : '留空 · 开局后分享房间码，等真人加入认领'}
                       </span>
                     ) : (
                       <Select value={seat.charId} onValueChange={(value) => assignSeat(index, value)}>

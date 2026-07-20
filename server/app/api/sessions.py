@@ -44,7 +44,11 @@ def _session_payload(
     for p, sp in zip(data.get("participants", []), session.participants):
         p["character_name"] = chars_map.get(p["character_id"]) if p["character_id"] else None
         p["is_mine"] = bool(token and sp.owner_token and sp.owner_token == token)
-        p["is_host"] = bool(sp.is_primary and sp.owner_token)
+        # 新模型房主身份独立于玩家席；旧房间没有 host_token 时回落到主角席。
+        p["is_host"] = bool(
+            (session.host_token is not None and sp.owner_token == session.host_token)
+            or (session.host_token is None and sp.is_primary and sp.owner_token)
+        )
         p["is_online"] = bool(sp.owner_token and sp.owner_token in online)
         p["is_kp"] = sp.role == "kp"
     return {
@@ -148,7 +152,9 @@ def claim_seat(
     )
     # 广播入座事件给房间内所有人
     seat = next((p for p in payload["participants"] if p["seat_order"] == data.seat_order), None)
-    name = seat["character_name"] if seat else "新成员"
+    name = seat["character_name"] if seat and seat["character_name"] else (
+        "真人 KP" if seat and seat["role"] == "kp" else "新成员"
+    )
     room_hub.broadcast(session_id, _make_chunk("seat", f"{name} 已入座", actor_name=name))
     return payload
 

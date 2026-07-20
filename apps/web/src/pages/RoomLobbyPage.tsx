@@ -25,6 +25,7 @@ interface RoomData {
   room_code?: string | null
   module_title?: string
   kp_mode?: 'ai' | 'human'
+  identity_version?: number
   participants: SessionParticipant[]
 }
 
@@ -49,18 +50,24 @@ export function RoomLobbyPage() {
   const lastTypingSent = useRef(0)
   const myNameRef = useRef<string | null>(null)
   const myPlayerSeat = room?.participants.find((p) => p.is_mine && p.role !== 'kp') ?? null
+  const myKpSeat = room?.participants.find((p) => p.is_mine && p.role === 'kp') ?? null
   myNameRef.current = myPlayerSeat?.character_name ?? null
 
   const mySeat = myPlayerSeat
+  // 旧 human-KP 房间可能让同一 token 同时拥有 KP/玩家席，保留玩家操作区，避免升级后失去权限。
+  const strictKpIdentity = !!myKpSeat && (room?.identity_version ?? 1) >= 2
   const amHost = !!room?.participants.some((p) => p.is_host && p.is_mine)
 
   const gaps = useCallback((r: RoomData): string[] => {
     const out: string[] = []
     const playerSeats = r.participants.filter((p) => p.role !== 'kp')
-    const empty = playerSeats.filter((p) => !p.character_id).length
+    const empty = r.kp_mode === 'human' && r.identity_version && r.identity_version >= 2
+      ? playerSeats.filter((p) => p.role === 'ai' && !p.character_id).length
+      : playerSeats.filter((p) => !p.character_id).length
     if (empty) out.push(`还有 ${empty} 个空席未填角色`)
     const notReady = playerSeats.filter((p) => p.character_id && p.role === 'human' && !p.ready).length
     if (notReady) out.push(`还有 ${notReady} 名玩家未准备`)
+    if (!playerSeats.some((p) => p.role === 'human' && p.character_id)) out.push('至少需要 1 名真人玩家')
     return out
   }, [])
 
@@ -138,6 +145,19 @@ export function RoomLobbyPage() {
       await refreshRoom()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '入座失败')
+    } finally { setBusy(false) }
+  }
+
+  const claimKp = async () => {
+    if (!room) return
+    const seat = room.participants.find((p) => p.role === 'kp' && !p.claimed)
+    if (!seat) { toast.error('没有空的 KP 席位'); return }
+    setBusy(true)
+    try {
+      await api.post(`/sessions/${room.id}/claim`, { seat_order: seat.seat_order, character_id: null })
+      await refreshRoom()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '加入 KP 席失败')
     } finally { setBusy(false) }
   }
 
@@ -219,6 +239,8 @@ export function RoomLobbyPage() {
 
   const seatGaps = gaps(room)
   const seats = room.participants.filter((p) => p.role !== 'kp').sort((a, b) => a.seat_order - b.seat_order)
+  const kpSeats = room.participants.filter((p) => p.role === 'kp').sort((a, b) => a.seat_order - b.seat_order)
+  const openKpSeat = kpSeats.find((p) => !p.claimed)
 
   return (
     <div className="flex h-full gap-0">
@@ -247,7 +269,21 @@ export function RoomLobbyPage() {
 
         {/* 席位 */}
         <div className="card mb-3">
-          <h3 className="card-title">席位（{seats.filter((s) => s.character_id).length}/{seats.length}）</h3>
+          <h3 className="card-title">玩家席位（{seats.filter((s) => s.character_id).length}/{seats.length}）</h3>
+          {kpSeats.length > 0 && (
+            <div className="mb-2 space-y-1.5">
+              {kpSeats.map((p) => (
+                <div key={p.seat_order} className="flex items-center gap-2 px-2 py-1.5 rounded" style={{ background: 'var(--color-bg-tertiary)' }}>
+                  <SeatIcon kind={p.is_host ? 'host' : 'human'} size={15} />
+                  <span className="text-sm flex-1" style={{ color: p.is_mine ? 'var(--color-text-accent)' : 'var(--color-text-primary)' }}>
+                    {p.claimed ? '真人 KP' : '空席 · 等待真人 KP 加入'}
+                    {p.is_host ? ' · 房主' : ''}{p.is_mine ? '（我）' : ''}
+                  </span>
+                  {p.claimed && <span className="text-xs" style={{ color: 'var(--color-success)' }}>已加入</span>}
+                </div>
+              ))}
+            </div>
+          )}
           <div className="space-y-1.5">
             {seats.map((p) => {
               const readyBadge = p.role === 'human' && p.character_id
@@ -294,9 +330,22 @@ export function RoomLobbyPage() {
 
           {/* 我的操作区 */}
           <div className="mt-3 pt-3 border-t" style={{ borderColor: 'var(--color-border)' }}>
-            {!mySeat ? (
+            {strictKpIdentity ? (
+              <div className="flex items-center gap-3">
+                <span className="text-sm" style={{ color: 'var(--color-text-accent)' }}>你已作为真人 KP 加入</span>
+                {myKpSeat.is_host && <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>房主权限独立于玩家席</span>}
+              </div>
+            ) : !mySeat ? (
               <div>
-                <p className="text-sm mb-2" style={{ color: 'var(--color-text-secondary)' }}>选择你的角色入座空席：</p>
+                {openKpSeat && (
+                  <div className="mb-3 flex items-center gap-2">
+                    <button onClick={claimKp} disabled={busy} className="btn-primary !px-2.5 !py-1 text-sm">
+                      以真人 KP 身份加入
+                    </button>
+                    <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>占用 KP 席后，本 token 不能再占玩家席</span>
+                  </div>
+                )}
+                <p className="text-sm mb-2" style={{ color: 'var(--color-text-secondary)' }}>或选择玩家角色入座空席：</p>
                 <div className="flex flex-wrap gap-2">
                   {myChars.map((c) => (
                     <button key={c.id} onClick={() => claimWithChar(c.id)} disabled={busy}

@@ -26,6 +26,7 @@ interface GameSession {
   module_id: string
   status: string
   kp_mode?: 'ai' | 'human'
+  identity_version?: number
   player_character_id: string | null
   room_code?: string | null
   current_scene_id: string | null

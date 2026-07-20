@@ -55,6 +55,7 @@ class SessionRead(BaseModel):
     module_id: str
     status: str
     kp_mode: str = "ai"
+    identity_version: int = 1
     player_character_id: str | None
     room_code: str | None = None
     current_scene_id: str | None
@@ -73,7 +74,8 @@ class SessionStatusUpdate(BaseModel):
 
 class ClaimSeatRequest(BaseModel):
     seat_order: int
-    character_id: str
+    # KP 席不绑定角色；human 玩家席仍必须提供角色。
+    character_id: str | None = None
 
 
 class ReadyRequest(BaseModel):

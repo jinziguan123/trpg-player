@@ -1,4 +1,4 @@
-from sqlalchemy import Enum, ForeignKey
+from sqlalchemy import Enum, ForeignKey, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
@@ -32,3 +32,17 @@ class SessionParticipant(Base, UUIDMixin, TimestampMixin):
     claimed: Mapped[bool] = mapped_column(default=True)
     # 大厅准备态：AI 席与房主席默认 True；空/已认领的真人席需玩家手动准备
     ready: Mapped[bool] = mapped_column(default=False)
+    # 新身份模型版本。旧房间保留 1，允许历史上 KP/玩家共用 token；新房间为 2，
+    # 由数据库部分唯一索引保证一个 token 在一个房间内只能占一个席位。
+    identity_version: Mapped[int] = mapped_column(default=1, server_default="1")
+
+    __table_args__ = (
+        Index(
+            "uq_session_participant_token_v2",
+            "session_id",
+            "owner_token",
+            unique=True,
+            sqlite_where=text("identity_version >= 2 AND owner_token IS NOT NULL"),
+            postgresql_where=text("identity_version >= 2 AND owner_token IS NOT NULL"),
+        ),
+    )

@@ -23,6 +23,10 @@ class GameSession(Base, UUIDMixin, TimestampMixin):
     kp_mode: Mapped[str] = mapped_column(
         Enum("ai", "human", name="kp_mode"), default="ai", server_default="ai",
     )
+    # 房主身份独立于玩家角色席。旧房间该字段为空，由服务层回落到主角席兼容判定。
+    host_token: Mapped[str | None] = mapped_column(nullable=True, index=True)
+    # 1=旧席位语义，2=KP/玩家严格分离且 token 单席位。
+    identity_version: Mapped[int] = mapped_column(default=1, server_default="1")
     # 房间分享码（阶段 2 联机：他人凭码加入认领空席）；建房时生成、唯一
     room_code: Mapped[str | None] = mapped_column(nullable=True, index=True)
     # 主角快捷字段：与 session_participants 中 is_primary 的席位对齐，便于兼容旧代码与展示。

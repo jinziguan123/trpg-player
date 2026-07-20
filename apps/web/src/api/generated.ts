@@ -2181,7 +2181,7 @@ export interface components {
         /** ClaimSeatRequest */
         ClaimSeatRequest: {
             /** Character Id */
-            character_id: string;
+            character_id?: string | null;
             /** Seat Order */
             seat_order: number;
         };
@@ -2636,6 +2636,11 @@ export interface components {
             current_scene_id: string | null;
             /** Id */
             id: string;
+            /**
+             * Identity Version
+             * @default 1
+             */
+            identity_version: number;
             /**
              * Kp Mode
              * @default ai
