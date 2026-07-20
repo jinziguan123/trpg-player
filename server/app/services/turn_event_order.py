@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.event_log import EventLog
@@ -46,8 +47,14 @@ def reorder_turn_events(
 
     # 交换序号时直接写最终值会触发 UNIQUE(session_id, sequence_num) 的瞬时冲突。
     # 先把本批事件移到当前会话最小序号以下的临时区间，再写连续最终序号。
-    min_seq = min((event.sequence_num for event in candidates), default=0)
-    temp_start = min_seq - len(ordered) - 1
+    # 不能只看 candidates：本轮新事件通常从 base_seq+1 开始，而历史事件仍占据更小序号。
+    # 临时区间必须整体低于会话内全部事件，否则第一阶段搬移就会撞上历史唯一键。
+    session_min = (
+        db.query(func.min(EventLog.sequence_num))
+        .filter(EventLog.session_id == session_id)
+        .scalar()
+    )
+    temp_start = (session_min or 0) - len(ordered) - 1
     for offset, event in enumerate(ordered):
         event.sequence_num = temp_start + offset
     db.flush()
