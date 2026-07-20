@@ -124,6 +124,34 @@ def test_kick_frees_seat_and_host_only(db_factory):
     assert freed.character_id is None and freed.owner_token is None and freed.claimed is False
 
 
+def test_human_kp_host_can_kick_primary_player(db_factory):
+    db = db_factory()
+    module, _host, joiner = _seed(db)
+    session = session_service.create_session(
+        db,
+        module.id,
+        [{"character_id": None, "role": "human", "is_primary": True}],
+        creator_token="host-tok",
+        kp_mode="human",
+    )
+    primary = next(
+        p for p in session_service.get_participants(db, session.id) if p.is_primary
+    )
+    session_service.claim_seat(
+        db, session.id, primary.seat_order, joiner.id, "joiner-tok",
+    )
+
+    _, name = session_service.kick_seat(
+        db, session.id, primary.seat_order, "host-tok",
+    )
+
+    assert name == joiner.name
+    db.refresh(primary)
+    assert primary.character_id is None
+    assert primary.owner_token is None
+    assert primary.claimed is False
+
+
 def test_host_seat_and_ai_seat_default_ready(db_factory):
     db = db_factory()
     module, host, _ = _seed(db)

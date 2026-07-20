@@ -282,9 +282,14 @@ export function RoomLobbyPage() {
 
   const kick = async (seatOrder: number) => {
     if (!room) return
+    setBusy(true)
     try {
-      await api.post(`/sessions/${room.id}/kick/${seatOrder}`)
-    } catch (e) { toast.error(e instanceof Error ? e.message : '移出失败') }
+      const updated = await api.post<RoomData>(`/sessions/${room.id}/kick/${seatOrder}`)
+      setRoom(updated)
+      toast.success('玩家已移出房间')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '移出失败')
+    } finally { setBusy(false) }
   }
 
   const viewSeat = async (charId: string | null) => {
@@ -375,7 +380,8 @@ export function RoomLobbyPage() {
                 ? (p.ready ? '已准备' : '待准备')
                 : (p.character_id ? '就绪' : '')
               const showDot = p.role === 'human' && p.character_id
-              const canKick = amHost && p.claimed && p.role === 'human' && !p.is_primary && !p.is_mine
+              // 新身份模型中一号玩家不等于房主；房主可以移出除自己外的任意真人玩家。
+              const canKick = amHost && p.claimed && p.role === 'human' && !p.is_mine
               const seatLabel = p.character_id
                 ? p.character_name || '未知角色'
                 : p.claimed
@@ -429,6 +435,7 @@ export function RoomLobbyPage() {
                   {canKick && (
                     <button
                       onClick={() => kick(p.seat_order)}
+                      disabled={busy}
                       className="text-xs px-1.5 py-0.5 rounded"
                       style={{ color: 'var(--color-danger)', border: '1px solid var(--color-danger)' }}
                       title="移出该玩家（席位回到空席）"
