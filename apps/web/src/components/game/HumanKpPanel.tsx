@@ -9,6 +9,7 @@ import {
   ChevronUp,
   Crosshair,
   Image,
+  Info,
   Mic,
   MicOff,
   Maximize2,
@@ -21,12 +22,14 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 type KpAction =
   | 'narration'
   | 'dialogue'
   | 'dice_check'
   | 'opposed_check'
+  | 'generic_roll'
   | 'san_check'
   | 'scene_change'
   | 'set_flag'
@@ -70,6 +73,7 @@ interface Workspace {
   has_unprocessed_player_turn: boolean
   signals: DirectorSignals
   catalogs: {
+    characters: CatalogItem[]
     scenes: CatalogItem[]
     npcs: CatalogItem[]
     handouts: CatalogItem[]
@@ -110,6 +114,101 @@ function KpInput({ name, placeholder, list, fields, onChange }: KpInputProps) {
       list={list}
       className="input min-w-0 flex-1 text-xs"
     />
+  )
+}
+
+interface ActorSelectProps {
+  label: string
+  value: string
+  workspace: Workspace | null
+  onChange: (value: string) => void
+  includeGroup?: boolean
+  disabledValue?: string
+}
+
+function ActorSelect({
+  label, value, workspace, onChange, includeGroup = false, disabledValue,
+}: ActorSelectProps) {
+  return (
+    <select
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className="input min-w-40 flex-1 text-xs"
+      aria-label={label}
+    >
+      <option value="">选择{label}</option>
+      {includeGroup && <option value="在场">在场所有角色</option>}
+      {!!workspace?.catalogs.characters?.length && (
+        <optgroup label="游戏角色">
+          {workspace.catalogs.characters.map((item) => {
+            const ref = `character:${item.id}`
+            return <option key={ref} value={ref} disabled={ref === disabledValue}>{item.name}</option>
+          })}
+        </optgroup>
+      )}
+      {!!workspace?.catalogs.npcs.length && (
+        <optgroup label="NPC">
+          {workspace.catalogs.npcs.map((item) => {
+            const ref = `npc:${item.id}`
+            return <option key={ref} value={ref} disabled={ref === disabledValue}>{item.name}</option>
+          })}
+        </optgroup>
+      )}
+    </select>
+  )
+}
+
+function DiceAdjustment({
+  label, bonus, penalty, onChange,
+}: { label: string; bonus: string; penalty: string; onChange: (bonus: string, penalty: string) => void }) {
+  const value = bonus && bonus !== '0' ? `bonus:${bonus}` : penalty && penalty !== '0' ? `penalty:${penalty}` : 'none'
+  return (
+    <select
+      value={value}
+      onChange={(event) => {
+        const [kind, count = ''] = event.target.value.split(':')
+        onChange(kind === 'bonus' ? count : '', kind === 'penalty' ? count : '')
+      }}
+      className="input w-auto text-xs"
+      aria-label={label}
+    >
+      <option value="none">无奖惩骰</option>
+      <option value="bonus:1">奖励骰 +1</option>
+      <option value="bonus:2">奖励骰 +2</option>
+      <option value="penalty:1">惩罚骰 +1</option>
+      <option value="penalty:2">惩罚骰 +2</option>
+    </select>
+  )
+}
+
+function BlindToggle({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="inline-flex shrink-0 items-center gap-1.5 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      暗投
+    </label>
+  )
+}
+
+function AdvisorHelp({ label, text }: { label: string; text: string }) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={`${label}说明`}
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-[var(--color-bg-secondary)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--color-accent)]"
+            style={{ color: 'var(--color-text-accent)' }}
+          >
+            <Info size={15} aria-hidden="true" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-72 whitespace-normal leading-relaxed">
+          {text}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   )
 }
 
@@ -164,6 +263,7 @@ const ACTION_LABELS: Record<KpAction, string> = {
   dialogue: 'NPC 台词',
   dice_check: '发起检定',
   opposed_check: '对抗检定',
+  generic_roll: '通用骰',
   san_check: '理智检定',
   scene_change: '切换场景',
   set_flag: '推进标志',
@@ -193,7 +293,15 @@ function highlightText(text: string, query: string) {
   const parts = text.split(new RegExp(`(${escaped})`, 'ig'))
   return parts.map((part, index) => (
     part.toLocaleLowerCase() === needle.toLocaleLowerCase()
-      ? <mark key={`${part}-${index}`} className="rounded px-0.5" style={{ background: 'var(--color-warning)', color: 'var(--color-bg-primary)' }}>{part}</mark>
+      ? (
+          <mark
+            key={`${part}-${index}`}
+            className="rounded px-0.5 font-semibold"
+            style={{ background: 'var(--color-accent)', color: 'var(--color-on-accent)' }}
+          >
+            {part}
+          </mark>
+        )
       : part
   ))
 }
@@ -204,6 +312,7 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
   const [action, setAction] = useState<KpAction>('narration')
   const [busy, setBusy] = useState('')
   const [fields, setFields] = useState<Record<string, string>>({})
+  const [lastActionResult, setLastActionResult] = useState('')
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [source, setSource] = useState<ModuleSource | null>(null)
   const [sourceView, setSourceView] = useState<'raw' | 'parsed'>('raw')
@@ -229,7 +338,13 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const sourceChunkRefs = useRef<Record<number, HTMLDivElement | null>>({})
   const sourceDragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null)
-  const sourceResizeRef = useRef<{ startX: number; startY: number; width: number; height: number } | null>(null)
+  const sourceResizeRef = useRef<{
+    startX: number
+    startY: number
+    width: number
+    height: number
+    originX: number
+  } | null>(null)
 
   const refreshWorkspace = async () => {
     try {
@@ -290,6 +405,7 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
       startY: event.clientY,
       width: sourceSize.width,
       height: sourceSize.height,
+      originX: sourcePosition.x,
     }
   }
 
@@ -298,10 +414,13 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
     if (!resize) return
     const maxWidth = typeof window === 'undefined' ? 960 : Math.max(360, window.innerWidth - 32)
     const maxHeight = typeof window === 'undefined' ? 900 : Math.max(320, window.innerHeight - 96)
-    setSourceSize({
-      width: Math.min(maxWidth, Math.max(360, resize.width + event.clientX - resize.startX)),
-      height: Math.min(maxHeight, Math.max(320, resize.height + event.clientY - resize.startY)),
-    })
+    const width = Math.min(maxWidth, Math.max(360, resize.width + event.clientX - resize.startX))
+    const height = Math.min(maxHeight, Math.max(320, resize.height + event.clientY - resize.startY))
+    setSourceSize({ width, height })
+    setSourcePosition((current) => ({
+      ...current,
+      x: resize.originX + width - resize.width,
+    }))
   }
 
   const onSourceResizeEnd = () => {
@@ -339,15 +458,25 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
     setFields((current) => ({ ...current, [key]: value }))
   }
 
+  const setDiceAdjustment = (prefix: string, bonus: string, penalty: string) => {
+    setFields((current) => ({
+      ...current,
+      [`${prefix}bonus`]: bonus,
+      [`${prefix}penalty`]: penalty,
+    }))
+  }
+
   const postAction = async (nextAction: KpAction, payload: Record<string, unknown>, success: string) => {
     setBusy(`action:${nextAction}`)
     try {
-      await api.post(`/sessions/${sessionId}/kp/action`, { action: nextAction, payload })
+      const response = await api.post<{ result?: string }>(`/sessions/${sessionId}/kp/action`, { action: nextAction, payload })
+      const result = response.result || success
+      setLastActionResult(result)
       toast.success(success)
-      return true
+      return result
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'KP 动作执行失败')
-      return false
+      return null
     } finally {
       setBusy('')
     }
@@ -355,8 +484,14 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
 
   const submit = async () => {
     if (busy) return
+    const defaultActor = workspace?.catalogs.characters?.[0]
+      ? `character:${workspace.catalogs.characters[0].id}`
+      : ''
+    const nextFields = { ...fields }
+    if (action === 'dice_check' && !nextFields.char) nextFields.char = defaultActor
+    if (action === 'opposed_check' && !nextFields.a) nextFields.a = defaultActor
     const payload = Object.fromEntries(
-      Object.entries(fields).filter(([, value]) => value.trim()),
+      Object.entries(nextFields).filter(([, value]) => value.trim()),
     )
     if (await postAction(action, payload, `${ACTION_LABELS[action]}已发布`)) {
       // 连续 NPC 台词时保留说话人，只清空上一句正文。
@@ -551,6 +686,9 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
   }
 
   const signals = workspace?.signals
+  const defaultActorRef = workspace?.catalogs.characters?.[0]
+    ? `character:${workspace.catalogs.characters[0].id}`
+    : ''
   const sceneLabel = (sceneId: string | null | undefined) => (
     workspace?.catalogs.scenes.find((scene) => scene.id === sceneId)?.name || sceneId || '模组原文片段'
   )
@@ -667,15 +805,70 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
             </>}
             {action === 'dice_check' && <>
               <KpInput name="skill" placeholder="技能，如 幸运、侦查" fields={fields} onChange={setField} />
-              <KpInput name="char" placeholder="角色，空=主角；在场=群检" fields={fields} onChange={setField} />
+              <ActorSelect
+                label="检定对象"
+                value={fields.char || defaultActorRef}
+                workspace={workspace}
+                includeGroup
+                onChange={(value) => setField('char', value)}
+              />
               <select value={fields.difficulty || 'normal'} onChange={(event) => setField('difficulty', event.target.value)} className="input w-auto text-xs">
                 <option value="normal">普通</option><option value="hard">困难</option><option value="extreme">极难</option>
               </select>
+              <DiceAdjustment
+                label="检定奖惩骰"
+                bonus={fields.bonus || ''}
+                penalty={fields.penalty || ''}
+                onChange={(bonus, penalty) => setDiceAdjustment('', bonus, penalty)}
+              />
+              <BlindToggle checked={fields.visibility === 'blind'} onChange={(checked) => setField('visibility', checked ? 'blind' : '')} />
               <KpInput name="source" placeholder="目标/来源（可选）" fields={fields} onChange={setField} />
             </>}
             {action === 'opposed_check' && <>
-              <KpInput name="a" placeholder="甲方角色" fields={fields} onChange={setField} /><KpInput name="a_skill" placeholder="甲方技能" fields={fields} onChange={setField} />
-              <KpInput name="b" placeholder="乙方角色/NPC" fields={fields} onChange={setField} /><KpInput name="b_skill" placeholder="乙方技能" fields={fields} onChange={setField} />
+              <div className="flex w-full flex-wrap items-center gap-2">
+                <span className="w-10 shrink-0 text-xs font-semibold" style={{ color: 'var(--color-text-secondary)' }}>甲方</span>
+                <ActorSelect
+                  label="甲方对象"
+                  value={fields.a || defaultActorRef}
+                  workspace={workspace}
+                  disabledValue={fields.b}
+                  onChange={(value) => setField('a', value)}
+                />
+                <KpInput name="a_skill" placeholder="甲方技能" fields={fields} onChange={setField} />
+                <DiceAdjustment
+                  label="甲方奖惩骰"
+                  bonus={fields.a_bonus || ''}
+                  penalty={fields.a_penalty || ''}
+                  onChange={(bonus, penalty) => setDiceAdjustment('a_', bonus, penalty)}
+                />
+              </div>
+              <div className="flex w-full flex-wrap items-center gap-2">
+                <span className="w-10 shrink-0 text-xs font-semibold" style={{ color: 'var(--color-text-secondary)' }}>乙方</span>
+                <ActorSelect
+                  label="乙方对象"
+                  value={fields.b || ''}
+                  workspace={workspace}
+                  disabledValue={fields.a || defaultActorRef}
+                  onChange={(value) => setField('b', value)}
+                />
+                <KpInput name="b_skill" placeholder="乙方技能" fields={fields} onChange={setField} />
+                <DiceAdjustment
+                  label="乙方奖惩骰"
+                  bonus={fields.b_bonus || ''}
+                  penalty={fields.b_penalty || ''}
+                  onChange={(bonus, penalty) => setDiceAdjustment('b_', bonus, penalty)}
+                />
+              </div>
+              <BlindToggle checked={fields.visibility === 'blind'} onChange={(checked) => setField('visibility', checked ? 'blind' : '')} />
+            </>}
+            {action === 'generic_roll' && <>
+              <input type="number" min="1" max="20" value={fields.count || '1'} onChange={(event) => setField('count', event.target.value)} className="input w-20 text-xs" aria-label="骰子数量" title="骰子数量" />
+              <span className="self-center text-xs" style={{ color: 'var(--color-text-secondary)' }}>颗</span>
+              <input type="number" min="2" max="1000" value={fields.sides || '6'} onChange={(event) => setField('sides', event.target.value)} className="input w-24 text-xs" aria-label="骰子面数" title="骰子面数" />
+              <span className="self-center text-xs" style={{ color: 'var(--color-text-secondary)' }}>面</span>
+              <input type="number" min="-10000" max="10000" value={fields.modifier || '0'} onChange={(event) => setField('modifier', event.target.value)} className="input w-24 text-xs" aria-label="结果修正值" title="结果修正值" />
+              <KpInput name="reason" placeholder="掷骰用途，如 参战敌人数" fields={fields} onChange={setField} />
+              <BlindToggle checked={fields.visibility === 'blind'} onChange={(checked) => setField('visibility', checked ? 'blind' : '')} />
             </>}
             {action === 'san_check' && <>
               <KpInput name="chars" placeholder="目睹者，空=全队" fields={fields} onChange={setField} /><KpInput name="source" placeholder="恐怖源" fields={fields} onChange={setField} />
@@ -687,10 +880,17 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
             {action === 'hp_change' && <><KpInput name="target" placeholder="角色名" fields={fields} onChange={setField} /><KpInput name="delta" placeholder="变化值，如 -3 或 2" fields={fields} onChange={setField} /><KpInput name="reason" placeholder="原因（可选）" fields={fields} onChange={setField} /></>}
             {action === 'start_combat' && <><Swords size={16} /><KpInput name="enemies" placeholder="敌人名称，多个用逗号分隔" list="kp-npcs" fields={fields} onChange={setField} /><KpInput name="trigger" placeholder="开战原因（可选）" fields={fields} onChange={setField} /></>}
             <button onClick={() => void submit()} disabled={!!busy} className="btn-primary inline-flex items-center gap-1 text-xs">
-              {action === 'dice_check' ? <GiRollingDices size={13} /> : <Send size={13} />}
+              {(['dice_check', 'opposed_check', 'generic_roll'] as KpAction[]).includes(action) ? <GiRollingDices size={13} /> : <Send size={13} />}
               {busy ? '处理中…' : ACTION_LABELS[action]}
             </button>
           </div>
+          {lastActionResult && (
+            <div className="mt-2 flex items-start gap-2 border-t pt-2 text-xs" style={{ borderColor: 'var(--color-border)', color: 'var(--color-text-secondary)' }} aria-live="polite">
+              <strong className="shrink-0" style={{ color: 'var(--color-text-primary)' }}>最近结果</strong>
+              <span className="min-w-0 flex-1 whitespace-pre-wrap">{lastActionResult}</span>
+              <button type="button" onClick={() => setLastActionResult('')} className="btn-secondary !p-1" title="清除最近结果"><X size={12} /></button>
+            </div>
+          )}
         </div>
       )}
 
@@ -701,6 +901,10 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
             <button onClick={() => void generatePlan()} disabled={!!busy} className="btn-secondary inline-flex items-center gap-1 text-xs">
               <Bot size={13} /> {busy === 'plan' ? '分析中…' : '生成裁定建议'}
             </button>
+            <AdvisorHelp
+              label="裁定建议"
+              text="根据当前场景、玩家行动和可用规则生成仅 KP 可见的裁定参考。生成建议不会改变游戏；只有点击“照此发起”或“执行”后，对应检定或状态变化才会生效。"
+            />
             {plan && (
               <div className="w-full space-y-1 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
                 <div><strong style={{ color: 'var(--color-text-primary)' }}>玩家意图：</strong>{plan.player_intent || '未识别'}</div>
@@ -734,6 +938,10 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
             <button onClick={() => void generateDraft()} disabled={!!busy} className="btn-secondary inline-flex items-center gap-1 text-xs">
               <WandSparkles size={13} /> {busy === 'draft' ? '起草中…' : '生成叙事草稿'}
             </button>
+            <AdvisorHelp
+              label="叙事草稿"
+              text="根据当前游戏上下文生成仅 KP 可见、可继续编辑的候选旁白。生成草稿不会推进游戏；确认并点击“发布草稿”后，内容才会展示给玩家。"
+            />
             {draft && <>
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} className="input min-h-24 w-full resize-y text-xs" />
               <button onClick={() => void postAction('narration', { content: draft }, '叙事草稿已发布')} className="btn-primary inline-flex items-center gap-1 text-xs"><Send size={13} />发布草稿</button>

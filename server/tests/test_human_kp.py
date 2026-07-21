@@ -1,14 +1,18 @@
 """真人 KP M1：席位授权、不开 AI 生成、工具动作复用确定性执行器。"""
 
 import asyncio
+import json
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Character, EventLog, Module
+from app.api.chat import kp_action
+from app.schemas.session import KpActionRequest
 from app.services import session_service
 from app.services.chat_service import execute_human_kp_action, initialize_human_session
+from app.services.room_hub import room_hub
 
 
 def _db(tmp_path):
@@ -21,9 +25,14 @@ def _db(tmp_path):
 
 def _seed(db):
     module = Module(
-        title="真人 KP 测试", description="一场真人 KP 测试。", rule_system="coc", scenes=[{"id": "s1", "title": "门厅"}],
+        title="真人 KP 测试", description="一场真人 KP 测试。", rule_system="coc",
+        scenes=[{"id": "s1", "title": "门厅"}],
+        npcs=[{"id": "guard", "name": "守门人", "skills": {"潜行": 55, "力量": 50}}],
     )
-    hero = Character(name="调查员", rule_system="coc", is_player=True)
+    hero = Character(
+        name="调查员", rule_system="coc", is_player=True,
+        skills={"侦查": 60, "力量": 65},
+    )
     db.add_all([module, hero])
     db.commit()
     session = session_service.create_session(
@@ -100,6 +109,124 @@ def test_human_kp_action_uses_seated_player_when_primary_is_empty(tmp_path):
     ))
 
     assert chunks and "已发布" in result
+
+
+def test_human_kp_skill_check_selects_npc_and_applies_bonus_die(tmp_path):
+    db = _db(tmp_path)()
+    module, _hero, session = _seed(db)
+
+    chunks, result = asyncio.run(execute_human_kp_action(
+        db, session.id, session, module, "dice_check",
+        {"skill": "潜行", "char": "npc:guard", "bonus": "1"},
+    ))
+
+    payload = json.loads(chunks[0].splitlines()[0][6:])
+    detail = payload["metadata"]["dice"]
+    assert payload["metadata"]["actor"] == "守门人"
+    assert detail["bonus"] == 1 and detail["penalty"] == 0
+    assert len(detail["tens"]) == 2
+    assert "守门人" in result
+
+
+def test_human_kp_blind_skill_check_returns_private_result_without_persisting_it(tmp_path):
+    db = _db(tmp_path)()
+    module, _hero, session = _seed(db)
+
+    _chunks, result = asyncio.run(execute_human_kp_action(
+        db, session.id, session, module, "dice_check",
+        {"skill": "潜行", "char": "npc:guard", "visibility": "blind"},
+    ))
+
+    event = db.query(EventLog).filter(EventLog.session_id == session.id).one()
+    assert event.metadata_["blind"] is True
+    assert "roll" not in event.metadata_ and "outcome" not in event.metadata_
+    assert "结果仅 KP 可见" in event.content
+    assert "达成" in result
+
+
+def test_human_kp_generic_roll_supports_pool_and_blind_result(tmp_path):
+    db = _db(tmp_path)()
+    module, _hero, session = _seed(db)
+
+    chunks, open_result = asyncio.run(execute_human_kp_action(
+        db, session.id, session, module, "generic_roll",
+        {"count": 2, "sides": 8, "modifier": 3, "reason": "参战敌人数"},
+    ))
+    payload = json.loads(chunks[0].splitlines()[0][6:])
+    assert payload["metadata"]["dice"]["kind"] == "pool"
+    assert payload["metadata"]["dice"]["notation"] == "2d8+3"
+    assert len(payload["metadata"]["dice"]["dice"]) == 2
+    assert "参战敌人数" in open_result and "=" in open_result
+
+    _chunks, blind_result = asyncio.run(execute_human_kp_action(
+        db, session.id, session, module, "generic_roll",
+        {"count": 1, "sides": 20, "reason": "NPC 是否理解画外音", "visibility": "blind"},
+    ))
+    blind_event = (
+        db.query(EventLog)
+        .filter(EventLog.session_id == session.id)
+        .order_by(EventLog.sequence_num.desc())
+        .first()
+    )
+    assert blind_event.metadata_["blind"] is True
+    assert "dice" not in blind_event.metadata_ and "total" not in blind_event.metadata_
+    assert "结果仅 KP 可见" in blind_event.content
+    assert "=" in blind_result
+
+    with pytest.raises(ValueError, match="1 到 20"):
+        asyncio.run(execute_human_kp_action(
+            db, session.id, session, module, "generic_roll",
+            {"count": 21, "sides": 6},
+        ))
+
+
+def test_human_kp_action_broadcast_never_contains_blind_result(tmp_path, monkeypatch):
+    db = _db(tmp_path)()
+    _module, _hero, session = _seed(db)
+    broadcasts: list[str] = []
+    monkeypatch.setattr(room_hub, "broadcast", lambda _sid, chunk: broadcasts.append(chunk))
+
+    response = asyncio.run(kp_action(
+        session.id,
+        KpActionRequest(
+            action="generic_roll",
+            payload={"count": 2, "sides": 6, "reason": "暗中决定人数", "visibility": "blind"},
+        ),
+        db,
+        "kp-token",
+    ))
+
+    assert "=" in response["result"]
+    public_stream = "".join(broadcasts)
+    assert response["result"] not in public_stream
+    assert "结果仅 KP 可见" in public_stream
+
+
+def test_human_kp_opposed_check_rejects_self_and_emits_frontend_contract(tmp_path):
+    db = _db(tmp_path)()
+    module, hero, session = _seed(db)
+    hero_ref = f"character:{hero.id}"
+
+    with pytest.raises(ValueError, match="不能是同一个对象"):
+        asyncio.run(execute_human_kp_action(
+            db, session.id, session, module, "opposed_check",
+            {"a": hero_ref, "a_skill": "力量", "b": hero_ref, "b_skill": "力量"},
+        ))
+
+    chunks, _result = asyncio.run(execute_human_kp_action(
+        db, session.id, session, module, "opposed_check",
+        {
+            "a": hero_ref, "a_skill": "力量", "a_bonus": "1",
+            "b": "npc:guard", "b_skill": "力量", "b_penalty": "1",
+        },
+    ))
+    payload = json.loads(chunks[0].splitlines()[0][6:])
+    opposed = payload["metadata"]["opposed"]
+    assert opposed["attacker"]["name"] == "调查员"
+    assert opposed["defender"]["name"] == "守门人"
+    assert opposed["winner"] in ("attacker", "defender", None)
+    assert payload["metadata"]["a"]["dice"]["bonus"] == 1
+    assert payload["metadata"]["b"]["dice"]["penalty"] == 1
 
 
 def test_human_kp_open_player_seat_can_start_without_counting_kp_seat(tmp_path):

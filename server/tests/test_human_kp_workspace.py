@@ -65,6 +65,10 @@ def test_workspace_is_private_and_exposes_catalogs(tmp_path):
     assert payload["notes"] == "凶手藏在阁楼"
     assert payload["auto_ai_teammates"] is True
     assert payload["player_missing"] is False
+    assert payload["catalogs"]["characters"] == [
+        {"id": _hero.id, "name": "调查员"},
+        {"id": _ally.id, "name": "记者"},
+    ]
     assert payload["catalogs"]["npcs"] == [{"id": "n1", "name": "管家"}]
     assert "kp_state" not in SessionRead.model_validate(session).model_dump()
 

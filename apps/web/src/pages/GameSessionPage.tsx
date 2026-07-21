@@ -10,6 +10,7 @@ import { PartyRoster } from '../components/game/PartyRoster'
 import { SeatIcon, type SeatKind } from '../components/game/SeatIcon'
 import { DiceRoller, type DiceRollerHandle, type DiceSpec } from '../components/game/DiceRoller'
 import { buildCheckCaption } from '../components/game/diceNotation'
+import { normalizeOpposedData, type OpposedData, type OpposedSide } from '../components/game/opposedDice'
 import { ContextUsageBadge } from '../components/game/ContextUsageBadge'
 import { RecapModal } from '../components/game/RecapModal'
 import { GrowthModal } from '../components/game/GrowthModal'
@@ -196,20 +197,6 @@ function outcomeLabel(outcome: string): string {
   if (s.includes('success') || s === '成功') return '成功'
   if (s.includes('fail') || s.includes('失败')) return '失败'
   return outcome
-}
-
-interface OpposedSide {
-  name: string
-  roll: number
-  target: number
-  skill: string
-  outcome: string
-}
-interface OpposedData {
-  attacker: OpposedSide
-  defender: OpposedSide | null
-  winner: 'attacker' | 'defender' | null
-  result: string
 }
 
 /** 对抗判定卡：攻守两方并排 + 中央 VS + 高亮胜方（参考博得之门3的对抗结算呈现）。
@@ -1575,8 +1562,9 @@ export function GameSessionPage() {
                 return <div key={msg.id} className="chat-msg py-1" style={{ minHeight: 0 }} />
               }
               // 对抗卡：命中/反击/闪避这类攻守对抗 → 两边并排 + VS + 高亮胜方（参考 BG3 对抗判定）
-              if (msg.metadata?.opposed) {
-                return <OpposedCard key={msg.id} data={msg.metadata.opposed as unknown as OpposedData}
+              const opposedData = normalizeOpposedData(msg.metadata)
+              if (opposedData) {
+                return <OpposedCard key={msg.id} data={opposedData}
                          fresh={isFresh(msg)} ts={fmtTime(msg.ts)} />
               }
               // 连射卡：一轮多枪逐发结果

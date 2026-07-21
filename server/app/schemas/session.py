@@ -92,7 +92,7 @@ class KpActionRequest(BaseModel):
     """真人 KP 工具桌动作；payload 由动作类型对应的表单字段组成。"""
 
     action: Literal[
-        "narration", "dialogue", "dice_check", "opposed_check", "san_check",
+        "narration", "dialogue", "dice_check", "opposed_check", "generic_roll", "san_check",
         "scene_change", "set_flag", "clear_flag", "handout", "hp_change",
         "start_combat",
     ]

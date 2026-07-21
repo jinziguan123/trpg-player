@@ -233,7 +233,8 @@ def test_opposed_each_side_has_check_detail(db_factory, monkeypatch):
     d = _dice(_run(db, module, hero, teammates, session,
                    "[OPPOSED_CHECK: a=主角, b=守墓人, skill=侦查]", monkeypatch))[0]
     meta = d["metadata"]
-    assert meta["opposed"] is True
+    assert meta["opposed"]["attacker"]["name"] == "主角"
+    assert meta["opposed"]["defender"]["name"] == "守墓人"
     _assert_check_contract(meta["a"]["dice"])
     _assert_check_contract(meta["b"]["dice"])
 

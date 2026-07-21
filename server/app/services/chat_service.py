@@ -305,6 +305,8 @@ def _resolve_check_actor(
     兜底）。匹配不到时兜底当作主角，避免检定无法进行。char_id 为对应玩家角色的 id（NPC 为 None）。
     """
     name = (char_ref or "").strip()
+    ref_kind, separator, ref_id = name.partition(":")
+    stable_ref = separator == ":" and ref_kind in ("character", "npc") and bool(ref_id)
 
     def cdata_of(c: Character) -> dict:
         return {
@@ -313,27 +315,40 @@ def _resolve_check_actor(
             "system_data": c.system_data,
         }
 
-    if not name or name in ("主角", "玩家", player_char.name):
+    if (
+        not name
+        or name in ("主角", "玩家", player_char.name)
+        or (ref_kind == "character" and ref_id == player_char.id)
+    ):
         return cdata_of(player_char), player_char.name, False, player_char.id
     for t in (teammates or []):
-        if t.name and (t.name == name or name in t.name or t.name in name):
+        if t.name and (
+            t.name == name or name in t.name or t.name in name
+            or (ref_kind == "character" and ref_id == t.id)
+        ):
             return cdata_of(t), t.name, False, t.id
     for npc in (module.npcs or []):
         nm = npc.get("name", "")
-        if nm and (nm == name or name in nm or nm in name):
+        npc_id = str(npc.get("id") or nm)
+        if nm and (
+            nm == name or name in nm or nm in name
+            or (ref_kind == "npc" and ref_id == npc_id)
+        ):
             skills = dict(npc.get("skills") or {})
             if skill_name and skill_name not in skills:
                 skills[skill_name] = DEFAULT_NPC_SKILL
             return {"base_attributes": {}, "skills": skills, "system_data": {}}, nm, True, None
+    if stable_ref:
+        raise ValueError("所选检定对象已不在当前游戏中，请刷新后重选")
     return cdata_of(player_char), player_char.name, False, player_char.id
 
 
-def _parse_bonus_penalty(kv: dict) -> tuple[int, int]:
-    """从指令 kv 解析奖励/惩罚骰数量（缺省 0，非法值按 0，负数取绝对值）。"""
+def _parse_bonus_penalty(kv: dict, prefix: str = "") -> tuple[int, int]:
+    """解析奖励/惩罚骰数量；非法值按 0，负数取绝对值，并按 CoC 上限截为 2。"""
     def _n(key: str) -> int:
-        raw = str(kv.get(key) or "").strip()
+        raw = str(kv.get(f"{prefix}{key}") or "").strip()
         try:
-            return abs(int(raw)) if raw else 0
+            return min(abs(int(raw)), 2) if raw else 0
         except ValueError:
             return 0
     return _n("bonus"), _n("penalty")
@@ -369,6 +384,58 @@ def _pool_dice_detail(roll_result) -> dict:
         "modifier": roll_result.modifier,
         "total": roll_result.total,
     }
+
+
+def _exec_generic_roll(
+    db: Session,
+    session_id: str,
+    module: Module,
+    payload: dict,
+) -> tuple[list[str], str]:
+    """执行真人 KP 自定义骰池；暗投的持久事件和广播均不携带实际结果。"""
+    try:
+        count = int(payload.get("count") or 1)
+        sides = int(payload.get("sides") or 6)
+        modifier = int(payload.get("modifier") or 0)
+    except (TypeError, ValueError) as error:
+        raise ValueError("骰子数量、面数和修正值必须是整数") from error
+    if not 1 <= count <= 20:
+        raise ValueError("骰子数量必须在 1 到 20 之间")
+    if not 2 <= sides <= 1000:
+        raise ValueError("骰子面数必须在 2 到 1000 之间")
+    if not -10000 <= modifier <= 10000:
+        raise ValueError("骰子修正值必须在 -10000 到 10000 之间")
+
+    notation = f"{count}d{sides}" + (f"{modifier:+d}" if modifier else "")
+    result = get_engine(module.rule_system).roll_dice(notation)
+    reason = str(payload.get("reason") or "临场裁定").strip() or "临场裁定"
+    if len(reason) > 200:
+        raise ValueError("掷骰用途不能超过 200 个字符")
+    rolls_text = "、".join(str(value) for value in result.rolls)
+    private_result = f"{reason}｜{notation}：[{rolls_text}]"
+    if modifier:
+        private_result += f" {modifier:+d}"
+    private_result += f" = {result.total}"
+
+    blind = str(payload.get("visibility") or "open").strip().lower() == "blind"
+    if blind:
+        public_content = f"KP 为“{reason}”进行了一次暗投（结果仅 KP 可见）"
+        metadata = {
+            "generic_roll": True, "blind": True, "reason": reason,
+            "kp_manual": True,
+        }
+    else:
+        public_content = f"KP 掷骰｜{private_result}"
+        metadata = {
+            "generic_roll": True, "reason": reason, "notation": notation,
+            "rolls": list(result.rolls), "modifier": result.modifier,
+            "total": result.total, "dice": _pool_dice_detail(result),
+            "kp_manual": True,
+        }
+    event = session_service.add_event(
+        db, session_id, "dice", public_content, actor_name="KP", metadata=metadata,
+    )
+    return [event_to_chunk(event)], private_result
 
 
 _ALL_TOKENS = {"在场", "全体", "全部", "所有人", "所有", "all", "everyone"}
@@ -474,44 +541,75 @@ async def _resolve_opposed(
     b_ref = (kv.get("b") or kv.get("target") or "").strip()
     a_skill = (kv.get("a_skill") or kv.get("skill") or "").strip()
     b_skill = (kv.get("b_skill") or a_skill).strip()
-    if not a_skill or not b_skill:
-        return
+    if not a_ref or not b_ref or not a_skill or not b_skill:
+        raise ValueError("对抗检定必须选择双方对象并填写双方技能")
 
-    a_data, a_name, _, _ = _resolve_check_actor(a_ref, a_skill, player_char, teammates, module)
-    b_data, b_name, _, _ = _resolve_check_actor(b_ref, b_skill, player_char, teammates, module)
-    a_res = engine.resolve_check(a_data, a_skill, "normal")
-    b_res = engine.resolve_check(b_data, b_skill, "normal")
+    a_data, a_name, a_is_npc, a_id = _resolve_check_actor(
+        a_ref, a_skill, player_char, teammates, module,
+    )
+    b_data, b_name, b_is_npc, b_id = _resolve_check_actor(
+        b_ref, b_skill, player_char, teammates, module,
+    )
+    if (
+        (a_id is not None and a_id == b_id)
+        or (a_is_npc == b_is_npc and a_name == b_name)
+    ):
+        raise ValueError("对抗检定的双方不能是同一个对象")
+
+    a_bonus, a_penalty = _parse_bonus_penalty(kv, "a_")
+    b_bonus, b_penalty = _parse_bonus_penalty(kv, "b_")
+    a_res = engine.resolve_check(
+        a_data, a_skill, "normal", bonus=a_bonus, penalty=a_penalty,
+    )
+    b_res = engine.resolve_check(
+        b_data, b_skill, "normal", bonus=b_bonus, penalty=b_penalty,
+    )
 
     ar, br = _OUTCOME_RANK.get(a_res.outcome, 1), _OUTCOME_RANK.get(b_res.outcome, 1)
     if ar != br:
-        winner = a_name if ar > br else b_name
+        winner = "attacker" if ar > br else "defender"
     elif a_res.skill_value != b_res.skill_value:
-        winner = a_name if a_res.skill_value > b_res.skill_value else b_name
+        winner = "attacker" if a_res.skill_value > b_res.skill_value else "defender"
     else:
-        winner = "平局"
+        winner = None
 
-    verdict = f"{winner} 胜" if winner != "平局" else "平局"
-    dice_content = (
+    winner_name = a_name if winner == "attacker" else (b_name if winner == "defender" else "")
+    verdict = f"{winner_name} 胜" if winner_name else "平局"
+    private_content = (
         f"对抗骰　{a_name}（{a_skill}）{a_res.description}　vs　"
         f"{b_name}（{b_skill}）{b_res.description}　→　{verdict}"
     )
-    dice_meta = {
-        "opposed": True,
-        "a": {"actor": a_name, "skill": a_skill, "roll": a_res.roll,
-              "target": a_res.target, "outcome": a_res.outcome,
-              "dice": _check_dice_detail(a_res)},
-        "b": {"actor": b_name, "skill": b_skill, "roll": b_res.roll,
-              "target": b_res.target, "outcome": b_res.outcome,
-              "dice": _check_dice_detail(b_res)},
+    opposed = {
+        "attacker": {
+            "name": a_name, "skill": a_skill, "roll": a_res.roll,
+            "target": a_res.target, "outcome": a_res.outcome,
+        },
+        "defender": {
+            "name": b_name, "skill": b_skill, "roll": b_res.roll,
+            "target": b_res.target, "outcome": b_res.outcome,
+        },
         "winner": winner,
+        "result": verdict,
     }
+    blind = (kv.get("visibility") or "open").strip().lower() == "blind"
+    if blind:
+        dice_content = f"KP 进行了一次对抗暗投：{a_name} vs {b_name}（结果仅 KP 可见）"
+        dice_meta = {"opposed": True, "blind": True, "kp_manual": True}
+    else:
+        dice_content = private_content
+        dice_meta = {
+            "opposed": opposed,
+            "a": {**opposed["attacker"], "actor": a_name, "dice": _check_dice_detail(a_res)},
+            "b": {**opposed["defender"], "actor": b_name, "dice": _check_dice_detail(b_res)},
+            "winner": winner_name or "平局",
+            "kp_manual": True,
+        }
     ev = session_service.add_event(
         db, session_id, "dice", dice_content, actor_name="系统", metadata=dice_meta,
     )
     yield _make_chunk("dice", dice_content, metadata=dice_meta, event_id=ev.id)
     dice_descriptions.append(
-        f"对抗骰：{a_name}({a_skill}) {a_res.description} vs "
-        f"{b_name}({b_skill}) {b_res.description} → {verdict}"
+        f"【对抗暗投，仅 KP 可见】{private_content}" if blind else private_content
     )
 
 
@@ -4343,6 +4441,9 @@ async def execute_human_kp_action(
             raise ValueError("对抗检定至少需要双方角色与技能")
         return chunks, "；".join(descs)
 
+    if action == "generic_roll":
+        return _exec_generic_roll(db, session_id, module, payload)
+
     if action == "scene_change":
         chunks, sid, note = await _exec_scene_change(
             db, session_id, game_session, module,
@@ -5624,11 +5725,15 @@ async def _process_commands(
         dice_descriptions.extend(dice_descs)
 
     for match in OPPOSED_CHECK_RE.finditer(kp_text):
-        async for chunk in _resolve_opposed(
-            db, session_id, _parse_tag_kv(match.group(1)),
-            engine, module, player_char, teammates, dice_descriptions,
-        ):
-            yield chunk
+        try:
+            async for chunk in _resolve_opposed(
+                db, session_id, _parse_tag_kv(match.group(1)),
+                engine, module, player_char, teammates, dice_descriptions,
+            ):
+                yield chunk
+        except ValueError as error:
+            # 模型生成的内部指令可能缺字段；跳过坏指令，不中断已经生成的叙事。
+            logger.warning("跳过无效的 AI 对抗检定指令：%s", error)
 
     if dice_descriptions:
         continuation_prompt = KP_DICE_CONTINUATION_PROMPT.format(

@@ -2339,7 +2339,7 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "narration" | "dialogue" | "dice_check" | "opposed_check" | "san_check" | "scene_change" | "set_flag" | "clear_flag" | "handout" | "hp_change" | "start_combat";
+            action: "narration" | "dialogue" | "dice_check" | "opposed_check" | "generic_roll" | "san_check" | "scene_change" | "set_flag" | "clear_flag" | "handout" | "hp_change" | "start_combat";
             /** Payload */
             payload?: {
                 [key: string]: unknown;

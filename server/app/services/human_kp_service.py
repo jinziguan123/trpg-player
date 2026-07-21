@@ -167,12 +167,19 @@ def workspace_payload(
         "player_missing": player is None,
         "signals": asdict(signals),
         "catalogs": {
+            "characters": [
+                {"id": str(char.id), "name": str(char.name)}
+                for char in ([player] if player else []) + others
+            ],
             "scenes": [
                 {"id": str(item.get("id") or ""), "name": str(item.get("title") or item.get("name") or item.get("id") or "")}
                 for item in (module.scenes or []) if isinstance(item, dict)
             ],
             "npcs": [
-                {"id": str(item.get("id") or ""), "name": str(item.get("name") or item.get("id") or "")}
+                {
+                    "id": str(item.get("id") or item.get("name") or ""),
+                    "name": str(item.get("name") or item.get("id") or ""),
+                }
                 for item in (module.npcs or []) if isinstance(item, dict)
             ],
             "handouts": [

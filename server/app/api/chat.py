@@ -170,7 +170,9 @@ async def kp_action(
         room_hub.broadcast(session_id, chunk)
     room_hub.broadcast(
         session_id,
-        _make_chunk("kp_action", result, metadata={"action": data.action}),
+        # 具体结果只通过当前 KP 的鉴权 HTTP 响应返回。广播只作为动作完成信号，
+        # 防止暗投结果经所有成员共享的 SSE 通道泄露。
+        _make_chunk("kp_action", metadata={"action": data.action}),
     )
     return {"ok": True, "result": result}
 

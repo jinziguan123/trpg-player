@@ -331,9 +331,23 @@ def test_opposed_check(db_factory, monkeypatch):
     module, hero, teammates, session = _seed(db)
     d = _dice(_run(db, module, hero, teammates, session,
                    "[OPPOSED_CHECK: a=主角, a_skill=潜行, b=守墓人, b_skill=侦查]", monkeypatch))[0]
-    assert d["metadata"]["opposed"] is True
+    assert d["metadata"]["opposed"]["attacker"]["name"] == "主角"
+    assert d["metadata"]["opposed"]["defender"]["name"] == "守墓人"
     assert d["metadata"]["winner"] in ("主角", "守墓人", "平局")
     assert "对抗骰" in d["content"]
+
+
+def test_invalid_ai_opposed_check_does_not_abort_command_processing(db_factory, monkeypatch):
+    db = db_factory()
+    module, hero, teammates, session = _seed(db)
+
+    chunks = _run(
+        db, module, hero, teammates, session,
+        "[OPPOSED_CHECK: a=主角, a_skill=侦查, b=主角, b_skill=侦查]",
+        monkeypatch,
+    )
+
+    assert _dice(chunks) == []
 
 
 def test_group_check_all_present_auto_roll(db_factory, monkeypatch):
