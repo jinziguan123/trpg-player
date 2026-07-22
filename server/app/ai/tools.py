@@ -1,6 +1,6 @@
 """KP 工具注册表：方括号指令体系的标准工具调用（function calling）形态。
 
-这是 **agent loop 路径**（chat_service._run_kp_agent_loop）的单一事实来源：
+这是 **agent loop 路径**（kp_tool_loop._run_kp_agent_loop）的单一事实来源：
 每条注册项 = 一条现有方括号指令的 {工具名, OpenAI function schema, loop 行为}。
 schema 的中文 description 从 prompts/kp_system.py 的指令说明提炼、保留其行为约束语义；
 必填参数与旧正则路径解析的必填一致（如 dice_check 必填 skill、npc_act 必填 npc_id+trigger）。

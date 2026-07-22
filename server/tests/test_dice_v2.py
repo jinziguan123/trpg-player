@@ -64,7 +64,7 @@ def _run(db, module, hero, teammates, session, kp_text, monkeypatch):
         return
         yield  # noqa — 使其成为 async generator
 
-    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_stream_narration_filtered", fake_stream)
 
     async def go():
         chunks = []
@@ -269,7 +269,7 @@ def test_dice_continuation_fires_followup_san_check(db_factory, monkeypatch):
         return
         yield
 
-    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_stream_narration_filtered", fake_stream)
 
     async def go():
         # 用 NPC 检定触发自动掷→续写链（真人主角检定改为待手动投骰，不会即时续写）
@@ -300,7 +300,7 @@ def test_san_per_character_and_once_per_source(db_factory, monkeypatch):
         return
         yield
 
-    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_stream_narration_filtered", fake_stream)
 
     def san_events():
         return [e for e in session_service.get_session_events(db, session.id)

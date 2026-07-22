@@ -16,7 +16,7 @@ import re
 from app.rules.coc.checks import resolve_skill_check
 from app.rules.coc.weapons import COC_WEAPONS
 
-# 成功等级排序（与 chat_service._OUTCOME_RANK 一致，保证战斗对抗与既有 opposed_check 同语义）
+# 成功等级排序（与 dice_runtime 的对抗检定一致，保证两条路径语义相同）
 OUTCOME_RANK = {
     "critical_success": 4,
     "hard_success": 3,

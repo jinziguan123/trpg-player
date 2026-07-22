@@ -331,7 +331,7 @@ def test_process_commands_routes_module_lookup(db_factory, monkeypatch):
         seen["query"] = query
         yield chat_service._make_chunk("system", "stub")
 
-    monkeypatch.setattr(chat_service, "_handle_module_lookup", fake_handle)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_handle_module_lookup", fake_handle)
 
     # MODULE_LOOKUP 为终止性指令：短路其后的 DICE_CHECK
     text = (
@@ -365,8 +365,8 @@ def test_lookup_quota_shared_between_rule_and_module(db_factory, monkeypatch):
         calls["module"] += 1
         yield chat_service._make_chunk("system", "module")
 
-    monkeypatch.setattr(chat_service, "_handle_rule_lookup", fake_rule)
-    monkeypatch.setattr(chat_service, "_handle_module_lookup", fake_module)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_handle_rule_lookup", fake_rule)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_handle_module_lookup", fake_module)
 
     def run(text, depth):
         asyncio.run(_collect(chat_service._process_commands(
@@ -410,7 +410,7 @@ def test_handle_module_lookup_retrieves_continues_and_persists(db_factory, monke
         result[1] = result[0]
         yield chat_service._make_chunk("narration", result[0], actor_name="KP")
 
-    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_stream_narration_filtered", fake_stream)
 
     chunks = asyncio.run(_collect(
         chat_service._handle_module_lookup(
@@ -449,7 +449,7 @@ def test_handle_module_lookup_fallback_when_no_hits(db_factory, monkeypatch):
         result[1] = result[0]
         yield chat_service._make_chunk("narration", result[0], actor_name="KP")
 
-    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_stream_narration_filtered", fake_stream)
 
     asyncio.run(_collect(
         chat_service._handle_module_lookup(

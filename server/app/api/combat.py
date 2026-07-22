@@ -145,8 +145,9 @@ def _schedule_aftermath_if_ended(session_id: str, chunks: list[str], session=Non
         return
     if not any(('"combat_end"' in c or '"chase_end"' in c) for c in chunks):
         return
-    from app.services.chat_service import _make_chunk, run_combat_aftermath_generation
+    from app.services.event_protocol import make_chunk as _make_chunk
     from app.services.generation_manager import generation_manager
+    from app.services.turn_orchestrator import run_combat_aftermath_generation
     if generation_manager.is_generating(session_id):
         return
     coro = run_combat_aftermath_generation(session_id)

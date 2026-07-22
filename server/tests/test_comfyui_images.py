@@ -174,8 +174,8 @@ def test_illustrate_handout_patches_event_and_broadcasts(db_factory, monkeypatch
             return _png_b64()
 
     sent: list[str] = []
-    monkeypatch.setattr(chat_service, "get_fast_llm", lambda: PromptLLM())
-    monkeypatch.setattr(chat_service, "get_llm", lambda: ImageLLM())
+    monkeypatch.setattr(chat_service.illustration_service, "get_fast_llm", lambda: PromptLLM())
+    monkeypatch.setattr(chat_service.illustration_service, "get_llm", lambda: ImageLLM())
     monkeypatch.setattr(chat_service.room_hub, "broadcast", lambda sid, chunk: sent.append(chunk))
 
     asyncio.run(chat_service._illustrate_handout(session.id, ev.id, "遗书", "letter", ev.content))
@@ -194,7 +194,7 @@ def test_illustrate_handout_patches_event_and_broadcasts(db_factory, monkeypatch
     sent.clear()
     ev_b = session_service.add_event(db, session.id, "system", "第二封", actor_name="系统",
                                      metadata={"kind": "handout"})
-    monkeypatch.setattr(chat_service, "get_llm", lambda: NoImage())
+    monkeypatch.setattr(chat_service.illustration_service, "get_llm", lambda: NoImage())
     asyncio.run(chat_service._illustrate_handout(session.id, ev_b.id, "x", "letter", "y"))
     assert not sent
     assert "image" not in (db_factory().get(EventLog, ev_b.id).metadata_ or {})
@@ -235,8 +235,12 @@ def _wire_image_stubs(monkeypatch, db_factory, tmp_path, prompt: str):
     sent: list = []
     monkeypatch.setattr(database, "SessionLocal", db_factory)
     monkeypatch.setattr(image_store, "IMAGES_DIR", tmp_path)
-    monkeypatch.setattr(chat_service, "get_fast_llm", lambda: _StubPromptLLM(prompt))
-    monkeypatch.setattr(chat_service, "get_llm", lambda: _CountingImageLLM(calls))
+    monkeypatch.setattr(
+        chat_service.illustration_service, "get_fast_llm", lambda: _StubPromptLLM(prompt),
+    )
+    monkeypatch.setattr(
+        chat_service.illustration_service, "get_llm", lambda: _CountingImageLLM(calls),
+    )
     monkeypatch.setattr(chat_service.room_hub, "broadcast", lambda sid, chunk: sent.append(chunk))
     return calls, sent
 
@@ -412,7 +416,7 @@ def test_npc_portrait_generates_then_hits_cache(db_factory, monkeypatch, tmp_pat
     from app.services import chat_service
 
     calls, sent = _wire_image_stubs(monkeypatch, db_factory, tmp_path, "old keeper, bust portrait")
-    monkeypatch.setattr(chat_service, "_PORTRAIT_INFLIGHT", set())
+    monkeypatch.setattr(chat_service.illustration_service, "_PORTRAIT_INFLIGHT", set())
     db = db_factory()
     module = Module(
         title="m", rule_system="coc", scenes=[],

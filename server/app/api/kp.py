@@ -17,7 +17,7 @@ from app.schemas.kp import (
     KpWorkspaceUpdate,
 )
 from app.services import human_kp_service, session_service
-from app.services.chat_service import _make_chunk, event_to_chunk
+from app.services.event_protocol import event_to_chunk, make_chunk as _make_chunk
 from app.services.generation_manager import generation_manager
 from app.services.room_hub import room_hub
 

@@ -77,7 +77,7 @@ def test_process_commands_routes_and_short_circuits(db_factory, monkeypatch):
         seen["query"] = query
         yield chat_service._make_chunk("system", "stub")
 
-    monkeypatch.setattr(chat_service, "_handle_rule_lookup", fake_handle)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_handle_rule_lookup", fake_handle)
 
     # 文本里同时含 DICE_CHECK：RULE_LOOKUP 为终止性指令，应短路、不掷骰
     text = (
@@ -117,7 +117,7 @@ def test_handle_rule_lookup_retrieves_continues_and_persists(db_factory, monkeyp
         result[1] = result[0]
         yield chat_service._make_chunk("narration", result[0], actor_name="KP")
 
-    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_stream_narration_filtered", fake_stream)
 
     chunks = asyncio.run(_collect(
         chat_service._handle_rule_lookup(
@@ -154,7 +154,7 @@ def test_handle_rule_lookup_fallback_when_no_hits(db_factory, monkeypatch):
         result[1] = result[0]
         yield chat_service._make_chunk("narration", result[0], actor_name="KP")
 
-    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_stream_narration_filtered", fake_stream)
 
     asyncio.run(_collect(
         chat_service._handle_rule_lookup(

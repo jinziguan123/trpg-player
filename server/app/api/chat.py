@@ -23,18 +23,20 @@ from app.schemas.event import (
 )
 from app.schemas.session import KpActionRequest
 from app.services import human_kp_service, session_service
-from app.services.chat_service import (
-    _make_chunk,
-    commit_pending_travel,
-    execute_human_kp_action,
+from app.services.event_protocol import (
     event_to_chunk,
+    make_chunk as _make_chunk,
+    split_ooc,
+    split_speech_action,
+)
+from app.services.human_kp_actions import execute_human_kp_action
+from app.services.turn_context import commit_pending_travel
+from app.services.turn_orchestrator import (
     run_chat_generation,
     run_check_request_generation,
     run_regenerate_generation,
     run_roll_generation,
     run_travel_generation,
-    split_ooc,
-    split_speech_action,
 )
 from app.services.generation_manager import generation_manager
 from app.services.room_hub import room_hub

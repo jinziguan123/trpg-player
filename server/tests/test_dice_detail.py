@@ -164,7 +164,7 @@ def _run(db, module, hero, teammates, session, kp_text, monkeypatch):
         return
         yield
 
-    monkeypatch.setattr(chat_service, "_stream_narration_filtered", fake_stream)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_stream_narration_filtered", fake_stream)
 
     async def go():
         chunks = []

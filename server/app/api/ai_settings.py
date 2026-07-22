@@ -36,7 +36,7 @@ class AIProfile(BaseModel):
     vision: bool = False  # 是否支持多模态（看图）。显式开关，覆盖按模型名的启发式判断
     # KP 生成走 agent loop（标准工具调用）新路径的开关。**默认开启**（tool_use 为治本方向，
     # 台词走 say() 结构化出口）；仅当 Provider 支持工具（supports_tools）时才实际生效，否则安全
-    # 回退旧正则指令路径，见 chat_service._tool_loop_active。
+    # 回退旧正则指令路径，见 kp_tool_loop._tool_loop_active。
     use_tool_calls: bool = True
     # 模型上下文窗口（token）。0 = 未知，由 resolve_context_window 按模型名启发式回落。
     # 用于「上下文占用预估」判断模型是否还撑得住继续跑团。

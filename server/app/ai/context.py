@@ -676,7 +676,7 @@ def build_kp_context(
     rule_excerpts: list[dict] | None = None,
     context_budget: int | None = None,
 ) -> list[dict]:
-    # 本函数保持纯粹（不触数据库）：module_excerpts 是调用方（chat_service）检索好的
+    # 本函数保持纯粹（不触数据库）：module_excerpts 是调用方（turn_orchestrator）检索好的
     # 模组原文片段（[{"text", ...}]），未建索引/检索失败时传 None → 行为与无此特性时完全一致。
     # rule_excerpts 同一模式：调用方按本轮回合类型检索好的规则书片段，None → 行为不变。
     # 分头行动时，每个分组各以「该组所在场景」为锚构建上下文（current_scene / 可见 NPC / 线索 /

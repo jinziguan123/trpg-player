@@ -24,8 +24,8 @@ from app.schemas.session import (
     SessionStatusUpdate,
 )
 from app.services import session_service
-from app.services.chat_service import (
-    _make_chunk,
+from app.services.event_protocol import make_chunk as _make_chunk
+from app.services.turn_orchestrator import (
     initialize_human_session,
     run_opening_generation,
 )

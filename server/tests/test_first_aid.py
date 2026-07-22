@@ -74,7 +74,7 @@ def test_once_per_wound_blocks_second(db_factory):
 
 def test_medicine_heals_1d3(db_factory, monkeypatch):
     db = db_factory(); sid, pc = _seed(db, hp=5)
-    monkeypatch.setattr(cs.random, "randint", lambda a, b: 3)
+    monkeypatch.setattr(cs.turn_effects.random, "randint", lambda a, b: 3)
     cs._apply_heal_on_success(db, sid, pc, "医学", "success")
     assert _hp(pc) == 8   # 5 + 1D3(=3)
 

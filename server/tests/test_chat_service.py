@@ -1186,7 +1186,7 @@ def test_psychology_check_is_always_blind(db_factory, monkeypatch):
     async def _no_stream(*a, **k):
         if False:
             yield None
-    monkeypatch.setattr(chat_service, "_stream_narration_filtered", _no_stream)
+    monkeypatch.setattr(chat_service.kp_tool_loop, "_stream_narration_filtered", _no_stream)
 
     db = db_factory()
     module = Module(title="M", rule_system="coc", npcs=[], scenes=[])

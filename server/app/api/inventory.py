@@ -22,7 +22,7 @@ from app.schemas.event import (
     InventoryUseRequest,
 )
 from app.services import inventory_service, session_service
-from app.services.chat_service import _make_chunk, event_to_chunk
+from app.services.event_protocol import event_to_chunk, make_chunk as _make_chunk
 from app.services.room_hub import room_hub
 
 router = APIRouter(prefix="/api/sessions", tags=["inventory"])

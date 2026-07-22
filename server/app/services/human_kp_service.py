@@ -468,7 +468,8 @@ def has_unprocessed_player_turn(
 async def run_human_team_turn_generation(session_id: str) -> None:
     """只运行 AI 队友的一轮公开行动，不生成 AI KP 叙事。"""
     from app.database import SessionLocal
-    from app.services.chat_service import _make_chunk, _run_team_turn
+    from app.services.event_protocol import make_chunk as _make_chunk
+    from app.services.team_turn_service import _run_team_turn
 
     db = SessionLocal()
     try:
