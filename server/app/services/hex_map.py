@@ -179,6 +179,40 @@ def ensure_module_map(db, module) -> bool:
     return True
 
 
+def set_scene_map(db, module, scene_id: str, q: int, r: int, biome: str | None = None) -> dict:
+    """KP 拖拽落位：把指定场景移到 (q, r)，可顺带改地貌。
+
+    校验后整体重赋值 scenes（JSON 列）并落库。非法情形抛 ValueError（调用方转 400）：
+    场景不存在 / chapter 不上沙盘 / 目标格已被占 / 显式给了未知地貌。
+    """
+    scenes = [dict(s) if isinstance(s, dict) else s for s in (module.scenes or [])]
+    target = next(
+        (s for s in scenes if isinstance(s, dict) and s.get("id") == scene_id), None,
+    )
+    if target is None:
+        raise ValueError("场景不存在")
+    if target.get("kind") == "chapter":
+        raise ValueError("章节场景不上沙盘")
+    q, r = int(q), int(r)
+    for s in scenes:
+        if isinstance(s, dict) and s.get("id") != scene_id and scene_coord(s) == (q, r):
+            raise ValueError(f"该格已被「{s.get('title') or s.get('id')}」占用")
+    old = target.get("map") if isinstance(target.get("map"), dict) else {}
+    if biome is not None:
+        b = str(biome).strip().lower()
+        if b not in BIOMES:
+            raise ValueError(f"未知地貌：{biome}")
+    else:
+        b = str(old.get("biome") or "").strip().lower()
+        if b not in BIOMES:
+            b = "plain"
+    target["map"] = {"q": q, "r": r, "biome": b}
+    module.scenes = scenes
+    db.add(module)
+    db.commit()
+    return target["map"]
+
+
 def neighbor_label(cur_scene: dict | None, nb_scene: dict | None) -> str | None:
     """「北・紧邻」式方位标签；任一侧无坐标返回 None（旧模组 fail-open，不阻塞）。"""
     a, b = scene_coord(cur_scene), scene_coord(nb_scene)

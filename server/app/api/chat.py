@@ -461,9 +461,14 @@ def locations(
     hex_map.ensure_module_map(db, module)   # 存量模组沙盘坐标懒回填（幂等，有改动才落库）
     events = session_service.get_session_events(db, session_id)
     char_names = {c.id: c.name for c in session_service.get_party_members(db, session_id)}
-    return {"locations": session_service.list_known_locations(
-        module, game_session, char_id=char_id, events=events, char_names=char_names,
-    )}
+    god_view = session_service.is_kp(db, session_id, token)   # 真人 KP 席位 → 上帝视角
+    return {
+        "locations": session_service.list_known_locations(
+            module, game_session, char_id=char_id, events=events, char_names=char_names,
+            reveal_all=god_view,
+        ),
+        "god_view": god_view,
+    }
 
 
 @router.post("/{session_id}/travel")

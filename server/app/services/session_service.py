@@ -1452,21 +1452,27 @@ def find_scene_path(module, start: str | None, dest: str) -> list[str] | None:
 
 def list_known_locations(
     module, session: GameSession, char_id: str | None = None, events: list | None = None,
-    char_names: dict[str, str] | None = None,
+    char_names: dict[str, str] | None = None, reveal_all: bool = False,
 ) -> list[dict]:
-    """供「大地图/调查板」渲染：已知地点列表（当前所在、已访问、相互连接、队友分布）。
+    """供「大地图/调查板/沙盘」渲染：已知地点列表（当前所在、已访问、相互连接、队友分布）。
 
     - ``kind == "chapter"`` 的场景是叙事章节而非地点，不上图（当前正身处其中时除外）。
-    - ``connections`` 只回已知集合内的邻居——未知地点绝不经边泄露。
+    - ``connections`` 只回展示集合内的邻居——玩家侧未知地点绝不经边泄露。
     - ``char_names``（char_id → 名字）给定时，按 party_locations 归并各地点的在场成员。
+    - ``reveal_all=True``（真人 KP 上帝视角）：返回全部 location 场景并附 ``known`` 标记，
+      前端「玩家视角」开关据此纯客户端过滤；玩家侧永远走迷雾路径（known 恒 True）。
     """
     by_id = {s.get("id"): s for s in (module.scenes or []) if s.get("id")}
     visited = set((session.world_state or {}).get("visited_scenes") or [])
     cur = get_char_location(session, char_id)
-    shown = {
+    known = {
         sid for sid in known_scene_ids(module, session, events)
         if by_id[sid].get("kind") != "chapter" or sid == cur
     }
+    if reveal_all:
+        shown = {sid for sid, s in by_id.items() if s.get("kind") != "chapter" or sid == cur}
+    else:
+        shown = known
     # 队伍分布：各成员所在场景（party_locations 缺省回落主场景）
     party_at: dict[str, list[str]] = {}
     if char_names:
@@ -1502,6 +1508,7 @@ def list_known_locations(
             "party": party_at.get(sid, []),
             "clues": clues_at.get(sid, []),
             "map": s.get("map"),   # 沙盘坐标与地貌（旧模组未回填时为 None）
+            "known": sid in known,  # KP 上帝视角下标记玩家是否已知；玩家侧恒 True
         })
     out.sort(key=lambda x: (not x["current"], not x["visited"], x["id"]))
     return out

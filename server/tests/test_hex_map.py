@@ -168,3 +168,79 @@ class TestKnownLocationsPayload:
         cur = next(x for x in out if x["id"] == "a")
         assert cur["map"] == {"q": 0, "r": 0, "biome": "urban"}
         assert all("map" in x for x in out)
+
+
+# ── KP 上帝视角（reveal_all）──
+
+
+def _three_scene_fixture():
+    """a 已访问；b 与 a 相连但未提及（未知）；c 孤立未知。"""
+    scenes = [
+        {"id": "a", "title": "门厅", "kind": "location", "connections": ["b"],
+         "map": {"q": 0, "r": 0, "biome": "interior"}},
+        {"id": "b", "title": "地窖", "kind": "location", "connections": [],
+         "map": {"q": 1, "r": 0, "biome": "interior"}},
+        {"id": "c", "title": "后山", "kind": "location", "connections": [],
+         "map": {"q": 4, "r": -2, "biome": "mountain"}},
+        {"id": "ch", "title": "尾声", "kind": "chapter"},
+    ]
+    module = Module(title="M", rule_system="coc", description="", world_setting={},
+                    scenes=scenes, npcs=[], clues=[], triggers=[], handouts=[])
+    session = GameSession(module_id="m", status="active", current_scene_id="a",
+                          world_state={"visited_scenes": ["a"]})
+    return module, session
+
+
+class TestRevealAll:
+    def test_玩家侧迷雾不变且known恒真(self):
+        module, session = _three_scene_fixture()
+        out = session_service.list_known_locations(module, session)
+        ids = {x["id"] for x in out}
+        assert ids == {"a"}                        # b/c 未知、ch 是章节 → 都不可见
+        assert all(x["known"] for x in out)
+
+    def test_KP上帝视角全场景带known标记(self):
+        module, session = _three_scene_fixture()
+        out = session_service.list_known_locations(module, session, reveal_all=True)
+        by_id = {x["id"]: x for x in out}
+        assert set(by_id) == {"a", "b", "c"}       # 章节仍不上图
+        assert by_id["a"]["known"] is True
+        assert by_id["b"]["known"] is False and by_id["c"]["known"] is False
+        assert by_id["a"]["connections"] == ["b"]  # KP 侧拓扑完整（不受迷雾过滤）
+
+
+# ── KP 拖拽落位（set_scene_map）──
+
+
+class _FakeDb:
+    def add(self, obj):
+        pass
+
+    def commit(self):
+        pass
+
+
+class TestSetSceneMap:
+    def test_移动成功且落新格(self):
+        module, _ = _three_scene_fixture()
+        new_map = hex_map.set_scene_map(_FakeDb(), module, "b", 2, -1)
+        assert new_map == {"q": 2, "r": -1, "biome": "interior"}   # 未给 biome → 保留旧值
+        assert next(s for s in module.scenes if s["id"] == "b")["map"]["q"] == 2
+
+    def test_撞格与非法输入拒绝(self):
+        import pytest
+
+        module, _ = _three_scene_fixture()
+        with pytest.raises(ValueError, match="已被"):
+            hex_map.set_scene_map(_FakeDb(), module, "b", 0, 0)     # a 占着 (0,0)
+        with pytest.raises(ValueError, match="章节"):
+            hex_map.set_scene_map(_FakeDb(), module, "ch", 9, 9)
+        with pytest.raises(ValueError, match="不存在"):
+            hex_map.set_scene_map(_FakeDb(), module, "nope", 9, 9)
+        with pytest.raises(ValueError, match="未知地貌"):
+            hex_map.set_scene_map(_FakeDb(), module, "b", 9, 9, biome="太空")
+
+    def test_顺带改地貌(self):
+        module, _ = _three_scene_fixture()
+        new_map = hex_map.set_scene_map(_FakeDb(), module, "c", 5, -2, biome="ruin")
+        assert new_map["biome"] == "ruin"

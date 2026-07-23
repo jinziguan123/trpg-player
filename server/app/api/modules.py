@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, get_db
 from app.schemas.module import ModuleRead, ModuleUploadResponse, ModuleWrite
-from app.services import module_image_service, module_rag_service, module_service
+from app.services import hex_map, module_image_service, module_rag_service, module_service
 
 logger = logging.getLogger(__name__)
 
@@ -363,6 +363,26 @@ def update_module(module_id: str, data: ModuleWrite, db: Session = Depends(get_d
     if not module:
         raise HTTPException(404, "模组不存在")
     return module
+
+
+class SceneMapPatch(BaseModel):
+    scene_id: str
+    q: int
+    r: int
+    biome: str | None = None
+
+
+@router.patch("/{module_id}/scene-map")
+def patch_scene_map(module_id: str, data: SceneMapPatch, db: Session = Depends(get_db)):
+    """沙盘编辑：把场景移到指定 hex 格（KP 拖拽修正），可顺带改地貌。撞格等非法情形 400。"""
+    module = module_service.get_module(db, module_id)
+    if not module:
+        raise HTTPException(404, "模组不存在")
+    try:
+        new_map = hex_map.set_scene_map(db, module, data.scene_id, data.q, data.r, data.biome)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"scene_id": data.scene_id, "map": new_map}
 
 
 @router.get("/difficulties")
