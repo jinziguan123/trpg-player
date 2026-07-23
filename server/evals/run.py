@@ -134,8 +134,9 @@ async def run_case(case: ReplayCase, llm, use_judge: bool, tool_loop: bool = Fal
         judge_result = await judge.run_judge(llm, case, plan, narration) if use_judge else None
         errors = [f for f in findings if f.severity == "error"]
         judge_failed = (
-            [k for k, v in judge_result.items() if not v["pass"]] if judge_result else []
-        )
+            [k for k, v in judge_result.items() if not v["pass"] and k in judge.RUBRIC]
+            if judge_result else []
+        )   # 观测项（ADVISORY_RUBRIC）只记录不判死
         passed = not errors and not judge_failed and (judge_result is not None or not use_judge)
         return {
             "fixture": case.name,
@@ -234,7 +235,8 @@ def aggregate_samples(name: str, tags: list[str], samples: list[dict]) -> dict:
     """把某 fixture 的 N 次采样聚合成一条结果：通过率 + 最常见失败原因。纯函数，便于单测。
 
     passed 语义：**全部采样都过**才算稳过（pass_rate==1）；否则视为存在波动/不过。
-    detail 汇总各次的失败标签及其命中次数（如「plan_adjudication×3」「裁判:pacing×1」）。
+    detail 汇总各次的失败标签及其命中次数（如「plan_adjudication×3」「观测:pacing×1」）；
+    观测项（judge.ADVISORY_RUBRIC）只进 detail 供趋势观察，不影响 passed。
     """
     runs = len(samples)
     pass_count = sum(1 for s in samples if s.get("passed"))
@@ -243,10 +245,10 @@ def aggregate_samples(name: str, tags: list[str], samples: list[dict]) -> dict:
         for f in s.get("findings") or []:
             if f.get("severity") == "error":
                 reasons[f["check"]] = reasons.get(f["check"], 0) + 1
-        judge = s.get("judge") or {}
-        for k, v in judge.items():
+        for k, v in (s.get("judge") or {}).items():
             if not v.get("pass"):
-                reasons[f"裁判:{k}"] = reasons.get(f"裁判:{k}", 0) + 1
+                label = f"观测:{k}" if k in judge.ADVISORY_RUBRIC else f"裁判:{k}"
+                reasons[label] = reasons.get(label, 0) + 1
         if s.get("judge_error"):
             reasons["裁判失败"] = reasons.get("裁判失败", 0) + 1
         if s.get("run_error"):

@@ -6,7 +6,7 @@ import pytest
 
 from evals import checks
 from evals.common import dict_to_model, load_fixture, row_to_dict
-from evals.judge import RUBRIC, _parse_judge_output, build_judge_messages
+from evals.judge import ADVISORY_RUBRIC, RUBRIC, _parse_judge_output, build_judge_messages
 from evals.run import build_replay_messages
 
 from app.ai.context import build_kp_context
@@ -78,6 +78,18 @@ class TestSampleAggregation:
         agg = aggregate_samples(
             "f", [], [{"passed": True, "findings": []}, {"passed": True, "findings": []}])
         assert agg["passed"] is True and agg["pass_rate"] == 1.0 and agg["detail"] == ""
+
+    def test_观测项失败只进detail不影响稳过(self):
+        """正向观测项（场景感/节奏）不参与通过判定：passed 不受影响，但计入 detail 供趋势观察。"""
+        from evals.run import aggregate_samples
+        samples = [{
+            "passed": True, "findings": [],   # run_case 已按「仅 RUBRIC 门禁」判过 passed
+            "judge": {"no_leak": {"pass": True, "reason": ""},
+                      "pacing": {"pass": False, "reason": "结尾拖沓"}},
+        }]
+        agg = aggregate_samples("f", [], samples)
+        assert agg["passed"] is True and agg["pass_rate"] == 1.0
+        assert "观测:pacing×1" in agg["detail"]
 
 
 class TestAdjudicationFixtures:
@@ -592,3 +604,21 @@ class TestJudgeParsing:
 
     def test_非JSON返回None(self):
         assert _parse_judge_output("这不是 JSON") is None
+
+    def test_观测项计入结果但缺失不算解析失败(self):
+        import json as _json
+        # 只有门禁项 → 照常解析（观测项宁缺毋假，不触发 judge_error）
+        out = {k: {"pass": True, "reason": ""} for k in RUBRIC}
+        parsed = _parse_judge_output(_json.dumps(out))
+        assert parsed is not None and "pacing" not in parsed
+        # 观测项齐全 → 一并计入
+        out.update({k: {"pass": False, "reason": "干瘪"} for k in ADVISORY_RUBRIC})
+        parsed = _parse_judge_output(_json.dumps(out))
+        assert parsed["scene_texture"]["pass"] is False and parsed["pacing"]["pass"] is False
+
+    def test_裁判消息含观测项定义与倾向说明(self):
+        case = load_fixture(SYNTHETIC)
+        msgs = build_judge_messages(case, case.plan, "一段旁白")
+        joined = "\n".join(m["content"] for m in msgs)
+        assert "scene_texture" in joined and "pacing" in joined
+        assert "【观测】" in joined and "仅在缺陷明显时判不通过" in joined

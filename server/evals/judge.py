@@ -48,6 +48,18 @@ RUBRIC = {
                          "不越过轮到的行动者。非战斗轮次本项默认通过",
 }
 
+# 正向观测项：量化叙事质量走势（场景感/节奏），随 --repeat 看通过率与方差。
+# **不参与 fixture 通过判定**——主观维度做门禁会让基线抖动；只记录、只对比趋势。
+# 评判倾向与防守项相反：仅在缺陷明显时判不通过，拿不准就通过。
+ADVISORY_RUBRIC = {
+    "scene_texture": "【观测】场景感：旁白让当前场景可感——至少有一处具体的环境/感官细节"
+                     "（视觉、声响、气味、光影、空间关系或物件质感），且与既有场景设定一致。"
+                     "只在通篇是干瘪的事件陈述、或细节与既有描述矛盾时判不通过",
+    "pacing": "【观测】节奏：篇幅与信息密度同本轮事件的分量相称——过场小事不铺陈成大段、"
+              "关键揭示不一笔带过；没有原地打转的重复描写或凑字的空话；结尾收得干净"
+              "（收在检定、提问或留白上），不拖泥带水。只在明显失衡时判不通过",
+}
+
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
@@ -64,14 +76,17 @@ def build_judge_messages(
     plan_text = (
         json.dumps(plan.model_dump(), ensure_ascii=False) if plan else "（本轮无裁定计划）"
     )
-    rubric_text = "\n".join(f"- {key}: {desc}" for key, desc in RUBRIC.items())
-    schema = ", ".join(f'"{k}": {{"pass": true, "reason": ""}}' for k in RUBRIC)
+    all_rubric = {**RUBRIC, **ADVISORY_RUBRIC}
+    rubric_text = "\n".join(f"- {key}: {desc}" for key, desc in all_rubric.items())
+    schema = ", ".join(f'"{k}": {{"pass": true, "reason": ""}}' for k in all_rubric)
     return [
         {
             "role": "system",
             "content": (
                 "你是 TRPG 跑团质量评审，对 AI 守秘人（KP）生成的一段旁白逐项打分。"
-                "严格按事实评判，不确定时倾向判不通过。只输出一个 JSON object，不要输出 Markdown。"
+                "严格按事实评判，不确定时倾向判不通过；"
+                "但带【观测】标注的正向项倾向相反：仅在缺陷明显时判不通过，拿不准就通过。"
+                "只输出一个 JSON object，不要输出 Markdown。"
             ),
         },
         {
@@ -105,6 +120,11 @@ def _parse_judge_output(raw: str) -> dict[str, dict] | None:
         item = data.get(key)
         if not isinstance(item, dict) or "pass" not in item:
             return None  # 缺项视为解析失败，宁可 judge_error 也不给假分
+        result[key] = {"pass": bool(item["pass"]), "reason": str(item.get("reason") or "")}
+    for key in ADVISORY_RUBRIC:
+        item = data.get(key)
+        if not isinstance(item, dict) or "pass" not in item:
+            continue  # 观测项缺失不构成 judge_error（不参与通过判定，宁缺毋假）
         result[key] = {"pass": bool(item["pass"]), "reason": str(item.get("reason") or "")}
     return result
 

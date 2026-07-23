@@ -81,7 +81,13 @@ def main() -> None:
         eps = 1e-9
         changes = []
         for key in sorted(set(old_states) | set(new_states)):
-            before, after = old_states.get(key, 1.0), new_states.get(key, 1.0)
+            if key not in old_states:
+                # 新增评分/观测项：旧卡没测过，报「新增」而非从 100% 回退的假回归
+                changes.append(f"{key} 新增（{new_states[key] * 100:.0f}%）")
+                continue
+            if key not in new_states:
+                continue  # 本次未评该项（如 --no-judge）：不与默认值比出假改善
+            before, after = old_states[key], new_states[key]
             if after < before - eps:
                 changes.append(f"{key} {before * 100:.0f}%→{after * 100:.0f}%（回退）")
                 regressed += 1
