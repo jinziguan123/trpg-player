@@ -10,7 +10,13 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, get_db
 from app.schemas.module import ModuleRead, ModuleUploadResponse, ModuleWrite
-from app.services import hex_map, module_image_service, module_rag_service, module_service
+from app.services import (
+    hex_map,
+    module_image_service,
+    module_map_service,
+    module_rag_service,
+    module_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -383,6 +389,18 @@ def patch_scene_map(module_id: str, data: SceneMapPatch, db: Session = Depends(g
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"scene_id": data.scene_id, "map": new_map}
+
+
+@router.post("/{module_id}/map/enrich")
+async def enrich_map(module_id: str, db: Session = Depends(get_db)):
+    """AI 补全沙盘：地貌、物理连接与语义落位。"""
+    module = module_service.get_module(db, module_id)
+    if not module:
+        raise HTTPException(404, "模组不存在")
+    try:
+        return await module_map_service.enrich_module_map(db, module)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/difficulties")

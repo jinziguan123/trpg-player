@@ -2,9 +2,10 @@ import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { api } from '../api/client'
+import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiReturnArrow, GiScrollUnfurled, GiPadlock } from 'react-icons/gi'
-import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch, Hexagon } from 'lucide-react'
+import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch, Hexagon, Sparkles } from 'lucide-react'
 import { ModuleGraph } from '../components/module/ModuleGraph'
 import { HexSandbox } from '../components/game/HexSandbox'
 import { ModuleImage, type ModuleImageKind } from '../components/module/ModuleImage'
@@ -83,6 +84,7 @@ export function ModuleDetailPage() {
   const [view, setView] = useState<'detail' | 'graph' | 'timeline' | 'sandbox'>('detail')
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
+  const [enriching, setEnriching] = useState(false)
 
   useEffect(() => {
     if (isNew) return
@@ -161,6 +163,25 @@ export function ModuleDetailPage() {
     } finally { setSaving(false) }
   }
 
+  const enrichMap = async () => {
+    if (!id || edit) return
+    setEnriching(true)
+    try {
+      await api.post(`/modules/${id}/map/enrich`)
+      const refreshed = await api.get<ModuleData>(`/modules/${id}`)
+      setData({
+        ...BLANK,
+        ...refreshed,
+        world_setting: { ...BLANK.world_setting, ...(refreshed.world_setting || {}) },
+      })
+      toast.success('AI 已补全地貌、连接与场景落位')
+    } catch (e) {
+      toast.error(`AI 补全失败：${e instanceof Error ? e.message : '未知错误'}`)
+    } finally {
+      setEnriching(false)
+    }
+  }
+
   if (loading) return <p className="p-4" style={{ color: 'var(--color-text-secondary)' }}>加载中…</p>
 
   const tagsText = Array.isArray(data.world_setting.tags) ? (data.world_setting.tags as string[]).join('、') : wsStr(data.world_setting, 'tags')
@@ -230,6 +251,22 @@ export function ModuleDetailPage() {
         <ModuleTimeline scenes={data.scenes} npcs={data.npcs} triggers={data.triggers} />
       ) : view === 'sandbox' ? (
         <div>
+          {!edit && (
+            <div className="flex justify-end mb-2">
+              <ConfirmDialog
+                title="AI 补全沙盘"
+                description="将由 AI 重排场景落位、补全地貌与连接；已有连接不会被删除，之后仍可拖拽微调。"
+                confirmLabel="开始补全"
+                onConfirm={enrichMap}
+              >
+                {(open) => (
+                  <button onClick={open} disabled={enriching} className="btn-secondary flex items-center gap-1 text-sm">
+                    <Sparkles size={14} /> {enriching ? 'AI 补全中…' : 'AI 补全地貌与连接'}
+                  </button>
+                )}
+              </ConfirmDialog>
+            </div>
+          )}
           <HexSandbox locations={sandboxLocs} disabled editable={edit} onMoveScene={moveScene}
             height="clamp(380px, 62vh, 640px)" />
           <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>

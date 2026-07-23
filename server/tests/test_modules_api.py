@@ -237,6 +237,36 @@ def test_update_missing_404(client):
     assert client.put("/api/modules/nope", json=_payload()).status_code == 404
 
 
+def test_enrich_map_returns_summary_without_real_llm(client, monkeypatch):
+    from app.services import module_map_service
+
+    module_id = client.post("/api/modules", json=_payload()).json()["id"]
+
+    async def fake_enrich(db, module):
+        assert module.id == module_id
+        return {"updated": True, "connections_added": 2}
+
+    monkeypatch.setattr(module_map_service, "enrich_module_map", fake_enrich)
+    response = client.post(f"/api/modules/{module_id}/map/enrich")
+    assert response.status_code == 200
+    assert response.json() == {"updated": True, "connections_added": 2}
+
+
+def test_enrich_map_maps_missing_and_failure_status(client, monkeypatch):
+    from app.services import module_map_service
+
+    assert client.post("/api/modules/nope/map/enrich").status_code == 404
+    module_id = client.post("/api/modules", json=_payload()).json()["id"]
+
+    async def fake_failure(db, module):
+        raise ValueError("模型返回坏 JSON")
+
+    monkeypatch.setattr(module_map_service, "enrich_module_map", fake_failure)
+    response = client.post(f"/api/modules/{module_id}/map/enrich")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "模型返回坏 JSON"
+
+
 def test_merge_supplement_is_conservative():
     """查漏合并铁律：只补遗漏——已有 events/字段/线索绝不被补丁覆盖或改写，输入不被修改。"""
     from app.services.module_service import _merge_supplement
