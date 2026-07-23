@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Stage, Layer, Group, RegularPolygon, Line, Rect, Circle, Text } from 'react-konva'
 import type Konva from 'konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
+import { hexRng, terrainField } from '@/lib/terrain'
 
 /** 六边形沙盘（文明式大地图）：场景按后端 axial 坐标落格，程序化地貌瓦片 + 战争迷雾。
  *  三态迷雾：已到访=全彩；听说过未到访=蒙尘剪影+名称；未知=浓雾（仅 KP 上帝视角可见）。
@@ -60,8 +61,6 @@ const DANGER_COLORS: Record<string, string> = {
   uneasy: '#cfa93f', dangerous: '#d1703c', deadly: '#c0392b',
 }
 
-const AXIAL_DIRS: [number, number][] = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]]
-
 /** 地貌样式：底色/装饰色都按哥特暗色调定调（瓦片本身是「桌上的图版」，双主题下均成立）。 */
 const BIOME: Record<string, { fill: string; deco: string }> = {
   plain: { fill: '#3a3b2e', deco: '#7a7c58' },
@@ -79,11 +78,7 @@ const biomeOf = (b?: string) => BIOME[(b || '').toLowerCase()] || BIOME.plain
 
 /** (q,r) → 确定性伪随机序列：装饰群落每格固定，不随重绘抖动。 */
 function rng(q: number, r: number) {
-  let s = (q * 374761393 + r * 668265263) | 0
-  return () => {
-    s = (s ^ (s << 13)) | 0; s = (s ^ (s >>> 17)) | 0; s = (s ^ (s << 5)) | 0
-    return ((s >>> 0) % 1000) / 1000
-  }
+  return hexRng(q, r)
 }
 
 /** 程序化地貌装饰（每 biome 一套矢量小群落；确定性、无位图素材）。 */
@@ -171,10 +166,10 @@ export function HexSandbox({ locations, disabled, onPick, editable, onMoveScene,
   const fit = useMemo(() => {
     if (!located.length) return { x: size.w / 2, y: size.h / 2, scale: 1 }
     const pts = located.map((l) => hexXY(l.map!.q, l.map!.r))
-    const minX = Math.min(...pts.map((p) => p.x)) - R * 2.2
-    const maxX = Math.max(...pts.map((p) => p.x)) + R * 2.2
-    const minY = Math.min(...pts.map((p) => p.y)) - R * 2.6
-    const maxY = Math.max(...pts.map((p) => p.y)) + R * 2.6
+    const minX = Math.min(...pts.map((p) => p.x)) - R * 4.2
+    const maxX = Math.max(...pts.map((p) => p.x)) + R * 4.2
+    const minY = Math.min(...pts.map((p) => p.y)) - R * 4.8
+    const maxY = Math.max(...pts.map((p) => p.y)) + R * 4.8
     const scale = Math.min(size.w / (maxX - minX), size.h / (maxY - minY), 1.15)
     return {
       scale,
@@ -221,21 +216,12 @@ export function HexSandbox({ locations, disabled, onPick, editable, onMoveScene,
     return out
   }, [located, byId])
 
-  // 地貌晕染：每个场景格的六邻空格铺一层淡地貌色（大陆感）；被场景占用的格不铺。
-  const halos = useMemo(() => {
-    const occupied = new Set(located.map((l) => `${l.map!.q},${l.map!.r}`))
-    const cells = new Map<string, string>()
-    for (const l of located) {
-      for (const [dq, dr] of AXIAL_DIRS) {
-        const key = `${l.map!.q + dq},${l.map!.r + dr}`
-        if (!occupied.has(key) && !cells.has(key)) cells.set(key, l.map!.biome)
-      }
-    }
-    return Array.from(cells, ([key, biome]) => {
-      const [q, r] = key.split(',').map(Number)
-      return { q, r, biome }
-    })
-  }, [located])
+  const terrain = useMemo(() => terrainField(located.map((l) => ({
+    q: l.map!.q,
+    r: l.map!.r,
+    biome: l.map!.biome,
+    known: l.known,
+  }))), [located])
 
   return (
     <div ref={wrapRef} style={{ height, borderRadius: 8, overflow: 'hidden', position: 'relative', border: '1px solid var(--color-border)' }}>
@@ -247,12 +233,20 @@ export function HexSandbox({ locations, disabled, onPick, editable, onMoveScene,
         }}
         style={{ background: 'radial-gradient(ellipse 75% 65% at 50% 42%, #221c12 0%, #151109 68%, #0c0a06 100%)', cursor: 'grab' }}>
         <Layer>
-          {/* 地貌晕染层 */}
-          {halos.map((h) => {
-            const p = hexXY(h.q, h.r)
+          {/* 空域地形场：纯视觉层，只从传入的地点推导。 */}
+          {terrain.map((cell) => {
+            const p = hexXY(cell.q, cell.r)
+            const decorated = hexRng(cell.q, cell.r)() < 0.25
             return (
-              <RegularPolygon key={`halo-${h.q},${h.r}`} x={p.x} y={p.y} sides={6} radius={R - 1}
-                fill={biomeOf(h.biome).fill} opacity={0.18} listening={false} />
+              <Group key={`terrain-${cell.q},${cell.r}`} x={p.x} y={p.y} listening={false}>
+                <RegularPolygon sides={6} radius={R - 1}
+                  fill={biomeOf(cell.biome).fill} opacity={cell.opacity} listening={false} />
+                {decorated && (
+                  <Group opacity={Math.min(0.3, cell.opacity * 1.35)} listening={false}>
+                    <HexDeco q={cell.q} r={cell.r} biome={cell.biome} />
+                  </Group>
+                )}
+              </Group>
             )
           })}
           {/* 通路 */}
