@@ -763,21 +763,34 @@ def build_kp_context(
     # KP 据此叙述移动（去更远的连通地点须途经），scene_change 的确定性校验也以同一张图为准。
     current_scene_text = _format_json(current_scene) if current_scene else "初始场景"
     if current_scene:
-        from app.services import session_service  # 局部导入避免顶层循环依赖
+        from app.services import hex_map, session_service  # 局部导入避免顶层循环依赖
 
         neighbor_ids = session_service.scene_neighbors(module, scene_id)
         if neighbor_ids:
-            names = "、".join(
-                next(
-                    (s.get("title") or s.get("name") or n for s in scenes if s.get("id") == n),
-                    n,
-                )
-                for n in neighbor_ids
-            )
+            by_id = {s.get("id"): s for s in scenes if s.get("id")}
+            parts, any_label = [], False
+            for n in neighbor_ids:
+                ns = by_id.get(n)
+                nm = (ns or {}).get("title") or (ns or {}).get("name") or n
+                label = hex_map.neighbor_label(current_scene, ns)
+                if label:
+                    any_label = True
+                    parts.append(f"{nm}（{label}）")
+                else:
+                    parts.append(nm)
+            names = "、".join(parts)
             current_scene_text += (
                 f"\n【场景连通】由此可直达：{names}。玩家前往更远的连通地点必须叙述途经；"
                 "与此不连通的地点无法前往（系统会拒绝这样的 scene_change，别叙述其已抵达）。"
             )
+            if any_label:
+                current_scene_text += (
+                    "括号内为沙盘方位与相对远近——叙述方向、来路、途经时以此为准，保持前后一致。"
+                )
+        # 场景地貌（沙盘 biome）：给环境描写与出入动线一个确定性锚（无坐标的旧模组自动跳过）。
+        biome = hex_map.biome_label(current_scene)
+        if biome:
+            current_scene_text += f"\n【场景地貌】{biome}——环境细节与出入动线应与地貌相符。"
 
     system_content = KP_SYSTEM_PROMPT.format(
         rule_system=module.rule_system.upper(),

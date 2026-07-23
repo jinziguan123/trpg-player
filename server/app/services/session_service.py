@@ -1501,6 +1501,7 @@ def list_known_locations(
             "connections": conns,
             "party": party_at.get(sid, []),
             "clues": clues_at.get(sid, []),
+            "map": s.get("map"),   # 沙盘坐标与地貌（旧模组未回填时为 None）
         })
     out.sort(key=lambda x: (not x["current"], not x["visited"], x["id"]))
     return out

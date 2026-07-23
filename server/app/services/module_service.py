@@ -41,6 +41,7 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       "kind": "二选一：location（一个真实存在的地点，默认）/ chapter（纯叙事章节或抽象阶段，如『委托与准备』『尾声』——它不是玩家能在地图上前往的地方）",
       "keywords": ["解锁关键词：玩家在对话/行动里提到其中任意一个，大地图就解锁该地点，因此**每个词都必须是『这个地点的称呼』**。覆盖：完整地名、核心地名（去掉『废墟/遗址/旧址』等状态词，如『沉思礼拜堂废墟』→『沉思礼拜堂』）、通俗设施名（礼拜堂/图书馆）、专名（沉思/科比特/罗克斯伯里）、模组原文里的门牌地址或俗称/绰号，以及数字写法变体（『2号车厢』要含『二号车厢』）。**绝不要该场景的内容词**：场景里的物件（行李/钥匙/报纸）、人物或怪物（乘务员/循声者）、氛围描写（黑暗/血腥/喘息）都不是地点称呼——这类词一旦出现在任何叙述里就会误解锁该地点、提前剧透。2-6 个，每个≥2字；不要过泛的通用词（如『房间』『那边』『房子』『街区』）。chapter 类场景留空数组"],
       "connections": ["scene_2"],
+      "map": {{"q": 0, "r": -2, "biome": "地貌，仅限十选一：plain/forest/water/coast/desert/mountain/swamp/urban/ruin/interior"}},
       "events": [
         {{"trigger": "触发情景，自然语言：进入场景即目睹/翻动尸体/打开衣柜/点灯后……", "kind": "四选一：san_check（见恐怖景象掷理智）/dice_check（需技能检定）/damage（陷阱或环境伤害）/note（其他机制性提示）", "san_loss": "kind=san_check 时的损失规格，**照抄模组原文**（如 0/1d3、1/1d6+1）", "skill": "kind=dice_check 时的技能名", "damage": "kind=damage 时的伤害骰式（如 1d6）", "note": "补充说明或后果"}}
       ],
@@ -141,6 +142,12 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
     叙述都要收进去；它与 NPC 的 secrets 不冲突（secrets 是单个 NPC 的秘密，truth 是全局真相）。
 15. 场景 events 只收模组**明文规定**的机制点（原文写了「目睹 X 需 0/1d3 理智检定」「触碰 Y 受
     1d6 伤害」之类）：数值一律照抄原文，绝不自行估值；模组没写的不要编造。无机制点留空数组 []。
+16. 每个 location 场景给出 map（沙盘落位提议）：q/r 为六边形 axial 整数坐标，表达场景间的
+    **相对方位**（东为 +q；正北为 (+1,-2) 方向、西北为 (0,-1)、东北为 (+1,-1)；坐标是象征性
+    相对位置，不是测绘，无需比例尺）。依据模组文本的方位/空间语义落位：「镇北的教堂」放在
+    城镇的北侧格、「沿河仓库」贴着水域格；相连（connections）的场景距离 1-3 格；坐标绝不重叠；
+    线性结构（车厢/楼层/隧道）沿一条直线依次排开。biome 按场景环境十选一（室内房间/车厢用
+    interior）。chapter 类场景不给 map。文本没有任何方位线索时可按连通关系就近摆放。
 16. NPC/怪物给出 hp（原文数值；没有则按 (CON+SIZ)/10 估算）、armor（护甲值，无甲为 0）、
     weapon（主要攻击方式：人类用武器名，怪物用其攻击方式名如『撕咬』『触手』）——供战斗引擎
     直接使用；goals 写他接下来想达成什么（幕后推演据此让世界在玩家不在场时演进）。
@@ -375,6 +382,16 @@ def _ensure_scene_keywords(scenes: list) -> list:
     return scenes
 
 
+def _normalize_scenes(scenes: list) -> list:
+    """场景入库前的统一规整：解锁关键词补全 + 沙盘坐标校验修复（LLM 提议保留、缺失/冲突
+    确定性落位）。解析与手动编辑都经此归一。"""
+    from app.services import hex_map
+
+    scenes = _ensure_scene_keywords(scenes)
+    hex_map.ensure_scene_maps(scenes)
+    return scenes
+
+
 def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
     world_setting = data.get("world_setting", {})
     for key in ("player_count", "era", "region", "difficulty", "tags", "player_brief", "intro"):
@@ -390,7 +407,7 @@ def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
         description=data.get("description", ""),
         world_setting=world_setting,
         raw_content=raw_content,
-        scenes=_ensure_scene_keywords(data.get("scenes", [])),
+        scenes=_normalize_scenes(data.get("scenes", [])),
         npcs=data.get("npcs", []),
         clues=data.get("clues", []),
         triggers=data.get("triggers", []),
@@ -420,7 +437,7 @@ def update_module(db: Session, module_id: str, data: dict) -> Module | None:
             ws["difficulty"] = ""
         module.world_setting = ws
     if "scenes" in data and data["scenes"] is not None:
-        module.scenes = _ensure_scene_keywords(data["scenes"])
+        module.scenes = _normalize_scenes(data["scenes"])
     if "npcs" in data and data["npcs"] is not None:
         module.npcs = data["npcs"]
     if "clues" in data and data["clues"] is not None:
