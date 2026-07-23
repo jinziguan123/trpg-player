@@ -9,13 +9,14 @@ import { ModuleGraph } from '../components/module/ModuleGraph'
 import { HexSandbox } from '../components/game/HexSandbox'
 import { ModuleImage, type ModuleImageKind } from '../components/module/ModuleImage'
 import { ModuleTimeline } from '../components/module/ModuleTimeline'
+import { BIOMES, BIOME_LABELS } from '../lib/biome'
 import { MODULE_DIFFICULTIES } from '../lib/module'
 
-// scenes[].map 现为沙盘落位契约 {q,r,biome}（旧瓦片图遗留数据由后端归一化接管）；states[].map 容忍存在
+// 表单态允许先选 biome、保存时再由后端补 q/r；旧瓦片图遗留数据也由后端归一化接管。
 interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string }
 interface NpcState { when?: string[]; personality?: string; initial_location?: string; alive?: boolean }
 interface SceneEvent { trigger?: string; kind?: string; san_loss?: string; skill?: string; damage?: string; note?: string }
-interface SceneMap { q: number; r: number; biome: string }
+interface SceneMap { q?: number; r?: number; biome: string }
 interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; kind?: string; connections?: string[]; events?: SceneEvent[]; states?: SceneState[]; image?: string; map?: SceneMap | null }
 interface NPC { id: string; name?: string; description?: string; personality?: string; background?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number>; attributes?: Record<string, number>; hp?: number; armor?: number; weapon?: string; goals?: string[]; states?: NpcState[]; portrait?: string }
 interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string; image?: string }
@@ -174,7 +175,11 @@ export function ModuleDetailPage() {
     .filter((s) => s.kind !== 'chapter')
     .map((s) => ({
       id: s.id, name: sceneName(s), current: false, visited: true, known: true,
-      connections: s.connections, map: s.map, danger: s.danger,
+      connections: s.connections,
+      map: s.map && Number.isFinite(s.map.q) && Number.isFinite(s.map.r)
+        ? { q: s.map.q!, r: s.map.r!, biome: s.map.biome }
+        : null,
+      danger: s.danger,
     }))
   const moveScene = (sid: string, q: number, r: number) => {
     const clash = data.scenes.find((s) => s.id !== sid && s.map && s.map.q === q && s.map.r === r)
@@ -293,6 +298,12 @@ export function ModuleDetailPage() {
                 <SelectContent>{DANGER_OPTS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
               </Select>
             ) : <span className="badge" style={{ color: dangerMeta(s.danger)?.color, borderColor: dangerMeta(s.danger)?.color }}>{dangerMeta(s.danger)?.label || '平静'}</span>}</Row>
+            <Row label="地貌">{edit ? (
+              <Select value={s.map?.biome ?? 'plain'} onValueChange={(v) => updScene(i, { map: { ...(s.map || {}), biome: v } })}>
+                <SelectTrigger className="w-28" aria-label={`地貌：${sceneName(s)}`}><SelectValue /></SelectTrigger>
+                <SelectContent>{BIOMES.map((biome) => <SelectItem key={biome} value={biome}>{BIOME_LABELS[biome]}</SelectItem>)}</SelectContent>
+              </Select>
+            ) : <span className="badge">{BIOME_LABELS[s.map?.biome || 'plain'] || BIOME_LABELS.plain}</span>}</Row>
             <Row label="氛围">{edit ? <TextInput value={s.atmosphere || ''} onChange={(v) => updScene(i, { atmosphere: v })} placeholder="感官+情绪基调，如『腐臭、低压、随时塌方』" /> : <span style={{ color: 'var(--color-text-secondary)' }}>{s.atmosphere || '—'}</span>}</Row>
             <Row label="连接">{edit ? <TextInput value={(s.connections || []).join(', ')} onChange={(v) => updScene(i, { connections: v.split(/[,，]/).map((x) => x.trim()).filter(Boolean) })} placeholder="目标场景 id，逗号分隔" /> : <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>{(s.connections || []).join('、') || '—'}　id: {s.id}</span>}</Row>
             <EventList events={s.events} edit={edit}
