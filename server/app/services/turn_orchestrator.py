@@ -850,7 +850,7 @@ async def _run_kp_turn(
                 room_hub.broadcast(session_id, chunk)
         if need_mishap:
             async for chunk in _ensure_planned_mishap(
-                db, session_id, player_char, party_others, plan, pre_gen_seq,
+                db, session_id, player_char, party_others, plan, pre_gen_seq, module=module,
             ):
                 room_hub.broadcast(session_id, chunk)
 

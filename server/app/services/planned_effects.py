@@ -124,6 +124,7 @@ async def _ensure_planned_mishap(
     teammates: list[Character] | None,
     plan: turn_planner.TurnPlan | None,
     pre_gen_seq: int,
+    module: Module | None = None,
 ) -> AsyncIterator[str]:
     """确保规划器裁定的『大失败身体反噬』一定落成扣血，补偿 KP 漏发 HP_CHANGE。
 
@@ -140,7 +141,8 @@ async def _ensure_planned_mishap(
     target = (plan.mishap.target or player_char.name).strip()
     reason = (plan.mishap.reason or "大失败反噬").strip()
     chunks = await _exec_hp_change(
-        db, session_id, player_char, target, str(delta), reason, teammates=teammates,
+        db, session_id, player_char, target, str(delta), reason,
+        module=module, teammates=teammates,
     )
     for chunk in chunks:
         yield chunk

@@ -27,11 +27,12 @@ def db_factory(tmp_path):
 def _seed(db, hp=15):
     module = Module(title="常暗之箱", rule_system="coc", npcs=[], scenes=[])
     pc = Character(name="江户川龙牙", rule_system="coc", is_player=True,
+                   base_attributes={"CON": 60},
                    system_data={"hitPoints": {"current": hp, "max": hp}})
     db.add_all([module, pc]); db.flush()
     s = GameSession(module_id=module.id, player_character_id=pc.id, status="active", world_state={})
     db.add(s); db.commit()
-    return s.id, pc
+    return s.id, pc, module
 
 
 def _run(coro):
@@ -58,7 +59,7 @@ def test_hp_delta_容错取负夹紧():
 # ── 守卫行为 ──
 
 def test_大失败反噬确定性扣血(db_factory):
-    db = db_factory(); sid, pc = _seed(db, hp=15)
+    db = db_factory(); sid, pc, _m = _seed(db, hp=15)
     plan = TurnPlan(mishap=MishapPolicy(
         trigger=True, hp_delta=-3, target="江户川龙牙", reason="踢翻的燃烧瓶把火焰溅到腿上"))
     chunks = _run(cs._ensure_planned_mishap(db, sid, pc, [], plan, pre_gen_seq=0))
@@ -67,7 +68,7 @@ def test_大失败反噬确定性扣血(db_factory):
 
 
 def test_非触发或非负不扣血(db_factory):
-    db = db_factory(); sid, pc = _seed(db, hp=15)
+    db = db_factory(); sid, pc, _m = _seed(db, hp=15)
     # trigger=False（非身体危险的大失败，如图书馆检定）→ 不动
     _run(cs._ensure_planned_mishap(db, sid, pc, [], TurnPlan(mishap=MishapPolicy(trigger=False)), 0))
     assert _hp(db, pc.id) == 15
@@ -79,7 +80,7 @@ def test_非触发或非负不扣血(db_factory):
 
 def test_kp已自行扣血则幂等跳过(db_factory):
     """KP 本轮已自发 HP_CHANGE 扣过血 → 守卫不重复伤害（按 hp_change<0 事件判定）。"""
-    db = db_factory(); sid, pc = _seed(db, hp=15)
+    db = db_factory(); sid, pc, _m = _seed(db, hp=15)
     # 模拟 KP 已扣血：落一条 hp_change<0 的系统事件（seq> pre_gen_seq）
     session_service.add_event(db, sid, "system", "江户川龙牙 受到 4 点伤害",
                               actor_name="系统", metadata={"hp_change": -4})
@@ -87,3 +88,23 @@ def test_kp已自行扣血则幂等跳过(db_factory):
     chunks = _run(cs._ensure_planned_mishap(db, sid, pc, [], plan, pre_gen_seq=0))
     assert chunks == []
     assert _hp(db, pc.id) == 15   # 守卫没再扣（KP 那 4 点由其自己的 HP_CHANGE 结算，此处不模拟）
+
+
+def test_反噬构成重伤时体质检定失败昏迷(db_factory, monkeypatch):
+    """守卫路径也要走重伤钩子（曾漏传 module 被静默跳过）：反噬 ≥ 半血 → 落重伤 + 自动体质检定。"""
+    db = db_factory(); sid, pc, module = _seed(db, hp=15)
+    monkeypatch.setattr("app.rules.coc.checks.roll_percentile", lambda: 99)  # CON 60 必失败
+    plan = TurnPlan(mishap=MishapPolicy(
+        trigger=True, hp_delta=-8, target="江户川龙牙", reason="从崩塌的阁楼跌落"))
+    chunks = _run(cs._ensure_planned_mishap(db, sid, pc, [], plan, pre_gen_seq=0, module=module))
+    assert _hp(db, pc.id) == 7
+    assert db.get(Character, pc.id).status == "unconscious"      # 8 ≥ 15//2 重伤，体质失败 → 昏迷
+    assert any("重伤体质检定" in c for c in chunks)
+
+
+def test_反噬构成重伤时体质检定成功保持清醒(db_factory, monkeypatch):
+    db = db_factory(); sid, pc, module = _seed(db, hp=15)
+    monkeypatch.setattr("app.rules.coc.checks.roll_percentile", lambda: 30)  # CON 60 成功
+    plan = TurnPlan(mishap=MishapPolicy(trigger=True, hp_delta=-8, reason="跌落"))
+    _run(cs._ensure_planned_mishap(db, sid, pc, [], plan, pre_gen_seq=0, module=module))
+    assert db.get(Character, pc.id).status == "major_wound"      # 重伤在案但未昏迷
