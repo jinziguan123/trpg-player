@@ -33,7 +33,10 @@ interface KnownLocation {
   clues?: { id: string; name: string; status: string }[]
   map?: { q: number; r: number; biome: string } | null   // 沙盘坐标与地貌
   known?: boolean                                        // KP 上帝视角下玩家是否已知
+  sceneId?: string
+  nodeKind?: 'scene' | 'terrain'
 }
+interface MapNodePayload { id: string; q: number; r: number; biome: string; scene_id?: string | null }
 interface SearchHit { id: string; sequence_num: number; event_type: string; actor_name: string; content: string }
 
 // [MOVE]/[MAP_MARK] 地图功能已下线，但旧事件文本里可能残留标签 → 保留在剔除名单里
@@ -374,6 +377,7 @@ export function GameSessionPage() {
 
   const [showImprov, setShowImprov] = useState(false)         // 临场角色收编（房主专用）
   const [locations, setLocations] = useState<KnownLocation[]>([])
+  const [mapNodes, setMapNodes] = useState<MapNodePayload[]>([])
   const [mapTab, setMapTab] = useState<'sandbox' | 'board'>('sandbox')  // 大地图页签：沙盘/调查板
   const [canGodView, setCanGodView] = useState(false)         // 真人 KP 席位（服务端判定）
   const [playerView, setPlayerView] = useState(false)         // KP 切「玩家视角」预览迷雾
@@ -885,10 +889,31 @@ export function GameSessionPage() {
   useEffect(() => {
     if (!showBigMap || !sessionId) return
     const q = myCharId ? `?char_id=${myCharId}` : ''
-    api.get<{ locations: KnownLocation[]; god_view?: boolean }>(`/sessions/${sessionId}/locations${q}`)
-      .then((r) => { setLocations(r.locations || []); setCanGodView(!!r.god_view) })
-      .catch(() => { setLocations([]); setCanGodView(false) })
+    api.get<{ locations: KnownLocation[]; map_nodes?: MapNodePayload[]; god_view?: boolean }>(`/sessions/${sessionId}/locations${q}`)
+      .then((r) => { setLocations(r.locations || []); setMapNodes(r.map_nodes || []); setCanGodView(!!r.god_view) })
+      .catch(() => { setLocations([]); setMapNodes([]); setCanGodView(false) })
   }, [showBigMap, sessionId, myCharId, currentSession?.current_scene_id, refreshTick])
+
+  const sandboxLocations = useMemo(() => {
+    const scenesById = new Map(locations.map((loc) => [loc.id, loc]))
+    const sceneNodes = mapNodes.filter((node) => node.scene_id && scenesById.has(node.scene_id)).map((node) => {
+      const loc = scenesById.get(node.scene_id!)!
+      return { ...loc, id: node.id, sceneId: loc.id, nodeKind: 'scene' as const, map: { q: node.q, r: node.r, biome: node.biome } }
+    })
+    const included = new Set(sceneNodes.map((node) => node.sceneId))
+    const fallbackScenes = locations.filter((loc) => !included.has(loc.id)).map((loc) => ({ ...loc, sceneId: loc.id, nodeKind: 'scene' as const }))
+    const terrainNodes = mapNodes.filter((node) => !node.scene_id).map((node) => ({
+      id: node.id, name: '', current: false, visited: true, known: true,
+      nodeKind: 'terrain' as const, map: { q: node.q, r: node.r, biome: node.biome },
+    }))
+    return [...sceneNodes, ...fallbackScenes, ...terrainNodes]
+  }, [locations, mapNodes])
+  const playerSandboxLocations = useMemo(() => {
+    if (!canGodView || !playerView) return sandboxLocations
+    return sandboxLocations.map((node) => node.nodeKind === 'scene' && node.known === false
+      ? { ...node, name: '', sceneId: undefined, nodeKind: 'terrain' as const, connections: undefined, known: true }
+      : node)
+  }, [canGodView, playerView, sandboxLocations])
 
   const travelTo = async (sceneId: string) => {
     if (!currentSession || streaming) return
@@ -1449,8 +1474,11 @@ export function GameSessionPage() {
               </div>
               {mapTab === 'sandbox' ? (
                 <HexSandbox
-                  locations={canGodView && playerView ? locations.filter((l) => l.known !== false) : locations}
-                  disabled={streaming} onPick={setConfirmTravel} height="clamp(320px, 58vh, 560px)" />
+                  locations={playerSandboxLocations}
+                  disabled={streaming}
+                  revealUnknownTokens={canGodView && !playerView}
+                  onPick={(loc) => setConfirmTravel(locations.find((item) => item.id === (loc.sceneId || loc.id)) || null)}
+                  height="clamp(320px, 58vh, 560px)" />
               ) : (
                 /* 调查板保持「玩家已知」语义：KP 上帝视角只属于沙盘，未知地点不混入线索板 */
                 <InvestigationBoard locations={locations.filter((l) => l.known !== false)} disabled={streaming} onPick={setConfirmTravel} height="clamp(320px, 58vh, 560px)" />

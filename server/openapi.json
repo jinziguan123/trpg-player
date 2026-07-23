@@ -1357,6 +1357,12 @@
             "title": "Id",
             "type": "string"
           },
+          "map_nodes": {
+            "default": [],
+            "items": {},
+            "title": "Map Nodes",
+            "type": "array"
+          },
           "npcs": {
             "items": {},
             "title": "Npcs",
@@ -1441,6 +1447,18 @@
             "items": {},
             "title": "Handouts",
             "type": "array"
+          },
+          "map_nodes": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Map Nodes"
           },
           "npcs": {
             "default": [],
@@ -1784,6 +1802,40 @@
           "error"
         ],
         "title": "RulebookRead",
+        "type": "object"
+      },
+      "SceneMapPatch": {
+        "properties": {
+          "biome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Biome"
+          },
+          "q": {
+            "title": "Q",
+            "type": "integer"
+          },
+          "r": {
+            "title": "R",
+            "type": "integer"
+          },
+          "scene_id": {
+            "title": "Scene Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scene_id",
+          "q",
+          "r"
+        ],
+        "title": "SceneMapPatch",
         "type": "object"
       },
       "SessionCreate": {
@@ -2943,6 +2995,47 @@
         ]
       }
     },
+    "/api/modules/{module_id}/map/enrich": {
+      "post": {
+        "description": "AI 补全沙盘：地貌、物理连接与语义落位。",
+        "operationId": "enrich_map_api_modules__module_id__map_enrich_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module_id",
+            "required": true,
+            "schema": {
+              "title": "Module Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enrich Map",
+        "tags": [
+          "modules"
+        ]
+      }
+    },
     "/api/modules/{module_id}/rag/rebuild": {
       "post": {
         "description": "（重）建模组原文 RAG 索引：存量模组补建 / 失败后重试。\n\n立即置 rag_status=indexing 并返回，嵌入在后台进行；前端轮询模组的\nrag_status 观察 indexing → ready/failed。",
@@ -2981,6 +3074,57 @@
           }
         },
         "summary": "Rebuild Module Rag",
+        "tags": [
+          "modules"
+        ]
+      }
+    },
+    "/api/modules/{module_id}/scene-map": {
+      "patch": {
+        "description": "沙盘编辑：把场景移到指定 hex 格（KP 拖拽修正），可顺带改地貌。撞格等非法情形 400。",
+        "operationId": "patch_scene_map_api_modules__module_id__scene_map_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "module_id",
+            "required": true,
+            "schema": {
+              "title": "Module Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SceneMapPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Scene Map",
         "tags": [
           "modules"
         ]

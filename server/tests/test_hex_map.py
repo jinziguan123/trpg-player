@@ -2,7 +2,7 @@
 
 from app.ai.context import build_kp_context
 from app.models import Character, GameSession, Module
-from app.services import hex_map, session_service
+from app.services import hex_map, module_service, session_service
 
 
 # ── axial 坐标数学 ──
@@ -105,6 +105,27 @@ class TestEnsureSceneMaps:
         assert hex_map.scene_coord(scenes[0]) is not None
 
 
+class TestNormalizeMapNodes:
+    def test_只保留场景之间与场景周围一圈的自动地貌(self):
+        scenes = [
+            {"id": "a", "kind": "location", "map": {"q": 0, "r": 0, "biome": "urban"}},
+            {"id": "b", "kind": "location", "map": {"q": 2, "r": 0, "biome": "forest"}},
+        ]
+        nodes = [
+            {"id": "a", "q": 0, "r": 0, "biome": "urban", "scene_id": "a"},
+            {"id": "b", "q": 2, "r": 0, "biome": "forest", "scene_id": "b"},
+            {"id": "terrain_1_0", "q": 1, "r": 0, "biome": "plain", "scene_id": None},
+            {"id": "terrain_20_20", "q": 20, "r": 20, "biome": "plain", "scene_id": None},
+        ]
+
+        normalized = module_service._normalize_map_nodes(nodes, scenes)
+        coords = {(node["q"], node["r"]): node for node in normalized}
+
+        assert (1, 0) in coords
+        assert (20, 20) not in coords
+        assert len(coords) == 13  # 两个场景及其去重后的六邻居并集（中间格被两圈共用）
+
+
 class TestNeighborLabel:
     def test_有坐标出方位标签(self):
         cur = {"map": {"q": 0, "r": 0, "biome": "urban"}}
@@ -118,6 +139,7 @@ class TestNeighborLabel:
 
     def test_地貌中文名(self):
         assert hex_map.biome_label({"map": {"biome": "swamp"}}) == "沼泽"
+        assert hex_map.biome_label({"map": {"biome": "road"}}) == "道路"
         assert hex_map.biome_label({}) is None
 
 
@@ -207,6 +229,23 @@ class TestRevealAll:
         assert by_id["a"]["known"] is True
         assert by_id["b"]["known"] is False and by_id["c"]["known"] is False
         assert by_id["a"]["connections"] == ["b"]  # KP 侧拓扑完整（不受迷雾过滤）
+
+    def test_未发现场景保留地貌格但隐藏剧情token(self):
+        module, session = _three_scene_fixture()
+        module.map_nodes = [
+            {"id": "a", "q": 0, "r": 0, "biome": "urban", "scene_id": "a"},
+            {"id": "b", "q": 2, "r": 0, "biome": "forest", "scene_id": "b"},
+            {"id": "terrain_1_0", "q": 1, "r": 0, "biome": "forest", "scene_id": None},
+        ]
+
+        visible = session_service.list_visible_map_nodes(module, [{"id": "a"}])
+        by_id = {node["id"]: node for node in visible}
+        assert by_id["b"]["scene_id"] is None
+        assert (by_id["b"]["q"], by_id["b"]["r"], by_id["b"]["biome"]) == (2, 0, "forest")
+        assert by_id["terrain_1_0"]["scene_id"] is None
+
+        god_visible = session_service.list_visible_map_nodes(module, [{"id": "a"}, {"id": "b"}], reveal_all=True)
+        assert next(node for node in god_visible if node["id"] == "b")["scene_id"] == "b"
 
 
 # ── KP 拖拽落位（set_scene_map）──

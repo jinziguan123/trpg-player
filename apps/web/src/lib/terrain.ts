@@ -1,5 +1,7 @@
 export const FIELD_MARGIN = 3
 export const FIELD_CAP = 2000
+/** 场景只占用视觉网格中的偶数格，给相邻场景之间留出至少一个普通地形格。 */
+export const SCENE_GRID_SPACING = 2
 
 export interface TerrainSource {
   q: number
@@ -13,6 +15,12 @@ export interface TerrainCell {
   r: number
   biome: string
   opacity: number
+}
+
+export interface TerrainGeometryCell {
+  id: string
+  q: number
+  r: number
 }
 
 interface RankedTerrainCell extends TerrainCell {
@@ -34,6 +42,20 @@ export function axialDistance(a: Pick<TerrainSource, 'q' | 'r'>, b: Pick<Terrain
   const dq = a.q - b.q
   const dr = a.r - b.r
   return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(dq + dr))
+}
+
+/** 只追踪影响初始适配的几何信息；地貌或选中状态变化不应重置用户的缩放和平移。 */
+export function terrainGeometryKey(cells: readonly TerrainGeometryCell[], width: number, height: number) {
+  const points = cells
+    .map((cell) => `${cell.id}:${cell.q}:${cell.r}`)
+    .sort()
+    .join('|')
+  return `${width}x${height}|${points}`
+}
+
+/** 持久化坐标不变，仅将场景映射到更疏的前端视觉网格。 */
+export function sceneDisplayCoordinate(q: number, r: number) {
+  return { q: q * SCENE_GRID_SPACING, r: r * SCENE_GRID_SPACING }
 }
 
 function boundsFor(located: TerrainSource[], margin: number) {

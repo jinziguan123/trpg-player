@@ -41,7 +41,7 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
       "kind": "二选一：location（一个真实存在的地点，默认）/ chapter（纯叙事章节或抽象阶段，如『委托与准备』『尾声』——它不是玩家能在地图上前往的地方）",
       "keywords": ["解锁关键词：玩家在对话/行动里提到其中任意一个，大地图就解锁该地点，因此**每个词都必须是『这个地点的称呼』**。覆盖：完整地名、核心地名（去掉『废墟/遗址/旧址』等状态词，如『沉思礼拜堂废墟』→『沉思礼拜堂』）、通俗设施名（礼拜堂/图书馆）、专名（沉思/科比特/罗克斯伯里）、模组原文里的门牌地址或俗称/绰号，以及数字写法变体（『2号车厢』要含『二号车厢』）。**绝不要该场景的内容词**：场景里的物件（行李/钥匙/报纸）、人物或怪物（乘务员/循声者）、氛围描写（黑暗/血腥/喘息）都不是地点称呼——这类词一旦出现在任何叙述里就会误解锁该地点、提前剧透。2-6 个，每个≥2字；不要过泛的通用词（如『房间』『那边』『房子』『街区』）。chapter 类场景留空数组"],
       "connections": ["scene_2"],
-      "map": {{"q": 0, "r": -2, "biome": "地貌，仅限十选一：plain/forest/water/coast/desert/mountain/swamp/urban/ruin/interior"}},
+      "map": {{"q": 0, "r": -2, "biome": "地貌，仅限十一选一：plain/forest/water/coast/desert/mountain/swamp/urban/ruin/interior/road"}},
       "events": [
         {{"trigger": "触发情景，自然语言：进入场景即目睹/翻动尸体/打开衣柜/点灯后……", "kind": "四选一：san_check（见恐怖景象掷理智）/dice_check（需技能检定）/damage（陷阱或环境伤害）/note（其他机制性提示）", "san_loss": "kind=san_check 时的损失规格，**照抄模组原文**（如 0/1d3、1/1d6+1）", "skill": "kind=dice_check 时的技能名", "damage": "kind=damage 时的伤害骰式（如 1d6）", "note": "补充说明或后果"}}
       ],
@@ -146,8 +146,9 @@ PARSE_PROMPT_TEMPLATE = """你是一个 {rule_system} 模组分析专家。
     **相对方位**（东为 +q；正北为 (+1,-2) 方向、西北为 (0,-1)、东北为 (+1,-1)；坐标是象征性
     相对位置，不是测绘，无需比例尺）。依据模组文本的方位/空间语义落位：「镇北的教堂」放在
     城镇的北侧格、「沿河仓库」贴着水域格；相连（connections）的场景距离 1-3 格；坐标绝不重叠；
-    线性结构（车厢/楼层/隧道）沿一条直线依次排开。biome 按场景环境十选一（室内房间/车厢用
-    interior）。chapter 类场景不给 map。文本没有任何方位线索时可按连通关系就近摆放。
+    线性结构（车厢/楼层/隧道）沿一条直线依次排开。biome 按场景环境十一选一（道路、街巷、桥梁
+    和主要交通路线用 road；室内房间/车厢用 interior）。chapter 类场景不给 map。文本没有任何
+    方位线索时可按连通关系就近摆放。
 16. NPC/怪物给出 hp（原文数值；没有则按 (CON+SIZ)/10 估算）、armor（护甲值，无甲为 0）、
     weapon（主要攻击方式：人类用武器名，怪物用其攻击方式名如『撕咬』『触手』）——供战斗引擎
     直接使用；goals 写他接下来想达成什么（幕后推演据此让世界在玩家不在场时演进）。
@@ -392,6 +393,161 @@ def _normalize_scenes(scenes: list) -> list:
     return scenes
 
 
+def _normalize_map_nodes(map_nodes: list | None, scenes: list) -> list:
+    """把沙盘节点归一化为稳定的统一节点对象。
+
+    旧模组没有 map_nodes 时，以 scene.map 生成场景节点，再补出场景周围的普通地貌格。
+    普通节点始终不进入 scenes，避免污染剧情解锁、旅行图和 AI 上下文。
+    """
+    from app.services import hex_map
+
+    scenes = [s for s in (scenes or []) if isinstance(s, dict)]
+    # 先给没有 map 的旧场景分配坐标，才能让它们被提升为场景地图节点。
+    hex_map.ensure_scene_maps(scenes)
+    raw = [dict(n) for n in (map_nodes or []) if isinstance(n, dict)]
+    scene_by_id = {
+        str(s.get("id")): s for s in scenes
+        if s.get("id") and s.get("kind") != "chapter" and hex_map.scene_coord(s) is not None
+    }
+    by_scene: dict[str, dict] = {}
+    ordinary: dict[tuple[int, int], dict] = {}
+    for node in raw:
+        sid = str(node.get("scene_id") or "").strip()
+        try:
+            q, r = int(node["q"]), int(node["r"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        biome = str(node.get("biome") or "plain").strip().lower()
+        if biome not in hex_map.BIOMES:
+            biome = "plain"
+        if sid and sid in scene_by_id:
+            by_scene[sid] = {"id": sid, "q": q, "r": r, "biome": biome, "scene_id": sid}
+        elif not sid:
+            ordinary.setdefault((q, r), {
+                "id": str(node.get("id") or f"terrain_{q}_{r}"),
+                "q": q, "r": r, "biome": biome,
+                "scene_id": None,
+            })
+
+    # 编辑器提交的场景地图节点优先；再统一做间距、冲突和地貌校验。
+    for sid, node in by_scene.items():
+        scene = next((s for s in scenes if str(s.get("id")) == sid), None)
+        if scene is not None:
+            scene["map"] = {"q": node["q"], "r": node["r"], "biome": node["biome"]}
+    hex_map.ensure_scene_maps(scenes)
+
+    # scene.map 仍是剧情与空间语义的兼容来源；map_nodes 里的位置/地貌优先。
+    nodes: list[dict] = []
+    occupied: set[tuple[int, int]] = set()
+    for sid, scene in scene_by_id.items():
+        q, r = hex_map.scene_coord(scene)  # type: ignore[misc]
+        node = by_scene.get(sid) or {
+            "id": sid, "q": q, "r": r,
+            "biome": str((scene.get("map") or {}).get("biome") or "plain").lower(),
+            "scene_id": sid,
+        }
+        node["q"], node["r"], node["scene_id"] = q, r, sid
+        if node["biome"] not in hex_map.BIOMES:
+            node["biome"] = "plain"
+        # 地图节点是编辑器的真源，回写剧情场景上的 map 以兼容旧空间语义。
+        scene["map"] = {"q": node["q"], "r": node["r"], "biome": node["biome"]}
+        nodes.append(node)
+        occupied.add((q, r))
+
+    scene_coords = [(n["q"], n["r"]) for n in nodes if n.get("scene_id")]
+
+    def cube_round(qf: float, rf: float) -> tuple[int, int]:
+        sf = -qf - rf
+        q, r, s = round(qf), round(rf), round(sf)
+        dq, dr, ds = abs(q - qf), abs(r - rf), abs(s - sf)
+        if dq > dr and dq > ds:
+            q = -r - s
+        elif dr > ds:
+            r = -q - s
+        return int(q), int(r)
+
+    def line_cells(a: tuple[int, int], b: tuple[int, int]) -> set[tuple[int, int]]:
+        aq, ar = a
+        bq, br = b
+        n = max(abs(bq - aq), abs(br - ar), abs((bq + br) - (aq + ar)))
+        if n == 0:
+            return {a}
+        return {
+            cube_round(aq + (bq - aq) * i / n, ar + (br - ar) * i / n)
+            for i in range(n + 1)
+        }
+
+    def convex_hull(points: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        unique = sorted(set(points))
+        if len(unique) <= 2:
+            return unique
+
+        def cross(o: tuple[int, int], a: tuple[int, int], b: tuple[int, int]) -> int:
+            return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+        lower: list[tuple[int, int]] = []
+        for point in unique:
+            while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0:
+                lower.pop()
+            lower.append(point)
+        upper: list[tuple[int, int]] = []
+        for point in reversed(unique):
+            while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0:
+                upper.pop()
+            upper.append(point)
+        return lower[:-1] + upper[:-1]
+
+    def inside_polygon(q: int, r: int, polygon: list[tuple[int, int]]) -> bool:
+        if len(polygon) < 3:
+            return False
+        signs = []
+        for index, point in enumerate(polygon):
+            other = polygon[(index + 1) % len(polygon)]
+            signs.append((other[0] - point[0]) * (r - point[1]) - (other[1] - point[1]) * (q - point[0]))
+        return all(value >= 0 for value in signs) or all(value <= 0 for value in signs)
+
+    # 生成“场景凸包 + 每个场景一圈”的最小连续区域，避免旧版矩形 q/r 包围盒在斜向地图上产生大量角落废格。
+    required: set[tuple[int, int]] = set(scene_coords)
+    hull = convex_hull(scene_coords)
+    if len(hull) == 2:
+        required.update(line_cells(hull[0], hull[1]))
+    elif len(hull) >= 3:
+        min_q, max_q = min(q for q, _ in hull) - 1, max(q for q, _ in hull) + 1
+        min_r, max_r = min(r for _, r in hull) - 1, max(r for _, r in hull) + 1
+        required.update(
+            (q, r)
+            for q in range(min_q, max_q + 1)
+            for r in range(min_r, max_r + 1)
+            if inside_polygon(q, r, hull)
+        )
+    for q, r in scene_coords:
+        required.update((q + dq, r + dr) for dq, dr in ((1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)))
+
+    # 保留用户主动拖到地图范围外的普通节点；清理旧版自动生成的 terrain_q_r 边缘节点。
+    for coord, node in ordinary.items():
+        node_id = str(node.get("id") or "")
+        if coord in required or node_id != f"terrain_{coord[0]}_{coord[1]}":
+            if coord not in occupied:
+                nodes.append(node)
+                occupied.add(coord)
+
+    scene_nodes = [node for node in nodes if node.get("scene_id")]
+    for q, r in sorted(required):
+        if (q, r) in occupied:
+            continue
+        # 最近场景的地貌作为普通格底色，保证森林/水域等区域连续可辨。
+        nearest = min(
+            scene_nodes,
+            key=lambda n: (hex_map.axial_distance((q, r), (n["q"], n["r"])), n["id"]),
+        )
+        nodes.append({
+            "id": f"terrain_{q}_{r}", "q": q, "r": r,
+            "biome": nearest.get("biome") or "plain", "scene_id": None,
+        })
+        occupied.add((q, r))
+    return nodes
+
+
 def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
     world_setting = data.get("world_setting", {})
     for key in ("player_count", "era", "region", "difficulty", "tags", "player_brief", "intro"):
@@ -401,13 +557,15 @@ def create_module(db: Session, data: dict, raw_content: str = "") -> Module:
     if world_setting.get("difficulty") not in MODULE_DIFFICULTIES:
         world_setting["difficulty"] = ""
 
+    scenes = _normalize_scenes(data.get("scenes", []))
     module = Module(
         title=data.get("title", "未命名模组"),
         rule_system=data.get("rule_system", "coc"),
         description=data.get("description", ""),
         world_setting=world_setting,
         raw_content=raw_content,
-        scenes=_normalize_scenes(data.get("scenes", [])),
+        scenes=scenes,
+        map_nodes=_normalize_map_nodes(data.get("map_nodes"), scenes),
         npcs=data.get("npcs", []),
         clues=data.get("clues", []),
         triggers=data.get("triggers", []),
@@ -438,6 +596,10 @@ def update_module(db: Session, module_id: str, data: dict) -> Module | None:
         module.world_setting = ws
     if "scenes" in data and data["scenes"] is not None:
         module.scenes = _normalize_scenes(data["scenes"])
+    if "map_nodes" in data and data["map_nodes"] is not None:
+        module.map_nodes = _normalize_map_nodes(data["map_nodes"], module.scenes)
+    else:
+        module.map_nodes = _normalize_map_nodes(module.map_nodes, module.scenes)
     if "npcs" in data and data["npcs"] is not None:
         module.npcs = data["npcs"]
     if "clues" in data and data["clues"] is not None:
@@ -454,7 +616,16 @@ def update_module(db: Session, module_id: str, data: dict) -> Module | None:
 
 
 def get_module(db: Session, module_id: str) -> Module | None:
-    return db.get(Module, module_id)
+    module = db.get(Module, module_id)
+    if not module:
+        return None
+    normalized = _normalize_map_nodes(module.map_nodes, module.scenes)
+    if normalized != (module.map_nodes or []):
+        module.map_nodes = normalized
+        db.add(module)
+        db.commit()
+        db.refresh(module)
+    return module
 
 
 def list_modules(db: Session) -> list[Module]:

@@ -21,6 +21,7 @@ class ModuleRead(BaseModel):
     scenes: list
     npcs: list
     clues: list
+    map_nodes: list = []
     triggers: list = []
     # 手书（信件/报纸/日记/便条等原文文书），跑团中经 [HANDOUT] 指令发放
     handouts: list = []
@@ -42,6 +43,8 @@ class ModuleWrite(BaseModel):
     description: str = ""
     world_setting: dict = {}
     scenes: list = []
+    # None 表示旧客户端未提交地图节点，更新时保留服务端已有普通节点。
+    map_nodes: list | None = None
     npcs: list = []
     clues: list = []
     triggers: list = []

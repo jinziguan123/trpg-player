@@ -57,6 +57,9 @@ async def test_biome_合法值采纳_非法值保留(monkeypatch):
     module = _module([
         {"id": "s1", "kind": "location", "map": {"q": 0, "r": 0, "biome": "plain"}},
         {"id": "s2", "kind": "location", "map": {"q": 2, "r": 0, "biome": "forest"}},
+    ], map_nodes=[
+        {"id": "s1", "q": 0, "r": 0, "biome": "plain", "scene_id": "s1"},
+        {"id": "s2", "q": 2, "r": 0, "biome": "forest", "scene_id": "s2"},
     ])
     _install_llm(monkeypatch, {"scenes": [
         {"id": "s1", "biome": "urban"},
@@ -67,7 +70,45 @@ async def test_biome_合法值采纳_非法值保留(monkeypatch):
 
     assert module.scenes[0]["map"]["biome"] == "urban"
     assert module.scenes[1]["map"]["biome"] == "forest"
+    map_nodes = {node["scene_id"]: node for node in module.map_nodes if node.get("scene_id")}
+    assert map_nodes["s1"]["biome"] == "urban"
     assert result["biomes_updated"] == 1
+
+
+@pytest.mark.asyncio
+async def test_biome_道路地貌可被采纳(monkeypatch):
+    module = _module([
+        {"id": "roadblock", "kind": "location", "title": "乡村公路哨岗",
+         "map": {"q": 0, "r": 0, "biome": "plain"}},
+    ], map_nodes=[
+        {"id": "roadblock", "q": 0, "r": 0, "biome": "plain", "scene_id": "roadblock"},
+    ])
+    _install_llm(monkeypatch, {"scenes": [
+        {"id": "roadblock", "biome": "road"},
+    ]})
+
+    result = await module_map_service.enrich_module_map(_DB(), module)
+
+    assert module.scenes[0]["map"]["biome"] == "road"
+    assert module.map_nodes[0]["biome"] == "road"
+    assert result["biomes_updated"] == 1
+
+
+@pytest.mark.asyncio
+async def test_独立建筑优先城镇_明确房间才用室内(monkeypatch):
+    module = _module([
+        {"id": "office", "kind": "location", "title": "公安局办公室", "map": {"q": 0, "r": 0, "biome": "plain"}},
+        {"id": "room", "kind": "location", "title": "地下室", "map": {"q": 2, "r": 0, "biome": "plain"}},
+    ])
+    _install_llm(monkeypatch, {"scenes": [
+        {"id": "office", "biome": "interior"},
+        {"id": "room", "biome": "interior"},
+    ]})
+
+    await module_map_service.enrich_module_map(_DB(), module)
+
+    assert module.scenes[0]["map"]["biome"] == "urban"
+    assert module.scenes[1]["map"]["biome"] == "interior"
 
 
 @pytest.mark.asyncio

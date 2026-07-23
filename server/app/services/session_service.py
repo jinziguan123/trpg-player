@@ -1533,6 +1533,30 @@ def list_known_locations(
     return out
 
 
+def list_visible_map_nodes(module, locations: list[dict], reveal_all: bool = False) -> list[dict]:
+    """返回沙盘需要绘制的统一节点；普通节点只作为地貌，不参与旅行。"""
+    nodes = list(getattr(module, "map_nodes", None) or [])
+    shown_ids = {str(item.get("id")) for item in locations if item.get("id")}
+    out = []
+    for node in nodes:
+        sid = str(node.get("scene_id") or "")
+        if sid:
+            if sid in shown_ids:
+                out.append(node)
+            elif not reveal_all:
+                # 未发现的场景保留其地貌格，但清掉 scene_id，让前端不要绘制剧情 token。
+                hidden = dict(node)
+                hidden["scene_id"] = None
+                out.append(hidden)
+            continue
+        if reveal_all:
+            out.append(node)
+            continue
+        # 普通地貌是地图底图的一部分，完整下发，未知场景不会造成视觉上的“挖空”。
+        out.append(node)
+    return out
+
+
 def set_flag(db: Session, session_id: str, flag: str, value: bool = True) -> None:
     """置/清剧情标志（world_state.flags）。KP 通过 [SET_FLAG]/[CLEAR_FLAG] 推进剧情状态，
     场景/NPC 的状态变体据此切换。flag 名做轻量规范化（去空白），value=False 即清除该标志。"""

@@ -14,6 +14,9 @@ class Module(Base, UUIDMixin, TimestampMixin):
     world_setting: Mapped[dict] = mapped_column(JSON, default=dict)
     raw_content: Mapped[str] = mapped_column(Text, default="")
     scenes: Mapped[list] = mapped_column(JSON, default=list)
+    # 沙盘上的全部节点：场景节点通过 scene_id 关联 scenes，普通节点 scene_id 为空。
+    # 两类节点共享 q/r/biome，便于编辑器统一拖拽与批量修改。
+    map_nodes: Mapped[list] = mapped_column(JSON, default=list)
     npcs: Mapped[list] = mapped_column(JSON, default=list)
     maps: Mapped[list] = mapped_column(JSON, default=list)
     clues: Mapped[list] = mapped_column(JSON, default=list)

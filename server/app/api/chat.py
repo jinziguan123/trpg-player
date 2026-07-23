@@ -22,7 +22,7 @@ from app.schemas.event import (
     TravelRequest,
 )
 from app.schemas.session import KpActionRequest
-from app.services import human_kp_service, session_service
+from app.services import human_kp_service, module_service, session_service
 from app.services.event_protocol import (
     event_to_chunk,
     make_chunk as _make_chunk,
@@ -454,7 +454,8 @@ def locations(
 ):
     """大地图/调查板：已知地点列表（含当前所在、相互连接、队友分布；未探索的不显示）。"""
     game_session = require_session_viewer(db, session_id, token)
-    module = db.get(Module, game_session.module_id)
+    # get_module 会为迁移前的存量模组懒生成统一 map_nodes。
+    module = module_service.get_module(db, game_session.module_id)
     if not module:
         raise HTTPException(404, "模组不存在")
     from app.services import hex_map
@@ -462,11 +463,13 @@ def locations(
     events = session_service.get_session_events(db, session_id)
     char_names = {c.id: c.name for c in session_service.get_party_members(db, session_id)}
     god_view = session_service.is_kp(db, session_id, token)   # 真人 KP 席位 → 上帝视角
-    return {
-        "locations": session_service.list_known_locations(
+    locations = session_service.list_known_locations(
             module, game_session, char_id=char_id, events=events, char_names=char_names,
             reveal_all=god_view,
-        ),
+        )
+    return {
+        "locations": locations,
+        "map_nodes": session_service.list_visible_map_nodes(module, locations, reveal_all=god_view),
         "god_view": god_view,
     }
 

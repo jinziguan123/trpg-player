@@ -5,12 +5,16 @@ import { api } from '../api/client'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiReturnArrow, GiScrollUnfurled, GiPadlock } from 'react-icons/gi'
-import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch, Hexagon, Sparkles } from 'lucide-react'
+import {
+  Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch, Hexagon, Sparkles, ListChecks,
+  Link2, Unlink, Wheat, Trees, Waves, ShipWheel, Sun, Mountain, Droplets, Building2, Castle, DoorOpen, Route,
+  type LucideIcon,
+} from 'lucide-react'
 import { ModuleGraph } from '../components/module/ModuleGraph'
 import { HexSandbox } from '../components/game/HexSandbox'
 import { ModuleImage, type ModuleImageKind } from '../components/module/ModuleImage'
 import { ModuleTimeline } from '../components/module/ModuleTimeline'
-import { BIOMES, BIOME_LABELS } from '../lib/biome'
+import { BIOMES, BIOME_LABELS, BIOME_TEXTURES } from '../lib/biome'
 import { MODULE_DIFFICULTIES } from '../lib/module'
 
 // 表单态允许先选 biome、保存时再由后端补 q/r；旧瓦片图遗留数据也由后端归一化接管。
@@ -19,6 +23,7 @@ interface NpcState { when?: string[]; personality?: string; initial_location?: s
 interface SceneEvent { trigger?: string; kind?: string; san_loss?: string; skill?: string; damage?: string; note?: string }
 interface SceneMap { q?: number; r?: number; biome: string }
 interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; kind?: string; connections?: string[]; events?: SceneEvent[]; states?: SceneState[]; image?: string; map?: SceneMap | null }
+interface MapNode { id: string; q: number; r: number; biome: string; scene_id?: string | null }
 interface NPC { id: string; name?: string; description?: string; personality?: string; background?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number>; attributes?: Record<string, number>; hp?: number; armor?: number; weapon?: string; goals?: string[]; states?: NpcState[]; portrait?: string }
 interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string; image?: string }
 interface Trigger { id: string; when?: string; set_flags?: string[]; clear_flags?: string[]; description?: string }
@@ -29,6 +34,7 @@ interface ModuleData {
   description: string
   world_setting: Record<string, unknown>
   scenes: Scene[]
+  map_nodes: MapNode[]
   npcs: NPC[]
   clues: Clue[]
   triggers: Trigger[]
@@ -38,7 +44,7 @@ interface ModuleData {
 const BLANK: ModuleData = {
   title: '', rule_system: 'coc', description: '',
   world_setting: { era: '', location: '', tone: '', player_count: '', region: '', difficulty: '', tags: [], player_brief: '', intro: '' },
-  scenes: [], npcs: [], clues: [], triggers: [], truth: '',
+  scenes: [], map_nodes: [], npcs: [], clues: [], triggers: [], truth: '',
 }
 
 const EVENT_KINDS: { value: string; label: string }[] = [
@@ -72,8 +78,132 @@ const dangerMeta = (v?: string) => DANGER_OPTS.find((o) => o.value === v)
 
 let _idc = 0
 const genId = (p: string) => `${p}_${Date.now().toString(36)}_${_idc++}`
-const sceneName = (s: Scene) => s.name || s.title || '(未命名场景)'
+const sceneName = (s: Partial<Scene>) => s.name || s.title || '(未命名场景)'
 const wsStr = (ws: Record<string, unknown>, k: string) => (ws[k] == null ? '' : String(ws[k]))
+const cloneModule = (value: ModuleData): ModuleData => JSON.parse(JSON.stringify(value)) as ModuleData
+
+const BIOME_VISUALS: Record<string, { fill: string; edge: string; Icon: LucideIcon }> = {
+  plain: { fill: '#768b48', edge: '#d7e39a', Icon: Wheat },
+  forest: { fill: '#1f613e', edge: '#9bd77c', Icon: Trees },
+  water: { fill: '#236f9f', edge: '#8fdbef', Icon: Waves },
+  coast: { fill: '#3f8894', edge: '#f1d99a', Icon: ShipWheel },
+  desert: { fill: '#ae8145', edge: '#f4d28a', Icon: Sun },
+  mountain: { fill: '#5d626d', edge: '#d4d7d8', Icon: Mountain },
+  swamp: { fill: '#435e3e', edge: '#b5d67a', Icon: Droplets },
+  urban: { fill: '#75625b', edge: '#e5c2a8', Icon: Building2 },
+  ruin: { fill: '#665b58', edge: '#d0b9aa', Icon: Castle },
+  interior: { fill: '#896d4e', edge: '#f0cf91', Icon: DoorOpen },
+  road: { fill: '#876747', edge: '#f0d092', Icon: Route },
+}
+
+function BiomePalette({ selectedBiome, disabled, onSelect }: {
+  selectedBiome?: string
+  disabled?: boolean
+  onSelect: (biome: string) => void
+}) {
+  const handleDragStart = (e: React.DragEvent, biome: string) => {
+    e.dataTransfer.effectAllowed = 'copy'
+    e.dataTransfer.setData('application/x-sandbox-biome', biome)
+    // 设置拖拽预览为小型六边形图标
+    const el = e.currentTarget as HTMLElement
+    const icon = el.querySelector('[data-drag-icon]')
+    if (icon) {
+      e.dataTransfer.setDragImage(icon, 16, 16)
+    }
+  }
+  return <aside className="card p-3" aria-label="地貌样例">
+    <div className="flex items-center gap-2 text-sm font-semibold">
+      <Hexagon size={15} /> 地貌样例
+    </div>
+    <p className="mt-1 mb-3 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+      拖入沙盘新增节点，或点击替换选中节点
+    </p>
+    <div className="grid grid-cols-2 gap-1.5">
+      {BIOMES.map((biome) => {
+        const visual = BIOME_VISUALS[biome]
+        const Icon = visual.Icon
+        const active = selectedBiome === biome
+        return <button
+          key={biome}
+          type="button"
+          draggable
+          disabled={disabled}
+          onClick={() => onSelect(biome)}
+          onDragStart={(e) => handleDragStart(e, biome)}
+          aria-label={`拖入沙盘或点击使用地貌：${BIOME_LABELS[biome]}`}
+          className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs transition-colors cursor-grab active:cursor-grabbing"
+          style={{
+            color: 'var(--color-text)',
+            background: active ? 'color-mix(in srgb, var(--color-accent) 18%, transparent)' : 'transparent',
+            outline: active ? '1px solid var(--color-accent)' : '1px solid transparent',
+            opacity: disabled ? 0.5 : 1,
+          }}
+        >
+          <span className="flex h-8 w-9 shrink-0 items-center justify-center" data-drag-icon style={{
+            color: visual.edge,
+            backgroundColor: visual.fill,
+            backgroundImage: `linear-gradient(${visual.fill}a8, ${visual.fill}a8), url(${BIOME_TEXTURES[biome]})`,
+            backgroundSize: 'cover',
+            backgroundBlendMode: 'multiply',
+            clipPath: 'polygon(25% 4%, 75% 4%, 100% 50%, 75% 96%, 25% 96%, 0 50%)',
+          }}>
+            <Icon size={16} strokeWidth={1.8} />
+          </span>
+          <span className="truncate">{BIOME_LABELS[biome]}</span>
+        </button>
+      })}
+    </div>
+  </aside>
+}
+
+function SceneConnectionEditor({ scene, scenes, targetId, onTargetChange, onAdd, onRemove }: {
+  scene?: Scene
+  scenes: Scene[]
+  targetId: string
+  onTargetChange: (id: string) => void
+  onAdd: () => void
+  onRemove: (id: string) => void
+}) {
+  if (!scene) return <div className="card p-3 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+    选中一个场景节点后，可在这里编辑连接线。
+  </div>
+  const connections = scene.connections || []
+  const targets = scenes.filter((candidate) => candidate.kind !== 'chapter'
+    && candidate.id !== scene.id && !connections.includes(candidate.id))
+  return <section className="card p-3" aria-label="场景连接编辑">
+    <div className="flex items-center gap-2 text-sm font-semibold"><Link2 size={15} /> 场景连接</div>
+    <p className="mt-1 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+      新增和删除会同步作用于连接两端
+    </p>
+    <div className="mt-3 flex gap-1.5">
+      <Select value={targetId || '__none'} onValueChange={(value) => onTargetChange(value === '__none' ? '' : value)}>
+        <SelectTrigger className="min-w-0 flex-1" aria-label="连接目标">
+          <SelectValue placeholder="选择目标场景" />
+        </SelectTrigger>
+        <SelectContent>
+          {targets.length === 0
+            ? <SelectItem value="__none" disabled>没有可新增的场景</SelectItem>
+            : targets.map((candidate) => <SelectItem key={candidate.id} value={candidate.id}>{sceneName(candidate)}</SelectItem>)}
+        </SelectContent>
+      </Select>
+      <button type="button" className="btn-secondary !px-2" onClick={onAdd} disabled={!targetId || targets.length === 0} aria-label="新增连接" title="新增连接">
+        <Plus size={15} />
+      </button>
+    </div>
+    <div className="mt-3 space-y-1">
+      {connections.length === 0 && <div className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>暂无连接</div>}
+      {connections.map((connectionId) => {
+        const target = scenes.find((candidate) => candidate.id === connectionId)
+        return <div key={connectionId} className="flex items-center gap-2 rounded px-2 py-1 text-xs" style={{ background: 'var(--color-surface-2)' }}>
+          <span className="min-w-0 flex-1 truncate">{target ? sceneName(target) : connectionId}</span>
+          <button type="button" className="btn-secondary !px-1.5 !py-1" onClick={() => onRemove(connectionId)} aria-label={`删除连接：${target ? sceneName(target) : connectionId}`} title="删除连接">
+            <Unlink size={13} />
+          </button>
+        </div>
+      })}
+    </div>
+  </section>
+}
 
 export function ModuleDetailPage() {
   const { id } = useParams()
@@ -85,11 +215,23 @@ export function ModuleDetailPage() {
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
   const [enriching, setEnriching] = useState(false)
+  const [sandboxSelection, setSandboxSelection] = useState<string[]>([])
+  const [connectionTargetId, setConnectionTargetId] = useState('')
+  const [editSnapshot, setEditSnapshot] = useState<ModuleData | null>(null)
+  useEffect(() => setConnectionTargetId(''), [sandboxSelection])
 
   useEffect(() => {
     if (isNew) return
     api.get<ModuleData>(`/modules/${id}`)
-      .then((m) => setData({ ...BLANK, ...m, world_setting: { ...BLANK.world_setting, ...(m.world_setting || {}) } }))
+      .then((m) => {
+        const scenes = m.scenes || []
+        const mapNodes = Array.isArray(m.map_nodes) && m.map_nodes.length
+          ? m.map_nodes
+          : scenes.filter((s) => s.kind !== 'chapter' && s.map && Number.isFinite(s.map.q) && Number.isFinite(s.map.r))
+            .map((s) => ({ id: s.id, q: s.map!.q!, r: s.map!.r!, biome: s.map!.biome || 'plain', scene_id: s.id }))
+        setData({ ...BLANK, ...m, scenes, map_nodes: mapNodes, world_setting: { ...BLANK.world_setting, ...(m.world_setting || {}) } })
+        setEditSnapshot(null)
+      })
       .catch(() => { toast.error('模组加载失败'); navigate('/modules') })
       .finally(() => setLoading(false))
   }, [id, isNew, navigate])
@@ -97,6 +239,16 @@ export function ModuleDetailPage() {
   const updateWS = (k: string, v: unknown) => setData((d) => ({ ...d, world_setting: { ...d.world_setting, [k]: v } }))
   const updScene = useCallback((i: number, patch: Partial<Scene>) =>
     setData((d) => ({ ...d, scenes: d.scenes.map((it, j) => (j === i ? { ...it, ...patch } : it)) })), [])
+  const updSceneBiome = (i: number, biome: string) => setData((d) => {
+    const sceneId = d.scenes[i]?.id
+    return {
+      ...d,
+      scenes: d.scenes.map((scene, j) => j === i
+        ? { ...scene, map: { ...(scene.map || {}), biome } }
+        : scene),
+      map_nodes: d.map_nodes.map((node) => node.scene_id === sceneId ? { ...node, biome } : node),
+    }
+  })
   const updNpc = useCallback((i: number, patch: Partial<NPC>) =>
     setData((d) => ({ ...d, npcs: d.npcs.map((it, j) => (j === i ? { ...it, ...patch } : it)) })), [])
   const updClue = useCallback((i: number, patch: Partial<Clue>) =>
@@ -143,6 +295,7 @@ export function ModuleDetailPage() {
           tags: Array.isArray(tags) ? tags : String(tags || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean),
         },
         scenes: data.scenes,
+        map_nodes: data.map_nodes,
         npcs: data.npcs.map((n) => ({
           ...n,
           secrets: (n.secrets || []).filter((s) => s.trim()),
@@ -157,7 +310,12 @@ export function ModuleDetailPage() {
         : await api.put<ModuleData>(`/modules/${id}`, payload)
       toast.success(isNew ? '模组已创建' : '模组已保存')
       if (isNew) navigate(`/modules/${saved.id}`, { replace: true })
-      else { setData({ ...BLANK, ...saved, world_setting: { ...BLANK.world_setting, ...(saved.world_setting || {}) } }); setEdit(false) }
+      else {
+        setData({ ...BLANK, ...saved, map_nodes: saved.map_nodes || data.map_nodes, world_setting: { ...BLANK.world_setting, ...(saved.world_setting || {}) } })
+        setEditSnapshot(null)
+        setSandboxSelection([])
+        setEdit(false)
+      }
     } catch (e) {
       toast.error(`保存失败：${e instanceof Error ? e.message : '未知错误'}`)
     } finally { setSaving(false) }
@@ -172,6 +330,7 @@ export function ModuleDetailPage() {
       setData({
         ...BLANK,
         ...refreshed,
+        map_nodes: refreshed.map_nodes || [],
         world_setting: { ...BLANK.world_setting, ...(refreshed.world_setting || {}) },
       })
       toast.success('AI 已补全地貌、连接与场景落位')
@@ -180,6 +339,19 @@ export function ModuleDetailPage() {
     } finally {
       setEnriching(false)
     }
+  }
+
+  const beginEdit = () => {
+    setEditSnapshot(cloneModule(data))
+    setSandboxSelection([])
+    setEdit(true)
+  }
+
+  const cancelEdit = () => {
+    if (editSnapshot) setData(cloneModule(editSnapshot))
+    setEditSnapshot(null)
+    setSandboxSelection([])
+    setEdit(false)
   }
 
   if (loading) return <p className="p-4" style={{ color: 'var(--color-text-secondary)' }}>加载中…</p>
@@ -192,23 +364,113 @@ export function ModuleDetailPage() {
     <button onClick={() => setView(v)} className="flex items-center gap-1 px-2 py-1" style={view === v ? { background: 'var(--color-accent)', color: 'var(--color-on-accent)' } : { color: 'var(--color-text-secondary)' }}>{icon} {label}</button>
   )
   // 沙盘数据：模组视角=作者上帝视角（无迷雾）；chapter 章节不上图；未落位场景保存时由后端自动落位
-  const sandboxLocs = data.scenes
-    .filter((s) => s.kind !== 'chapter')
-    .map((s) => ({
-      id: s.id, name: sceneName(s), current: false, visited: true, known: true,
-      connections: s.connections,
-      map: s.map && Number.isFinite(s.map.q) && Number.isFinite(s.map.r)
-        ? { q: s.map.q!, r: s.map.r!, biome: s.map.biome }
-        : null,
-      danger: s.danger,
-    }))
-  const moveScene = (sid: string, q: number, r: number) => {
-    const clash = data.scenes.find((s) => s.id !== sid && s.map && s.map.q === q && s.map.r === r)
-    if (clash) { toast.error(`该格已被「${sceneName(clash)}」占用`); return }
+  const sandboxLocs = data.map_nodes.map((node) => {
+    const scene = node.scene_id ? data.scenes.find((s) => s.id === node.scene_id) : undefined
+    return {
+      id: node.id,
+      name: scene ? sceneName(scene) : '',
+      current: false,
+      visited: true,
+      known: true,
+      sceneId: scene?.id,
+      nodeKind: scene ? 'scene' as const : 'terrain' as const,
+      connections: scene?.connections,
+      map: { q: node.q, r: node.r, biome: node.biome },
+      danger: scene?.danger,
+    }
+  })
+  const addSandboxNode = (q: number, r: number) => {
+    const clash = data.map_nodes.find((n) => n.q === q && n.r === r)
+    if (clash) return
+    const id = genId('node')
+    setData((d) => ({ ...d, map_nodes: [...d.map_nodes, { id, q, r, biome: 'plain' }] }))
+    setSandboxSelection([id])
+  }
+
+  /** 从地貌面板拖入沙盘 */
+  const dropSandboxBiome = (q: number, r: number, biome: string) => {
+    const clash = data.map_nodes.find((n) => n.q === q && n.r === r)
+    if (clash) return
+    const id = genId('node')
+    setData((d) => ({ ...d, map_nodes: [...d.map_nodes, { id, q, r, biome }] }))
+    setSandboxSelection([id])
+  }
+
+  /** 拖出沙盘删除节点 */
+  const deleteSandboxNode = (nodeId: string) => {
     setData((d) => ({
       ...d,
-      scenes: d.scenes.map((s) => s.id === sid
-        ? { ...s, map: { q, r, biome: s.map?.biome || 'plain' } } : s),
+      map_nodes: d.map_nodes.filter((n) => n.id !== nodeId),
+      scenes: d.scenes.map((scene) => {
+        const node = d.map_nodes.find((n) => n.id === nodeId && n.scene_id === scene.id)
+        return node ? { ...scene, map: null } : scene
+      }),
+    }))
+    setSandboxSelection((s) => s.filter((id) => id !== nodeId))
+    toast.info('节点已删除')
+  }
+
+  const moveScene = (nodeId: string, q: number, r: number) => {
+    const clash = data.map_nodes.find((n) => n.id !== nodeId && n.q === q && n.r === r)
+    if (clash) {
+      const name = clash.scene_id ? sceneName(data.scenes.find((s) => s.id === clash.scene_id) || {}) : '普通节点'
+      toast.error(`该格已被「${name}」占用`)
+      return
+    }
+    const moving = data.map_nodes.find((n) => n.id === nodeId)
+    if (moving?.scene_id) {
+      const nearbyScene = data.map_nodes.find((n) => n.id !== nodeId && n.scene_id
+        && Math.max(Math.abs(n.q - q), Math.abs(n.r - r), Math.abs((n.q + n.r) - (q + r))) < 2)
+      if (nearbyScene) {
+        toast.error('场景节点之间至少需要间隔一个普通节点')
+        return
+      }
+    }
+    setData((d) => ({ ...d, map_nodes: d.map_nodes.map((n) => n.id === nodeId ? { ...n, q, r } : n) }))
+  }
+  const sandboxLocatedIds = sandboxLocs.filter((loc) => loc.map).map((loc) => loc.id)
+  const activeSandboxSelection = sandboxSelection.filter((sid) => sandboxLocatedIds.includes(sid))
+  const selectedSandboxNodes = data.map_nodes.filter((node) => activeSandboxSelection.includes(node.id))
+  const selectedSceneId = selectedSandboxNodes.length === 1 && selectedSandboxNodes[0].scene_id
+    ? selectedSandboxNodes[0].scene_id
+    : ''
+  const selectedSandboxScene = selectedSceneId
+    ? data.scenes.find((scene) => scene.id === selectedSceneId && scene.kind !== 'chapter')
+    : undefined
+  const selectedSandboxBiome = selectedSandboxNodes.length === 0
+    ? undefined
+    : selectedSandboxNodes.every((node) => node.biome === selectedSandboxNodes[0].biome)
+      ? selectedSandboxNodes[0].biome
+      : '__mixed'
+  const allSandboxSelected = sandboxLocatedIds.length > 0
+    && sandboxLocatedIds.every((sid) => activeSandboxSelection.includes(sid))
+  const toggleSandboxScene = (sid: string) => setSandboxSelection((selected) =>
+    selected.includes(sid) ? selected.filter((id) => id !== sid) : [...selected, sid])
+  const applySandboxBiome = (biome: string) => {
+    if (!activeSandboxSelection.length || !BIOMES.includes(biome as (typeof BIOMES)[number])) return
+    const selected = new Set(activeSandboxSelection)
+    setData((current) => ({
+      ...current,
+      map_nodes: current.map_nodes.map((node) => selected.has(node.id) ? { ...node, biome } : node),
+      scenes: current.scenes.map((scene) => {
+        const node = current.map_nodes.find((n) => n.scene_id === scene.id && selected.has(n.id))
+        return node ? { ...scene, map: { ...(scene.map || {}), biome } } : scene
+      }),
+    }))
+  }
+  const updateSceneConnection = (sourceId: string, targetId: string, connected: boolean) => {
+    if (!sourceId || !targetId || sourceId === targetId) return
+    setData((current) => ({
+      ...current,
+      scenes: current.scenes.map((scene) => {
+        if (scene.kind === 'chapter') return scene
+        if (scene.id !== sourceId && scene.id !== targetId) return scene
+        const otherId = scene.id === sourceId ? targetId : sourceId
+        const connections = new Set(scene.connections || [])
+        if (connected) connections.add(otherId)
+        else connections.delete(otherId)
+        return { ...scene, connections: [...connections] }
+      }),
     }))
   }
   return (
@@ -228,11 +490,11 @@ export function ModuleDetailPage() {
             </div>
           )}
           {!isNew && !edit && (view === 'detail' || view === 'sandbox') && (
-            <button onClick={() => setEdit(true)} className="btn-secondary flex items-center gap-1 text-sm"><Pencil size={14} /> 编辑</button>
+            <button onClick={beginEdit} className="btn-secondary flex items-center gap-1 text-sm"><Pencil size={14} /> 编辑</button>
           )}
           {edit && (
             <>
-              {!isNew && <button onClick={() => setEdit(false)} className="btn-secondary flex items-center gap-1 text-sm"><X size={14} /> 取消</button>}
+              {!isNew && <button onClick={cancelEdit} className="btn-secondary flex items-center gap-1 text-sm"><X size={14} /> 取消</button>}
               <button onClick={save} disabled={saving} className="btn-primary flex items-center gap-1 text-sm"><Save size={14} /> {saving ? '保存中…' : '保存'}</button>
             </>
           )}
@@ -250,7 +512,8 @@ export function ModuleDetailPage() {
       ) : view === 'timeline' && !edit ? (
         <ModuleTimeline scenes={data.scenes} npcs={data.npcs} triggers={data.triggers} />
       ) : view === 'sandbox' ? (
-        <div>
+        <div className={edit ? 'grid gap-3 lg:grid-cols-[minmax(0,1fr)_252px]' : ''}>
+          <div className="min-w-0">
           {!edit && (
             <div className="flex justify-end mb-2">
               <ConfirmDialog
@@ -267,13 +530,64 @@ export function ModuleDetailPage() {
               </ConfirmDialog>
             </div>
           )}
+          {edit && (
+            <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
+              <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                已选 {activeSandboxSelection.length} 个地点
+              </span>
+              <button
+                type="button"
+                onClick={() => setSandboxSelection(allSandboxSelected ? [] : sandboxLocatedIds)}
+                disabled={!sandboxLocatedIds.length}
+                className="btn-secondary flex items-center gap-1 text-sm"
+              >
+                <ListChecks size={14} /> {allSandboxSelected ? '取消全选' : '全选地图节点'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSandboxSelection([])}
+                disabled={!activeSandboxSelection.length}
+                className="btn-secondary flex items-center !px-2 text-sm"
+                aria-label="清除沙盘节点选择"
+                title="清除选择"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
           <HexSandbox locations={sandboxLocs} disabled editable={edit} onMoveScene={moveScene}
+            selectedIds={activeSandboxSelection} onToggleScene={toggleSandboxScene}
+            onAddNode={addSandboxNode}
+            onDropBiome={dropSandboxBiome}
+            onDeleteNode={deleteSandboxNode}
             height="clamp(380px, 62vh, 640px)" />
           <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>
             {edit
-              ? '拖动场景到新格调整地理落位（撞格会被拒绝），点右上「保存」生效；未落位的新场景保存时自动落位。'
+              ? '从右侧拖入地貌新增节点；双击空白处新增；拖出沙盘删除；选中后右侧替换地貌、编辑连接。'
               : '作者视角：展示全部地点。游戏内玩家只能看到已知晓的地点（战争迷雾）。'}
           </p>
+          </div>
+          {edit && <div className="space-y-3">
+            <BiomePalette
+              selectedBiome={selectedSandboxBiome}
+              disabled={!activeSandboxSelection.length}
+              onSelect={applySandboxBiome}
+            />
+            <SceneConnectionEditor
+              scene={selectedSandboxScene}
+              scenes={data.scenes}
+              targetId={connectionTargetId}
+              onTargetChange={setConnectionTargetId}
+              onAdd={() => {
+                if (!selectedSceneId || !connectionTargetId) return
+                updateSceneConnection(selectedSceneId, connectionTargetId, true)
+                setConnectionTargetId('')
+              }}
+              onRemove={(targetId) => {
+                if (selectedSceneId) updateSceneConnection(selectedSceneId, targetId, false)
+              }}
+            />
+          </div>}
         </div>
       ) : (
       <>
@@ -336,7 +650,7 @@ export function ModuleDetailPage() {
               </Select>
             ) : <span className="badge" style={{ color: dangerMeta(s.danger)?.color, borderColor: dangerMeta(s.danger)?.color }}>{dangerMeta(s.danger)?.label || '平静'}</span>}</Row>
             <Row label="地貌">{edit ? (
-              <Select value={s.map?.biome ?? 'plain'} onValueChange={(v) => updScene(i, { map: { ...(s.map || {}), biome: v } })}>
+              <Select value={s.map?.biome ?? 'plain'} onValueChange={(v) => updSceneBiome(i, v)}>
                 <SelectTrigger className="w-28" aria-label={`地貌：${sceneName(s)}`}><SelectValue /></SelectTrigger>
                 <SelectContent>{BIOMES.map((biome) => <SelectItem key={biome} value={biome}>{BIOME_LABELS[biome]}</SelectItem>)}</SelectContent>
               </Select>

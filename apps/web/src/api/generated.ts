@@ -268,6 +268,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/modules/{module_id}/map/enrich": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enrich Map
+         * @description AI 补全沙盘：地貌、物理连接与语义落位。
+         */
+        post: operations["enrich_map_api_modules__module_id__map_enrich_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/modules/{module_id}/rag/rebuild": {
         parameters: {
             query?: never;
@@ -289,6 +309,26 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/modules/{module_id}/scene-map": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Patch Scene Map
+         * @description 沙盘编辑：把场景移到指定 hex 格（KP 拖拽修正），可顺带改地貌。撞格等非法情形 400。
+         */
+        patch: operations["patch_scene_map_api_modules__module_id__scene_map_patch"];
         trace?: never;
     };
     "/api/onboarding/start": {
@@ -2464,6 +2504,11 @@ export interface components {
             handouts: unknown[];
             /** Id */
             id: string;
+            /**
+             * Map Nodes
+             * @default []
+             */
+            map_nodes: unknown[];
             /** Npcs */
             npcs: unknown[];
             /**
@@ -2519,6 +2564,8 @@ export interface components {
              * @default []
              */
             handouts: unknown[];
+            /** Map Nodes */
+            map_nodes?: unknown[] | null;
             /**
              * Npcs
              * @default []
@@ -2692,6 +2739,17 @@ export interface components {
             status: string;
             /** Title */
             title: string;
+        };
+        /** SceneMapPatch */
+        SceneMapPatch: {
+            /** Biome */
+            biome?: string | null;
+            /** Q */
+            q: number;
+            /** R */
+            r: number;
+            /** Scene Id */
+            scene_id: string;
         };
         /** SessionCreate */
         SessionCreate: {
@@ -3440,6 +3498,37 @@ export interface operations {
             };
         };
     };
+    enrich_map_api_modules__module_id__map_enrich_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     rebuild_module_rag_api_modules__module_id__rag_rebuild_post: {
         parameters: {
             query?: never;
@@ -3458,6 +3547,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ModuleRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_scene_map_api_modules__module_id__scene_map_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SceneMapPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

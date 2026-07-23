@@ -16,12 +16,12 @@ import math
 
 BIOMES = (
     "plain", "forest", "water", "coast", "desert",
-    "mountain", "swamp", "urban", "ruin", "interior",
+    "mountain", "swamp", "urban", "ruin", "interior", "road",
 )
 BIOME_LABELS = {
     "plain": "原野", "forest": "密林", "water": "水域", "coast": "海岸",
     "desert": "荒漠", "mountain": "山地", "swamp": "沼泽", "urban": "城镇",
-    "ruin": "废墟", "interior": "室内",
+    "ruin": "废墟", "interior": "室内", "road": "道路",
 }
 
 # pointy-top axial 的六个邻接方向（环绕一圈，顺序只需确定性）
@@ -122,7 +122,7 @@ def ensure_scene_maps(scenes: list) -> bool:
     todo: list[int] = []
     for i, s in enumerate(locs):
         c = scene_coord(s)
-        if c is not None and c not in used:
+        if c is not None and c not in used and all(axial_distance(c, other) >= 2 for other in used):
             coord_of[i] = c
             used.add(c)
         else:
@@ -150,7 +150,7 @@ def ensure_scene_maps(scenes: list) -> bool:
             )
         else:
             target = (0, 0)
-        spot = next(c for c in _spiral(target) if c not in used)
+        spot = next(c for c in _spiral(target) if c not in used and all(axial_distance(c, other) >= 2 for other in used))
         coord_of[i] = spot
         used.add(spot)
         changed = True
@@ -197,6 +197,10 @@ def set_scene_map(db, module, scene_id: str, q: int, r: int, biome: str | None =
     for s in scenes:
         if isinstance(s, dict) and s.get("id") != scene_id and scene_coord(s) == (q, r):
             raise ValueError(f"该格已被「{s.get('title') or s.get('id')}」占用")
+        if isinstance(s, dict) and s.get("id") != scene_id:
+            other = scene_coord(s)
+            if other is not None and axial_distance((q, r), other) < 2:
+                raise ValueError("场景节点之间至少需要间隔一个普通节点")
     old = target.get("map") if isinstance(target.get("map"), dict) else {}
     if biome is not None:
         b = str(biome).strip().lower()
@@ -207,6 +211,17 @@ def set_scene_map(db, module, scene_id: str, q: int, r: int, biome: str | None =
         if b not in BIOMES:
             b = "plain"
     target["map"] = {"q": q, "r": r, "biome": b}
+    # 兼容仍使用 PATCH /scene-map 的调用方：同步统一地图节点，避免下一次读取时旧节点覆盖新位置。
+    map_nodes = [dict(node) for node in (getattr(module, "map_nodes", None) or []) if isinstance(node, dict)]
+    updated_node = False
+    for node in map_nodes:
+        if str(node.get("scene_id") or "") == str(scene_id) or node.get("id") == scene_id:
+            node.update({"id": scene_id, "q": q, "r": r, "biome": b, "scene_id": scene_id})
+            updated_node = True
+            break
+    if not updated_node:
+        map_nodes.append({"id": scene_id, "q": q, "r": r, "biome": b, "scene_id": scene_id})
+    module.map_nodes = map_nodes
     module.scenes = scenes
     db.add(module)
     db.commit()
