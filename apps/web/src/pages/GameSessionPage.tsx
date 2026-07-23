@@ -15,18 +15,25 @@ import { ContextUsageBadge } from '../components/game/ContextUsageBadge'
 import { RecapModal } from '../components/game/RecapModal'
 import { GrowthModal } from '../components/game/GrowthModal'
 import { InvestigationBoard } from '../components/game/InvestigationBoard'
+import { HexSandbox } from '../components/game/HexSandbox'
 import { ImprovisedNpcModal } from '../components/game/ImprovisedNpcModal'
 import { CombatStage, type CombatState, type PendingReaction, type CombatLogEntry, type CombatResultView } from '../components/game/CombatStage'
 import { ChasePanel, type ChaseState } from '../components/game/ChasePanel'
 import { HumanKpPanel } from '../components/game/HumanKpPanel'
 import { Modal } from '../components/ui/modal'
 import { GiReturnArrow, GiRollingDices, GiScrollUnfurled, GiTreasureMap, GiEnvelope, GiNewspaper, GiNotebook, GiPapers, GiUpgrade, GiCharacter, GiCrossedSwords, GiLaurelCrown, GiAncientRuins, GiMagnifyingGlass } from 'react-icons/gi'
-import { Copy, Bot, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2 } from 'lucide-react'
+import { Copy, Bot, RotateCcw, Search, X, PanelRightOpen, PanelRightClose, Pencil, Trash2, Hexagon, Eye, EyeOff } from 'lucide-react'
 import { ConfirmDialog } from '../components/ui/confirm-dialog'
 import { parseChaseState, parseCombatState, parsePendingReaction } from '../lib/liveState'
 import { useRepairableImage, type ModuleImageKind } from '../components/module/ModuleImage'
 
-interface KnownLocation { id: string; name: string; current: boolean; visited: boolean; connections?: string[]; party?: string[] }
+interface KnownLocation {
+  id: string; name: string; current: boolean; visited: boolean
+  connections?: string[]; party?: string[]
+  clues?: { id: string; name: string; status: string }[]
+  map?: { q: number; r: number; biome: string } | null   // 沙盘坐标与地貌
+  known?: boolean                                        // KP 上帝视角下玩家是否已知
+}
 interface SearchHit { id: string; sequence_num: number; event_type: string; actor_name: string; content: string }
 
 // [MOVE]/[MAP_MARK] 地图功能已下线，但旧事件文本里可能残留标签 → 保留在剔除名单里
@@ -367,6 +374,9 @@ export function GameSessionPage() {
 
   const [showImprov, setShowImprov] = useState(false)         // 临场角色收编（房主专用）
   const [locations, setLocations] = useState<KnownLocation[]>([])
+  const [mapTab, setMapTab] = useState<'sandbox' | 'board'>('sandbox')  // 大地图页签：沙盘/调查板
+  const [canGodView, setCanGodView] = useState(false)         // 真人 KP 席位（服务端判定）
+  const [playerView, setPlayerView] = useState(false)         // KP 切「玩家视角」预览迷雾
   // 乐观 pending：check_request 刚到时 world_state.pending_checks 还没刷新（要等 done→refetch），
   // 若此时按 pending_checks 判定会先显示「已投骰」再翻成「投骰」按钮。用本地集先认它是待投，消除闪烁。
   const [optimisticPending, setOptimisticPending] = useState<Set<string>>(new Set())
@@ -871,12 +881,13 @@ export function GameSessionPage() {
       .catch(() => setMyWeapons([]))
   }, [myCharId, refreshTick])
 
-  // 大地图（已知地点）：展开时拉取，前往后/生成结束刷新
+  // 大地图（已知地点）：展开时拉取，前往后/生成结束刷新。真人 KP 返回全图（god_view）。
   useEffect(() => {
     if (!showBigMap || !sessionId) return
     const q = myCharId ? `?char_id=${myCharId}` : ''
-    api.get<{ locations: KnownLocation[] }>(`/sessions/${sessionId}/locations${q}`)
-      .then((r) => setLocations(r.locations || [])).catch(() => setLocations([]))
+    api.get<{ locations: KnownLocation[]; god_view?: boolean }>(`/sessions/${sessionId}/locations${q}`)
+      .then((r) => { setLocations(r.locations || []); setCanGodView(!!r.god_view) })
+      .catch(() => { setLocations([]); setCanGodView(false) })
   }, [showBigMap, sessionId, myCharId, currentSession?.current_scene_id, refreshTick])
 
   const travelTo = async (sceneId: string) => {
@@ -1411,9 +1422,39 @@ export function GameSessionPage() {
                 <span className="text-sm font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-text-accent)' }}>
                   <GiTreasureMap size={14} /> 大地图 · 前往已知地点
                 </span>
-                <button onClick={() => { setConfirmTravel(null); setShowBigMap(false) }} title="关闭（Esc）" style={{ color: 'var(--color-text-secondary)' }}><X size={16} /></button>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center rounded-md overflow-hidden" style={{ border: '1px solid var(--color-border)' }}>
+                    {([['sandbox', '沙盘'], ['board', '调查板']] as const).map(([key, label]) => (
+                      <button key={key} onClick={() => setMapTab(key)}
+                        className="px-2 py-0.5 text-xs inline-flex items-center gap-1"
+                        style={{
+                          background: mapTab === key ? 'var(--color-bg-secondary)' : 'transparent',
+                          color: mapTab === key ? 'var(--color-text-accent)' : 'var(--color-text-secondary)',
+                        }}>
+                        {key === 'sandbox' ? <Hexagon size={11} /> : <GiMagnifyingGlass size={11} />}{label}
+                      </button>
+                    ))}
+                  </div>
+                  {canGodView && mapTab === 'sandbox' && (
+                    <button onClick={() => setPlayerView((v) => !v)}
+                      className="px-2 py-0.5 text-xs inline-flex items-center gap-1 rounded-md"
+                      title={playerView ? '当前为玩家视角（迷雾预览）' : '当前为上帝视角（全图）'}
+                      style={{ border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>
+                      {playerView ? <EyeOff size={11} /> : <Eye size={11} />}
+                      {playerView ? '玩家视角' : '上帝视角'}
+                    </button>
+                  )}
+                  <button onClick={() => { setConfirmTravel(null); setShowBigMap(false) }} title="关闭（Esc）" style={{ color: 'var(--color-text-secondary)' }}><X size={16} /></button>
+                </div>
               </div>
-              <InvestigationBoard locations={locations} disabled={streaming} onPick={setConfirmTravel} height="clamp(320px, 58vh, 560px)" />
+              {mapTab === 'sandbox' ? (
+                <HexSandbox
+                  locations={canGodView && playerView ? locations.filter((l) => l.known !== false) : locations}
+                  disabled={streaming} onPick={setConfirmTravel} height="clamp(320px, 58vh, 560px)" />
+              ) : (
+                /* 调查板保持「玩家已知」语义：KP 上帝视角只属于沙盘，未知地点不混入线索板 */
+                <InvestigationBoard locations={locations.filter((l) => l.known !== false)} disabled={streaming} onPick={setConfirmTravel} height="clamp(320px, 58vh, 560px)" />
+              )}
               {confirmTravel ? (
                 <div className="mt-2 rounded-md px-3 py-2 text-xs flex items-center gap-3 flex-wrap"
                   style={{ background: 'var(--color-bg-secondary)', border: '1px solid var(--color-accent)' }}>
