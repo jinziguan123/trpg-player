@@ -23,6 +23,16 @@ import {
   X,
 } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { MultiSelect } from '@/components/ui/multi-select'
 
 type KpAction =
   | 'narration'
@@ -129,32 +139,35 @@ interface ActorSelectProps {
 function ActorSelect({
   label, value, workspace, onChange, includeGroup = false, disabledValue,
 }: ActorSelectProps) {
+  const emptyValue = '__kp_no_actor__'
   return (
-    <select
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      className="input min-w-40 flex-1 text-xs"
-      aria-label={label}
-    >
-      <option value="">选择{label}</option>
-      {includeGroup && <option value="在场">在场所有角色</option>}
-      {!!workspace?.catalogs.characters?.length && (
-        <optgroup label="游戏角色">
-          {workspace.catalogs.characters.map((item) => {
-            const ref = `character:${item.id}`
-            return <option key={ref} value={ref} disabled={ref === disabledValue}>{item.name}</option>
-          })}
-        </optgroup>
-      )}
-      {!!workspace?.catalogs.npcs.length && (
-        <optgroup label="NPC">
-          {workspace.catalogs.npcs.map((item) => {
-            const ref = `npc:${item.id}`
-            return <option key={ref} value={ref} disabled={ref === disabledValue}>{item.name}</option>
-          })}
-        </optgroup>
-      )}
-    </select>
+    <Select value={value || emptyValue} onValueChange={(nextValue) => onChange(nextValue === emptyValue ? '' : nextValue)}>
+      <SelectTrigger className="min-w-40 flex-1 text-xs" aria-label={label}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={emptyValue}>选择{label}</SelectItem>
+        {includeGroup && <SelectItem value="在场">在场所有角色</SelectItem>}
+        {!!workspace?.catalogs.characters?.length && (
+          <SelectGroup>
+            <SelectLabel>游戏角色</SelectLabel>
+            {workspace.catalogs.characters.map((item) => {
+              const ref = `character:${item.id}`
+              return <SelectItem key={ref} value={ref} disabled={ref === disabledValue}>{item.name}</SelectItem>
+            })}
+          </SelectGroup>
+        )}
+        {!!workspace?.catalogs.npcs.length && (
+          <SelectGroup>
+            <SelectLabel>NPC</SelectLabel>
+            {workspace.catalogs.npcs.map((item) => {
+              const ref = `npc:${item.id}`
+              return <SelectItem key={ref} value={ref} disabled={ref === disabledValue}>{item.name}</SelectItem>
+            })}
+          </SelectGroup>
+        )}
+      </SelectContent>
+    </Select>
   )
 }
 
@@ -163,21 +176,24 @@ function DiceAdjustment({
 }: { label: string; bonus: string; penalty: string; onChange: (bonus: string, penalty: string) => void }) {
   const value = bonus && bonus !== '0' ? `bonus:${bonus}` : penalty && penalty !== '0' ? `penalty:${penalty}` : 'none'
   return (
-    <select
+    <Select
       value={value}
-      onChange={(event) => {
-        const [kind, count = ''] = event.target.value.split(':')
+      onValueChange={(nextValue) => {
+        const [kind, count = ''] = nextValue.split(':')
         onChange(kind === 'bonus' ? count : '', kind === 'penalty' ? count : '')
       }}
-      className="input w-auto text-xs"
-      aria-label={label}
     >
-      <option value="none">无奖惩骰</option>
-      <option value="bonus:1">奖励骰 +1</option>
-      <option value="bonus:2">奖励骰 +2</option>
-      <option value="penalty:1">惩罚骰 +1</option>
-      <option value="penalty:2">惩罚骰 +2</option>
-    </select>
+      <SelectTrigger className="w-auto min-w-28 text-xs" aria-label={label}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="none">无奖惩骰</SelectItem>
+        <SelectItem value="bonus:1">奖励骰 +1</SelectItem>
+        <SelectItem value="bonus:2">奖励骰 +2</SelectItem>
+        <SelectItem value="penalty:1">惩罚骰 +1</SelectItem>
+        <SelectItem value="penalty:2">惩罚骰 +2</SelectItem>
+      </SelectContent>
+    </Select>
   )
 }
 
@@ -763,16 +779,16 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
             </div>
           )}
           <div className="mb-2 flex items-center gap-2">
-            <select
-              value={action}
-              onChange={(event) => { setAction(event.target.value as KpAction); setFields({}) }}
-              className="input !w-auto text-xs"
-              aria-label="KP 动作"
-            >
-              {Object.entries(ACTION_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
+            <Select value={action} onValueChange={(value) => { setAction(value as KpAction); setFields({}) }}>
+              <SelectTrigger className="w-auto min-w-32 text-xs" aria-label="KP 动作">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(ACTION_LABELS).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>{label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="flex flex-wrap gap-2">
             {action === 'narration' && (
@@ -812,9 +828,16 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
                 includeGroup
                 onChange={(value) => setField('char', value)}
               />
-              <select value={fields.difficulty || 'normal'} onChange={(event) => setField('difficulty', event.target.value)} className="input w-auto text-xs">
-                <option value="normal">普通</option><option value="hard">困难</option><option value="extreme">极难</option>
-              </select>
+              <Select value={fields.difficulty || 'normal'} onValueChange={(value) => setField('difficulty', value)}>
+                <SelectTrigger className="w-auto min-w-20 text-xs" aria-label="检定难度">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="normal">普通</SelectItem>
+                  <SelectItem value="hard">困难</SelectItem>
+                  <SelectItem value="extreme">极难</SelectItem>
+                </SelectContent>
+              </Select>
               <DiceAdjustment
                 label="检定奖惩骰"
                 bonus={fields.bonus || ''}
@@ -866,7 +889,10 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
               <span className="self-center text-xs" style={{ color: 'var(--color-text-secondary)' }}>颗</span>
               <input type="number" min="2" max="1000" value={fields.sides || '6'} onChange={(event) => setField('sides', event.target.value)} className="input w-24 text-xs" aria-label="骰子面数" title="骰子面数" />
               <span className="self-center text-xs" style={{ color: 'var(--color-text-secondary)' }}>面</span>
-              <input type="number" min="-10000" max="10000" value={fields.modifier || '0'} onChange={(event) => setField('modifier', event.target.value)} className="input w-24 text-xs" aria-label="结果修正值" title="结果修正值" />
+              <label className="inline-flex items-center gap-2 text-xs" style={{ color: 'var(--color-text-secondary)' }}>
+                <span className="shrink-0">修正</span>
+                <input type="number" min="-10000" max="10000" value={fields.modifier || '0'} onChange={(event) => setField('modifier', event.target.value)} className="input w-24 text-xs" aria-label="结果修正值" />
+              </label>
               <KpInput name="reason" placeholder="掷骰用途，如 参战敌人数" fields={fields} onChange={setField} />
               <BlindToggle checked={fields.visibility === 'blind'} onChange={(checked) => setField('visibility', checked ? 'blind' : '')} />
             </>}
@@ -878,7 +904,18 @@ export function HumanKpPanel({ sessionId, turnReady = false }: Props) {
             {(action === 'set_flag' || action === 'clear_flag') && <KpInput name="flag" placeholder="剧情标志" fields={fields} onChange={setField} />}
             {action === 'handout' && <><GiScrollUnfurled size={16} /><KpInput name="id" placeholder="手书 ID" list="kp-handouts" fields={fields} onChange={setField} /></>}
             {action === 'hp_change' && <><KpInput name="target" placeholder="角色名" fields={fields} onChange={setField} /><KpInput name="delta" placeholder="变化值，如 -3 或 2" fields={fields} onChange={setField} /><KpInput name="reason" placeholder="原因（可选）" fields={fields} onChange={setField} /></>}
-            {action === 'start_combat' && <><Swords size={16} /><KpInput name="enemies" placeholder="敌人名称，多个用逗号分隔" list="kp-npcs" fields={fields} onChange={setField} /><KpInput name="trigger" placeholder="开战原因（可选）" fields={fields} onChange={setField} /></>}
+            {action === 'start_combat' && <>
+              <Swords size={16} />
+              <MultiSelect
+                value={(fields.enemies || '').split(',').map((item) => item.trim()).filter(Boolean)}
+                options={(workspace?.catalogs.npcs || []).map((item) => ({ value: item.id, label: item.name }))}
+                onValueChange={(value) => setField('enemies', value.join(','))}
+                placeholder="选择参战敌人"
+                aria-label="参战敌人"
+                className="min-w-48 flex-1"
+              />
+              <KpInput name="trigger" placeholder="开战原因（可选）" fields={fields} onChange={setField} />
+            </>}
             <button onClick={() => void submit()} disabled={!!busy} className="btn-primary inline-flex items-center gap-1 text-xs">
               {(['dice_check', 'opposed_check', 'generic_roll'] as KpAction[]).includes(action) ? <GiRollingDices size={13} /> : <Send size={13} />}
               {busy ? '处理中…' : ACTION_LABELS[action]}
