@@ -18,12 +18,17 @@ export interface SandboxLocation {
   clues?: { id: string; name: string; status: string }[]
   map?: { q: number; r: number; biome: string } | null
   known?: boolean
+  danger?: string
 }
 
 interface Props {
   locations: SandboxLocation[]
   disabled: boolean
-  onPick: (loc: SandboxLocation) => void
+  /** 点击已知地点（travel 选点）。不传则瓦片不可点（如模组页只读浏览）。 */
+  onPick?: (loc: SandboxLocation) => void
+  /** 编辑落位：可拖场景到新格，落格时回调（父组件负责撞格校验与状态更新）。 */
+  editable?: boolean
+  onMoveScene?: (id: string, q: number, r: number) => void
   height?: string
 }
 
@@ -37,6 +42,23 @@ const FOG = '#0d0b08'              // 迷雾底色
 /** pointy-top axial → 像素（与后端 hex_map._to_pixel 同一取向：东 +q，南 +r 屏幕向）。 */
 const SQRT3 = Math.sqrt(3)
 const hexXY = (q: number, r: number) => ({ x: R * SQRT3 * (q + r / 2), y: R * 1.5 * r })
+
+/** 像素 → 最近的 axial 格（cube 取整，与后端 _axial_round 同法），拖拽落格用。 */
+function xyToHex(x: number, y: number): { q: number; r: number } {
+  const rf = y / (R * 1.5)
+  const qf = x / (R * SQRT3) - rf / 2
+  const sf = -qf - rf
+  let q = Math.round(qf), r = Math.round(rf)
+  const s = Math.round(sf)
+  const dq = Math.abs(q - qf), dr = Math.abs(r - rf), ds = Math.abs(s - sf)
+  if (dq > dr && dq > ds) q = -r - s
+  else if (dr > ds) r = -q - s
+  return { q, r }
+}
+
+const DANGER_COLORS: Record<string, string> = {
+  uneasy: '#cfa93f', dangerous: '#d1703c', deadly: '#c0392b',
+}
 
 const AXIAL_DIRS: [number, number][] = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]]
 
@@ -128,7 +150,7 @@ function HexDeco({ q, r, biome }: { q: number; r: number; biome: string }) {
   ))}</>
 }
 
-export function HexSandbox({ locations, disabled, onPick, height = 'clamp(320px, 58vh, 560px)' }: Props) {
+export function HexSandbox({ locations, disabled, onPick, editable, onMoveScene, height = 'clamp(320px, 58vh, 560px)' }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 640, h: 420 })
   useEffect(() => {
@@ -248,13 +270,19 @@ export function HexSandbox({ locations, disabled, onPick, height = 'clamp(320px,
             const style = biomeOf(l.map!.biome)
             const unknown = l.known === false            // 仅 KP 上帝视角会收到
             const heard = !unknown && !l.visited && !l.current   // 听说过未到访
-            const clickable = !l.current && !disabled && !unknown
-            const nameW = Math.max(44, l.name.length * 13 + 14)
+            const clickable = !!onPick && !l.current && !disabled && !unknown
             return (
               <Group key={l.id} x={p.x} y={p.y}
-                onClick={() => clickable && onPick(l)}
-                onTap={() => clickable && onPick(l)}
-                onMouseEnter={(e) => { const st = e.target.getStage(); if (st) st.container().style.cursor = clickable ? 'pointer' : 'grab' }}
+                draggable={!!editable}
+                onDragEnd={(e: KonvaEventObject<DragEvent>) => {
+                  const node = e.target
+                  const { q, r } = xyToHex(node.x(), node.y())
+                  node.position(p)              // 复位；父组件更新 map 后由 props 重绘到新格
+                  onMoveScene?.(l.id, q, r)
+                }}
+                onClick={() => clickable && onPick?.(l)}
+                onTap={() => clickable && onPick?.(l)}
+                onMouseEnter={(e) => { const st = e.target.getStage(); if (st) st.container().style.cursor = editable ? 'move' : clickable ? 'pointer' : 'grab' }}
                 onMouseLeave={(e) => { const st = e.target.getStage(); if (st) st.container().style.cursor = 'grab' }}>
                 {l.current && (
                   <Circle radius={R * 1.75} listening={false}
@@ -268,6 +296,11 @@ export function HexSandbox({ locations, disabled, onPick, height = 'clamp(320px,
                   shadowColor={l.current ? CANDLE : undefined}
                   shadowBlur={l.current ? 14 : 0} shadowOpacity={0.5} />
                 <HexDeco q={l.map!.q} r={l.map!.r} biome={l.map!.biome} />
+                {/* 危险度内环（calm 不标）：模组页/带 danger 的 payload 才有 */}
+                {!unknown && l.danger && DANGER_COLORS[l.danger] && (
+                  <RegularPolygon sides={6} radius={R - 8} stroke={DANGER_COLORS[l.danger]}
+                    strokeWidth={1.4} opacity={0.75} listening={false} />
+                )}
                 {/* 迷雾覆层：听说过=蒙尘；未知=浓雾（仅上帝视角出现） */}
                 {(heard || unknown) && (
                   <RegularPolygon sides={6} radius={R - 2} fill={FOG}

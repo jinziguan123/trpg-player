@@ -396,6 +396,7 @@ def get_module(module_id: str, db: Session = Depends(get_db)):
     module = module_service.get_module(db, module_id)
     if not module:
         raise HTTPException(404, "模组不存在")
+    hex_map.ensure_module_map(db, module)   # 存量模组沙盘坐标懒回填（幂等），供详情页沙盘直用
     return module
 
 

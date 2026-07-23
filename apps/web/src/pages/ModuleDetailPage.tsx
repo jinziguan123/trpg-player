@@ -4,17 +4,19 @@ import { toast } from 'sonner'
 import { api } from '../api/client'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { GiReturnArrow, GiScrollUnfurled, GiPadlock } from 'react-icons/gi'
-import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch } from 'lucide-react'
+import { Plus, Trash2, Pencil, Save, X, Eye, Network, FileText, GitBranch, Hexagon } from 'lucide-react'
 import { ModuleGraph } from '../components/module/ModuleGraph'
+import { HexSandbox } from '../components/game/HexSandbox'
 import { ModuleImage, type ModuleImageKind } from '../components/module/ModuleImage'
 import { ModuleTimeline } from '../components/module/ModuleTimeline'
 import { MODULE_DIFFICULTIES } from '../lib/module'
 
-// 场景瓦片地图已下线；旧模组数据里的 scenes[].map / states[].map 字段容忍存在（保存时原样透传，不读取）
+// scenes[].map 现为沙盘落位契约 {q,r,biome}（旧瓦片图遗留数据由后端归一化接管）；states[].map 容忍存在
 interface SceneState { when?: string[]; danger?: string; atmosphere?: string; description?: string }
 interface NpcState { when?: string[]; personality?: string; initial_location?: string; alive?: boolean }
 interface SceneEvent { trigger?: string; kind?: string; san_loss?: string; skill?: string; damage?: string; note?: string }
-interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; connections?: string[]; events?: SceneEvent[]; states?: SceneState[]; image?: string }
+interface SceneMap { q: number; r: number; biome: string }
+interface Scene { id: string; name?: string; title?: string; description?: string; danger?: string; atmosphere?: string; kind?: string; connections?: string[]; events?: SceneEvent[]; states?: SceneState[]; image?: string; map?: SceneMap | null }
 interface NPC { id: string; name?: string; description?: string; personality?: string; background?: string; secrets?: string[]; initial_location?: string; skills?: Record<string, number>; attributes?: Record<string, number>; hp?: number; armor?: number; weapon?: string; goals?: string[]; states?: NpcState[]; portrait?: string }
 interface Clue { id: string; name?: string; description?: string; location?: string; trigger_condition?: string; image?: string }
 interface Trigger { id: string; when?: string; set_flags?: string[]; clear_flags?: string[]; description?: string }
@@ -77,7 +79,7 @@ export function ModuleDetailPage() {
   const isNew = !id
   const [data, setData] = useState<ModuleData>(BLANK)
   const [edit, setEdit] = useState(isNew)
-  const [view, setView] = useState<'detail' | 'graph' | 'timeline'>('detail')
+  const [view, setView] = useState<'detail' | 'graph' | 'timeline' | 'sandbox'>('detail')
   const [loading, setLoading] = useState(!isNew)
   const [saving, setSaving] = useState(false)
 
@@ -163,10 +165,26 @@ export function ModuleDetailPage() {
   const tagsText = Array.isArray(data.world_setting.tags) ? (data.world_setting.tags as string[]).join('、') : wsStr(data.world_setting, 'tags')
 
   const graph = view === 'graph'
-  const wide = graph && !edit
-  const tabBtn = (v: 'detail' | 'graph' | 'timeline', icon: React.ReactNode, label: string) => (
+  const wide = (graph && !edit) || view === 'sandbox'
+  const tabBtn = (v: 'detail' | 'graph' | 'timeline' | 'sandbox', icon: React.ReactNode, label: string) => (
     <button onClick={() => setView(v)} className="flex items-center gap-1 px-2 py-1" style={view === v ? { background: 'var(--color-accent)', color: 'var(--color-on-accent)' } : { color: 'var(--color-text-secondary)' }}>{icon} {label}</button>
   )
+  // 沙盘数据：模组视角=作者上帝视角（无迷雾）；chapter 章节不上图；未落位场景保存时由后端自动落位
+  const sandboxLocs = data.scenes
+    .filter((s) => s.kind !== 'chapter')
+    .map((s) => ({
+      id: s.id, name: sceneName(s), current: false, visited: true, known: true,
+      connections: s.connections, map: s.map, danger: s.danger,
+    }))
+  const moveScene = (sid: string, q: number, r: number) => {
+    const clash = data.scenes.find((s) => s.id !== sid && s.map && s.map.q === q && s.map.r === r)
+    if (clash) { toast.error(`该格已被「${sceneName(clash)}」占用`); return }
+    setData((d) => ({
+      ...d,
+      scenes: d.scenes.map((s) => s.id === sid
+        ? { ...s, map: { q, r, biome: s.map?.biome || 'plain' } } : s),
+    }))
+  }
   return (
     <div className={wide ? 'max-w-6xl' : 'max-w-3xl'}>
       <div className="flex items-center gap-3 mb-4">
@@ -175,14 +193,15 @@ export function ModuleDetailPage() {
         </button>
         <h2 className="page-title !mb-0 flex items-center gap-2"><GiScrollUnfurled />{isNew ? '新建模组' : edit ? '编辑模组' : '查看模组'}</h2>
         <div className="ml-auto flex gap-2 items-center">
-          {!edit && !isNew && (
+          {!isNew && (
             <div className="flex rounded overflow-hidden text-sm" style={{ border: '1px solid var(--color-border)' }}>
               {tabBtn('detail', <FileText size={14} />, '详情')}
-              {tabBtn('graph', <Network size={14} />, '关系图')}
-              {tabBtn('timeline', <GitBranch size={14} />, '时间线')}
+              {!edit && tabBtn('graph', <Network size={14} />, '关系图')}
+              {!edit && tabBtn('timeline', <GitBranch size={14} />, '时间线')}
+              {tabBtn('sandbox', <Hexagon size={14} />, '沙盘')}
             </div>
           )}
-          {!isNew && !edit && view === 'detail' && (
+          {!isNew && !edit && (view === 'detail' || view === 'sandbox') && (
             <button onClick={() => setEdit(true)} className="btn-secondary flex items-center gap-1 text-sm"><Pencil size={14} /> 编辑</button>
           )}
           {edit && (
@@ -196,7 +215,7 @@ export function ModuleDetailPage() {
 
       {!edit && (
         <div className="card mb-4 flex items-center gap-2 text-sm" style={{ borderColor: 'var(--color-danger)', color: 'var(--color-danger)' }}>
-          <Eye size={15} /> 剧透警告：{view === 'graph' ? '关系图含线索归属等剧情结构' : view === 'timeline' ? '时间线含剧情推进与 NPC 生死等结构' : '以下含 NPC 秘密、线索与真相'}。若你打算亲自游玩本模组，请勿继续阅读。
+          <Eye size={15} /> 剧透警告：{view === 'graph' ? '关系图含线索归属等剧情结构' : view === 'timeline' ? '时间线含剧情推进与 NPC 生死等结构' : view === 'sandbox' ? '沙盘展示全部地点的地理分布（含玩家尚未发现的场景）' : '以下含 NPC 秘密、线索与真相'}。若你打算亲自游玩本模组，请勿继续阅读。
         </div>
       )}
 
@@ -204,6 +223,16 @@ export function ModuleDetailPage() {
         <ModuleGraph moduleId={data.id} scenes={data.scenes} npcs={data.npcs} clues={data.clues} onImageRegenerated={onGraphImageRegenerated} />
       ) : view === 'timeline' && !edit ? (
         <ModuleTimeline scenes={data.scenes} npcs={data.npcs} triggers={data.triggers} />
+      ) : view === 'sandbox' ? (
+        <div>
+          <HexSandbox locations={sandboxLocs} disabled editable={edit} onMoveScene={moveScene}
+            height="clamp(380px, 62vh, 640px)" />
+          <p className="text-xs mt-2" style={{ color: 'var(--color-text-secondary)' }}>
+            {edit
+              ? '拖动场景到新格调整地理落位（撞格会被拒绝），点右上「保存」生效；未落位的新场景保存时自动落位。'
+              : '作者视角：展示全部地点。游戏内玩家只能看到已知晓的地点（战争迷雾）。'}
+          </p>
+        </div>
       ) : (
       <>
       {/* 基本信息 */}
