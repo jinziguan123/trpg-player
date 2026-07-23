@@ -231,9 +231,9 @@ export function NewGamePanel({ setup }: { setup: GameSetupState }) {
                         color: 'var(--color-text-accent)',
                       } : undefined}
                     >
-                      <SeatIcon kind={emptyHuman ? 'empty' : index === 0 ? 'me' : 'ai'} size={12} />
-                      {kpMode === 'human' && index === 0
-                        ? '真人玩家 1'
+                      <SeatIcon kind={emptyHuman ? 'empty' : kpMode !== 'human' && index === 0 ? 'me' : 'ai'} size={12} />
+                      {kpMode === 'human'
+                        ? (emptyHuman ? `真人玩家 ${index + 1}` : `AI 队友 ${index + 1}`)
                         : index === 0 ? '你（真人）' : emptyHuman ? `真人 ${index + 1}` : `AI 队友 ${index}`}
                     </span>
                     {emptyHuman ? (
@@ -248,7 +248,7 @@ export function NewGamePanel({ setup }: { setup: GameSetupState }) {
                     ) : (
                       <Select value={seat.charId} onValueChange={(value) => assignSeat(index, value)}>
                         <SelectTrigger className="flex-1">
-                          <SelectValue placeholder={index === 0 ? '选择你的角色' : '选择 AI 队友角色'} />
+                          <SelectValue placeholder={kpMode !== 'human' && index === 0 ? '选择你的角色' : '选择 AI 队友角色'} />
                         </SelectTrigger>
                         <SelectContent>
                           {seatOptions(index).map((character) => (
@@ -259,7 +259,7 @@ export function NewGamePanel({ setup }: { setup: GameSetupState }) {
                         </SelectContent>
                       </Select>
                     )}
-                    {index > 0 && (
+                    {(index > 0 || kpMode === 'human') && (
                       <button
                         onClick={() => setSeatRole(index, emptyHuman ? 'ai' : 'human')}
                         className="btn-secondary whitespace-nowrap !px-2 !py-1 text-xs"

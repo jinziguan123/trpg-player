@@ -85,7 +85,8 @@ export function useGameSetup() {
       const target = Math.max(minSeats, Math.min(range.max, current.length + delta))
       const next = current.slice(0, target)
       while (next.length < target) next.push({ role: 'ai', charId: '' })
-      if (next[0]) next[0] = { ...next[0], role: 'human' }
+      // AI KP 模式 0 号席是创建者本人（必为真人）；真人 KP 模式所有玩家席自由选 AI/真人
+      if (kpMode === 'ai' && next[0]) next[0] = { ...next[0], role: 'human' }
       return next
     })
   }
@@ -169,9 +170,9 @@ export function useGameSetup() {
   }
 
   const allSeatsFilled = seats.length > 0 && seats.every((seat, index) => {
-    // 真人 KP 创建者不占玩家席：首个真人席留空，进大厅后由另一枚 token 认领。
-    if (kpMode === 'human' && index === 0) return true
-    if (index === 0) return Boolean(seat.charId)
+    // 真人 KP：创建者只占 KP 席，玩家席自由——真人席留空待认领、AI 席需填角色。
+    if (kpMode === 'human') return seat.role === 'human' ? true : Boolean(seat.charId)
+    if (index === 0) return Boolean(seat.charId)   // AI KP：0 号是创建者自己，需选角色
     if (seat.role === 'human') return true
     return Boolean(seat.charId)
   })
@@ -205,8 +206,14 @@ export function useGameSetup() {
     setKpModeState(mode)
     if (mode === 'human') {
       // 清掉创建者之前选中的玩家角色，确保同一 token 不会同时占 KP/玩家席。
+      // 默认留成真人空席，但此后每个席位（含 0 号）都可自由切 AI/真人。
       setSeats((current) => current.map((seat, index) => (
         index === 0 ? { ...seat, role: 'human', charId: '' } : seat
+      )))
+    } else {
+      // 切回 AI KP：0 号席就是创建者本人，必为真人。
+      setSeats((current) => current.map((seat, index) => (
+        index === 0 ? { ...seat, role: 'human' } : seat
       )))
     }
   }

@@ -55,12 +55,16 @@ def active_character_ids(
 
 
 def _normalize_participants(
-    participants: list[dict], *, allow_empty_primary: bool = False,
+    participants: list[dict], *,
+    allow_empty_primary: bool = False,
+    allow_ai_primary: bool = False,
 ) -> list[dict]:
-    """补全主角标记并强制主角为 human，去重保序。
+    """补全主角标记，去重保序。
 
     真人 KP 新建房间时，主角席可以暂时为空，等待另一枚 token 认领；旧模式仍要求
     主角席带角色，避免旧客户端误建出无法行动的房间。
+    ``allow_ai_primary``（真人 KP 新模型）：玩家席可全 AI，主角只是默认上下文锚点，
+    允许落在 AI 席上（玩家角色一视同仁）；其余模式主角仍强制真人。
     """
     seen: set[str] = set()
     seats: list[dict] = []
@@ -101,8 +105,9 @@ def _normalize_participants(
         raise ValueError("只能有一个主角席位")
     if not primaries[0]["character_id"] and not allow_empty_primary:
         raise ValueError("主角席位必须填入角色")
-    # 主角必为真人
-    primaries[0]["role"] = "human"
+    # 主角必为真人（真人 KP 新模型除外：全 AI 玩家席时主角可以是 AI 锚点）
+    if not (allow_ai_primary and primaries[0]["character_id"]):
+        primaries[0]["role"] = "human"
     return seats
 
 
@@ -129,10 +134,18 @@ def create_session(
     requested_primary = next(
         (p for p in participants if p.get("is_primary")), participants[0]
     )
-    legacy_human_kp = kp_mode == "human" and bool(requested_primary.get("character_id"))
+    # 旧客户端的特征是「创建者自己的真人角色占主角席」；新模型下主角席带 AI 角色
+    # （全 AI 玩家席）不算 legacy——否则会误建出旧双席位模型。
+    legacy_human_kp = (
+        kp_mode == "human"
+        and bool(requested_primary.get("character_id"))
+        and (requested_primary.get("role") or "ai") == "human"
+    )
+    new_human_kp = kp_mode == "human" and not legacy_human_kp
     seats = _normalize_participants(
         participants,
-        allow_empty_primary=kp_mode == "human" and not legacy_human_kp,
+        allow_empty_primary=new_human_kp,
+        allow_ai_primary=new_human_kp,
     )
 
     for seat in seats:
@@ -568,7 +581,13 @@ def lobby_gaps(db: Session, session_id: str) -> list[str]:
     if not_ready:
         gaps.append(f"还有 {len(not_ready)} 名玩家未准备")
     if not any(p.role == "human" and p.character_id for p in parts):
-        gaps.append("至少需要 1 名真人玩家")
+        # 真人 KP 新模型：KP 本人就是真人，玩家席可全 AI——只要求至少 1 个已入座角色，
+        # 防止「零角色开局」的死局；其余模式维持至少 1 名真人玩家。
+        if session and session.kp_mode == "human" and session.identity_version >= 2:
+            if not any(p.role != "kp" and p.character_id for p in parts):
+                gaps.append("至少需要 1 个已入座的角色（真人认领或 AI 队友）")
+        else:
+            gaps.append("至少需要 1 名真人玩家")
     return gaps
 
 

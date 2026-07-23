@@ -704,7 +704,11 @@ def test_human_kp_travel_commits_location_without_ai_generation(client):
         json={
             "module_id": ids["module"],
             "kp_mode": "human",
-            "participants": [{"character_id": ids["hero"], "is_primary": True}],
+            # legacy 双席位模型的特征是「创建者的真人角色占主角席」（旧前端显式传 role=human）；
+            # 主角席带 AI 角色是新模型的全 AI 局，不再算 legacy。
+            "participants": [
+                {"character_id": ids["hero"], "role": "human", "is_primary": True},
+            ],
         },
     )
     assert created.status_code == 200, created.text

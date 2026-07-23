@@ -82,7 +82,14 @@ export function RoomLobbyPage() {
     if (empty) out.push(`还有 ${empty} 个空席未填角色`)
     const notReady = playerSeats.filter((p) => p.character_id && p.role === 'human' && !p.ready).length
     if (notReady) out.push(`还有 ${notReady} 名玩家未准备`)
-    if (!playerSeats.some((p) => p.role === 'human' && p.character_id)) out.push('至少需要 1 名真人玩家')
+    if (!playerSeats.some((p) => p.role === 'human' && p.character_id)) {
+      // 真人 KP 新模型：KP 即真人，玩家席可全 AI——只要求至少 1 个已入座角色（与后端一致）
+      if (r.kp_mode === 'human' && (r.identity_version ?? 1) >= 2) {
+        if (!playerSeats.some((p) => p.character_id)) out.push('至少需要 1 个已入座的角色（真人认领或 AI 队友）')
+      } else {
+        out.push('至少需要 1 名真人玩家')
+      }
+    }
     return out
   }, [])
 

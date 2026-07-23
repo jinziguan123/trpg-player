@@ -46,14 +46,14 @@ def resolve_player_character(
     )
     if player is None:
         # 真人 KP 新身份模型允许创建者只占 KP 席，主角席暂时为空；
-        # 只要已有真人玩家入座，就用第一名真人角色作为上下文锚点。
-        participant_ids = [
-            p.character_id
-            for p in session_service.get_participants(db, session_id)
-            if p.role == "human" and p.character_id
-        ]
-        if participant_ids:
-            player = db.get(Character, participant_ids[0])
+        # 优先用第一名真人角色作锚点；全 AI 玩家席（KP 独走局）则回落到
+        # 第一个已入座的 AI 队友——KP 工具（参谋/动作执行）都需要这个上下文锚。
+        parts = session_service.get_participants(db, session_id)
+        human_ids = [p.character_id for p in parts if p.role == "human" and p.character_id]
+        any_ids = [p.character_id for p in parts if p.role != "kp" and p.character_id]
+        anchor = human_ids[0] if human_ids else (any_ids[0] if any_ids else None)
+        if anchor:
+            player = db.get(Character, anchor)
     return player
 
 
@@ -445,14 +445,26 @@ def _write_image_cache(module: Module, suggestion: dict, url: str) -> None:
 def current_player_turn_marker(
     db: Session, session_id: str,
 ) -> int:
+    """AI 队友回合的推进信号（单调序号，与 last_ai_team_turn_seq 比较判「有无新回合」）。
+
+    有真人玩家：以真人最新的行动/发言为信号（一批真人行动 → 一轮队友行动）。
+    全 AI 玩家席（真人 KP 独走局）：以 KP 最新旁白为信号——KP 每发布一段叙事，
+    即可推进一轮 AI 队友行动；同一段旁白不会重复推进。
+    """
     human_ids = session_service.human_character_ids(db, session_id)
+    events = session_service.get_session_events(db, session_id)
+    if human_ids:
+        return max(
+            (
+                event.sequence_num
+                for event in events
+                if event.actor_id in human_ids and event.event_type in ("action", "dialogue")
+                and not (event.metadata_ or {}).get("pending_turn")
+            ),
+            default=0,
+        )
     return max(
-        (
-            event.sequence_num
-            for event in session_service.get_session_events(db, session_id)
-            if event.actor_id in human_ids and event.event_type in ("action", "dialogue")
-            and not (event.metadata_ or {}).get("pending_turn")
-        ),
+        (event.sequence_num for event in events if event.event_type == "narration"),
         default=0,
     )
 
